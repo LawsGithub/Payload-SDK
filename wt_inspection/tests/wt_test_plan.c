@@ -160,7 +160,7 @@ static void TestDefaultMission155(void)
     WtMission m;
     WtSafetyReport rep;
 
-    WT_CASE("155m/100m 默认剖面：规划结果与文档 §6.2 基准行一致");
+    WT_CASE("155m/100m 默认剖面：规划结果与基准值一致");
 
     WtMission_Init(&m);
     WT_CHECK_EQ_INT(WtPlan_BuildMission(&spec, &frame, &profile, &m), WT_PLAN_OK);

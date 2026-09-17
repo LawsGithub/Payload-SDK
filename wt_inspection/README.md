@@ -4,8 +4,8 @@
 [M4 系列风机叶片巡检方案](https://enterprise.dji.com/cn/news/detail/matrice-4-series-wind-turbine-inspection)
 的**两阶段**技术路线（粗模环绕建模 → 精细巡检），执行主体为妙算3 机载计算。
 
-**完整方案文档见 [`../docs/风机叶片巡检方案.md`](../docs/风机叶片巡检方案.md)** —— 含系统架构、
-成像参数推导、安全设计原理、实测数据与部署检查单。
+本文档是该方案的**唯一说明来源** —— 含系统架构、成像参数推导、安全设计
+原理与部署流程；所有参数数字由规划器产出，可用 `wt_plan_demo` 复现。
 
 ---
 
@@ -25,19 +25,33 @@ ctest --test-dir build --output-on-failure     # 回归测试，秒级
 调参时应当反复看这张输出，而不是凭感觉改数字。
 
 采样密度那一块直接调用 `WtPlan_ResolveBladeSampling()`，与规划器共用同一份
-公式；文档 §4/§6 的数字也是从同一处取的。这套「数字只有一个来源」的约束
+公式；`wt_plan_demo` 打印的数字也是从同一处取的。这套「数字只有一个来源」的约束
 由 `tests/` 下的回归测试守住：`wt_test_plan` 核对规划结果，
 `wt_test_config` 核对「配置文件里写下的参数必须真的生效」，
 `wt_test_bridge` 核对「报告里的预计耗时与 KMZ 下发的速度同源」。
 
-### 妙算3 目标：交叉编译机载应用
+### 妙算3 目标：在设备上本地编译
+
+**不要交叉编译。** 本机 WSL 的 glibc 2.35 新于设备的 2.31，交叉编译产物会
+要求 `GLIBC_2.34`（实测 `readelf -V`），在设备上 `ldd` 直接报 not found，
+**编得出、跑不了**。设备自带 gcc 9.4 + cmake 3.16，本地编译最高只要求
+`GLIBC_2.17`。
 
 ```bash
-cmake -S . -B build-m3 -DWT_BUILD_PSDK_APP=ON \
-      -DPSDK_ROOT=<Payload-SDK 根目录> \
-      -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
-cmake --build build-m3        # 产出 bin/wt_inspection_app
+# 本机：只打包构建必需的部分（约 1MB）
+tar czf /tmp/wtbuild.tar.gz --mtime='@0' \
+     wt_inspection tools/build_dpk psdk_lib/include \
+     psdk_lib/lib/aarch64-linux-gnu-gcc \
+     samples/sample_c/platform/linux/{manifold3,common}
+
+# 设备：解包后
+cmake -S . -B build-native -DWT_BUILD_PSDK_APP=ON -DPSDK_ROOT=<包根目录>
+make -C build-native -j4        # 产出 bin/wt_inspection_app
 ```
+
+`tools/build_dpk/` 只为打包 `.dpk` 而传，只有 28KB（打包脚本 + 说明）。
+`--mtime='@0'` 把时间戳压到过去：设备 RTC 无电池、掉电回 1970，不压会触发
+`Clock skew detected`（**可能导致构建不完整**）。
 
 ### 机载应用凭据（构建期注入）
 
@@ -68,6 +82,39 @@ baud_rate=460800
   `#include "dji_sdk_app_info.h"` 都无需改动。
 
 跨平台一致性由 CMake 保证，无需 `sed` 之类的平台相关手法。
+
+### 安装包（.dpk）
+
+`app_json/app.json` 是生成 `.dpk` 安装包所需的配置，由官方打包脚本
+`../tools/build_dpk/build_dpk.sh` 读取（依赖仅 Python 3 + dpkg，**与目标架构
+无关**，在 WSL 或设备上打都一样）：
+
+```bash
+bash ../tools/build_dpk/build_dpk.sh -i app_json/app.json -o ~/dpk
+/system/bin/dji_app_ctl install -i ~/dpk/wt-inspection_v01.00.00.00.dpk
+```
+
+`app.json` 的 `bin` 字段是**相对 `app.json` 的路径**，当前指向
+`../build-native/bin/wt_inspection_app`（即设备原生编译的产物）。
+`build_dpk.sh` 会在包内创建 `data/logs/` 与 `data/media/` —— 这是官方的
+**相对应用目录**约定，无需任何绝对路径。
+
+> **`user_app_id` 必须与 `wt_credentials.ini` 的 `app_id` 一致**，且
+> `firmware_version` 必须与 `app/main.c` 里 `T_DjiFirmwareVersion` 的初值
+> 一致（当前均为 `01.00.00.00`）。不一致时应用**装不上**，而报错是含糊的
+> `verify app user_app_id or version info error`。这是同一份信息的两个副本、
+> 两个来源，改一处必须同时改另一处。
+
+#### 安装器会试运行应用 —— 启动阶段不能退出
+
+`dji_app_ctl install` 会在安装过程中**试运行应用并要求它走完 SDK 身份校验**。
+若应用在 `DjiCore_Init` 之后、校验完成之前退出，安装就判失败，且报的是上述
+那句误导性的凭据/版本错误 —— **真正的死因在应用内部，安装器看不到**。
+
+所以应用启动路径上**不能有"配置缺失就退出"这类防御**：fail-closed 的边界
+应划在「作业开始」，不是「进程启动」。应用跑在 `uid=1000`（**不是 root**），
+`/data/` 不可写；输出的正确位置是应用目录下的 `data/`（包内已建好、属主
+`dji:dji`、可写）。
 
 ---
 
@@ -115,7 +162,9 @@ grep -rn "dji_" include/ src/wt_geometry.c src/wt_turbine.c \
 
 此外，航线组装的最后会**统一扫描全部航段**并修补穿越叶片扫掠区的段落
 （出壳 → 沿弧 → 换高，全程位于安全圆柱面之外）。实测中暴露的六类典型
-危险航段见方案文档 §5.3。
+危险航段 —— 进场段横穿盘面、粗模环绕圆落在盘内、双面换面段擦过叶尖、
+塔筒段与叶片冲突、站位在盘内却「当前无叶片」、圆弧中间落回盘内 ——
+都由这套修补覆盖，其中塔筒段在风轮可转动时整段跳过。
 
 ---
 
@@ -123,7 +172,7 @@ grep -rn "dji_" include/ src/wt_geometry.c src/wt_turbine.c \
 
 - 停用角未知时按「叶片停在 12 点方向」假设，程序会告警；但**只有
   `auto_start = true` 才会被硬性拒绝**，默认的 `false` 会照常起飞 ——
-  报告里那一行必须人工确认（见方案文档 §8.1）
+  报告里那一行必须人工确认
 - 配置里的 `park_phase` 已能解析，但尚未接通到规划调用；地面站下发通道也未实现
 - 转动模式下塔筒巡检段被整体跳过（塔筒必然在叶轮圆盘内，无法规避）
 - 相位视觉反解只提供接口，**目前无人调用**，故闭环叶尖跟踪尚未真正生效；

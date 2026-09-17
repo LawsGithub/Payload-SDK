@@ -1,11 +1,10 @@
 /**
  * @file wt_test_fixture.h
- * @brief 测试夹具：与 PC 自检程序、方案文档同源的样例风机
+ * @brief 测试夹具：与 PC 自检程序同源的样例风机
  *
  * 这里刻意复制一份而不是做成 wt_core 的公共函数 —— 样例风机是测试与演示的
- * 素材，不属于产品库的接口。三个地方的默认值必须一致，改一处要同时改：
- *   本文件、tools/wt_plan_demo.c 的 DemoSpec()、
- *   docs/风机叶片巡检方案.md §6.2 的场景表。
+ * 素材，不属于产品库的接口。两处的默认值必须一致，改一处要同时改：
+ *   本文件、tools/wt_plan_demo.c 的 DemoSpec()。
  */
 
 #ifndef WT_TEST_FIXTURE_H
@@ -19,8 +18,9 @@
 /**
  * @brief 陆上大型机组：叶轮直径 155m、轮毂中心高 100m
  *
- * 选择这组参数是因为方案文档 §6.2 的场景表以它为基准行，
- * 测试里的期望值可以直接与文档对照。
+ * 选择这组参数是因为它代表陆上大型机组的主流规格（155m 叶轮 / 100m 轮毂），
+ * 同时被 tools/wt_plan_demo.c 的 DemoSpec() 用作演示样例 —— 测试里的期望值
+ * 可以直接与 `wt_plan_demo` 的输出对照。
  */
 static WtTurbineSpec WtTest_Spec155(void)
 {

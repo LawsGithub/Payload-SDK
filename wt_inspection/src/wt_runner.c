@@ -242,7 +242,7 @@ WtRunResult WtRunner_PlanTurbine(WtRunner *runner, const char *turbineName,
     /*
      * 两份 CSV 用途不同，都要出：
      *   *_waypoints.csv —— 航点外参（lat/lon/alt、云台角、GSD、blade_index、
-     *                      radial_frac），是缺陷三维定位的唯一依据，见方案文档 §9；
+     *                      radial_frac），是缺陷三维定位的唯一依据；
      *   *_actions.csv   —— 动作与飞行参数（相对高度、速度、快门动作），
      *                      供人工核对 KMZ 里下发的内容。
      * 只出后者的话，AI 检测侧拿不到反投影需要的外参。

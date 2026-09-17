@@ -161,7 +161,7 @@ typedef enum {
  * @brief 生成针对 M4T + 停机精细巡检的默认剖面
  *
  * 默认值基于 M4T 中焦 70mm 相机、1.5mm/px 目标 GSD、70% 展向重叠率推导，
- * 与 docs/风机叶片巡检方案.md §6.1 的默认剖面表一一对应。
+ * 推导过程由 `wt_plan_demo` 打印，可直接复核。
  */
 WtInspectionProfile WtInspectionProfile_Default(void);
 
