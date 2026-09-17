@@ -39,8 +39,35 @@ cmake -S . -B build-m3 -DWT_BUILD_PSDK_APP=ON \
 cmake --build build-m3        # 产出 bin/wt_inspection_app
 ```
 
-部署前需在 `samples/sample_c/platform/linux/manifold3/application/dji_sdk_app_info.h`
-填写从 <https://developer.dji.com/user/apps/#all> 申请的 APP 信息。
+### 机载应用凭据（构建期注入）
+
+APP 信息不写进源码树，而是放在仓库外的 `wt_inspection/wt_credentials.ini`：
+
+```ini
+# 从 https://developer.dji.com/user/apps/#all 申请后填入
+app_name=风机叶片识别
+app_id=<APP ID>
+app_key=<App Key>
+app_license=<App License>
+developer_account=<开发者账号>
+baud_rate=460800
+```
+
+配置阶段由 `cmake/gen_app_info.cmake` 读取该文件，生成
+`build-m3/generated/dji_sdk_app_info.h` 并置于头文件搜索路径最前，
+遮蔽源码树中官方样例那份同名占位文件。
+
+之所以绕这一圈：凭据是明文，写进源码树后一旦提交就**永久留在 git 历史里**，
+事后删除也清不掉。生成物落在构建目录，与源码树和版本库双向隔离。
+
+- 该文件不存在时配置阶段给出 WARNING，程序仍能编出来，但启动时会明确
+  拒绝并提示 —— 比含糊的"授权失败"好定位。
+- 文件里出现未知键名、缺失必需项、或值中含引号/反斜杠时，配置阶段直接
+  FATAL_ERROR，不静默降级。
+- 生成的文件名与官方样例**故意保持一致**，这样 PSDK 分发包里任何
+  `#include "dji_sdk_app_info.h"` 都无需改动。
+
+跨平台一致性由 CMake 保证，无需 `sed` 之类的平台相关手法。
 
 ---
 

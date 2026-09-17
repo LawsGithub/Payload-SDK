@@ -86,6 +86,34 @@ if(WT_BUILD_PSDK_APP)
         message(FATAL_ERROR "需要指定 -DPSDK_ROOT=<Payload-SDK 根目录>")
     endif()
 
+    # -----------------------------------------------------------------------
+    # 机载应用凭据：构建期生成 dji_sdk_app_info.h
+    #
+    # 凭据是明文密钥，不能进源码树（一旦提交就永久留在 git 历史里）。
+    # 这里从 wt_credentials.ini 读出，生成头文件到构建目录，并把该目录
+    # 放在头文件搜索路径最前面 —— 从而遮蔽官方样例里那份同名头文件。
+    #
+    # 生成的文件名与官方样例**故意保持一致**：这样 PSDK 分发包里任何
+    # #include "dji_sdk_app_info.h" 都无需改动（包括 manifold3 自带样例）。
+    # 不采用「改源码文件」的做法，是因为 CMake 无条件把
+    # ${WT_M3_DIR}/application 加进搜索路径，源码树里那份同名文件会形成
+    # 第二份真值来源，日后极易被误编辑。
+    # -----------------------------------------------------------------------
+    set(WT_CREDENTIALS "${CMAKE_CURRENT_SOURCE_DIR}/wt_credentials.ini"
+        CACHE FILEPATH "机载应用凭据文件（不入版本库）")
+    set(WT_APP_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
+    execute_process(
+        COMMAND ${CMAKE_COMMAND}
+                -DWT_CREDENTIALS=${WT_CREDENTIALS}
+                -DWT_APP_INFO_OUT=${WT_APP_INFO_DIR}/dji_sdk_app_info.h
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_app_info.cmake
+        RESULT_VARIABLE WT_GEN_RESULT
+    )
+    if(NOT WT_GEN_RESULT EQUAL 0)
+        message(FATAL_ERROR "生成 dji_sdk_app_info.h 失败，见上方输出")
+    endif()
+
     if(WT_TARGET_ARCH STREQUAL "aarch64")
         set(WT_TOOLCHAIN_NAME aarch64-linux-gnu-gcc)
         set(WT_ARCH_DEFINE PLATFORM_ARCH_aarch64=1)
@@ -117,6 +145,7 @@ if(WT_BUILD_PSDK_APP)
     )
 
     target_include_directories(wt_inspection_app PRIVATE
+        ${WT_APP_INFO_DIR}
         include
         app
         ${WT_M3_DIR}/application

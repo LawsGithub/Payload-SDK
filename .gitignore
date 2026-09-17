@@ -28,3 +28,6 @@ wt_inspection/build-*/
 # 本地凭据(明文 App Key / License,绝不入库)
 # ============================================================
 app_info.txt
+
+# 本地凭据(wt_inspection 机载应用身份信息，见 wt_inspection/README.md)
+wt_inspection/wt_credentials.ini
