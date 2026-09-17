@@ -1,0 +1,42 @@
+{
+    "user_app_id": "184842",
+    "firmware_version": "01.00.00.00",
+    "is_ai_rendering": "false",
+    "platform": "manifold3",
+    "name": {
+        "name_cn": "风机叶片识别",
+        "name_en": "wt-inspection",
+        "name_jp": "風車ブレード点検",
+        "name_fr": "Inspection de pales"
+    },
+    "description": {
+        "description_cn": [
+            "面向风机叶片的自主巡检应用，运行于妙算3。",
+            "两阶段作业：粗模环绕建模 → 停机精细巡检。",
+            "全流程离线规划，含安全校验与危险航段修补。"
+        ],
+        "description_en": [
+            "Autonomous wind turbine blade inspection, running on Manifold 3.",
+            "Two-stage workflow: coarse-model orbit, then fine inspection.",
+            "Fully offline planning with safety validation."
+        ],
+        "description_jp": [
+            "風車ブレードの自律点検アプリ（Manifold 3 上で動作）。",
+            "二段階作業：粗モデル周回 → 精密点検。"
+        ],
+        "description_fr": [
+            "Inspection autonome des pales d'éolienne sur Manifold 3.",
+            "Flux en deux étapes : orbite de modèle grossier, puis inspection fine."
+        ]
+    },
+    "maintainer": {
+        "maintainer_cn": "law",
+        "maintainer_en": "law",
+        "maintainer_jp": "law",
+        "maintainer_fr": "law"
+    },
+    "ver_min": "00.00.00.00",
+    "ver_max": "99.99.99.99",
+    "bin": "../build-native/bin/wt_inspection_app",
+    "userconfig": []
+}
