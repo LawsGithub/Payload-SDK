@@ -1,92 +1,104 @@
-# CLAUDE.md — Payload-SDK / 风机叶片巡检
+# CLAUDE.md — 风机叶片巡检（wt_inspection）
 
-## Cross-session handoff
+本文件是**项目专属**约束。仓库级规则（设备、硬规则、worktree 布局）见上一级
+`CLAUDE.md`（提交在 `master` 上，每个分支都继承）——**先读那一份**。
 
-- On session start: read [HANDOFF.md](HANDOFF.md) fully, then summarize the previous session's goal, current state, and next step before proceeding.
+工作区：`~/projects/wt_inspection/`（分支 `feature/wt-inspection`），
+代码在子目录 `wt_inspection/`。
 
-## 妙算3 测试设备（目标机）
+## 跨会话交接
 
-```bash
-sshpass -p 'dji' ssh -o StrictHostKeyChecking=accept-new dji@192.168.42.120
-scp -o StrictHostKeyChecking=accept-new <文件> dji@192.168.42.120:/tmp/
-```
+- 会话开始时先读 [HANDOFF.md](HANDOFF.md) 全文，复述上一会话的目标、当前状态、
+  下一步，然后才动手。
+- 信任标记：`[V]` = 交接时已用命令验证；`[?]` = 仅记忆未复核，当线索对待；
+  `[X]` = 已证伪，别用。
+- 漂移检查：`git rev-parse HEAD~1` 应等于 HANDOFF.md 记录的 SHA——HEAD 应是
+  本次 handoff 提交，其 parent 才是快照记录的锚点。
 
-用户 `dji` / 密码 `dji` / Ubuntu 20.04 aarch64 / glibc **2.31**，
-USB 网络共享经本机 `eth4`（`192.168.42.0/24`）。系统可能被重置，
-重置后 `authorized_keys` 清空，密码是唯一入口。若不通先扫网段找 IP。
+## 项目文档的唯一来源
 
-## 两条硬约束（每次都要遵守）
+`wt_inspection/README.md` 是**唯一**的说明来源（架构分层、参数、快速开始、
+打包流程）。不要再新建 `docs/` 下的方案文档——历史上 README 与方案文档对
+同一套参数有两处描述，已出现实质矛盾，收敛掉了。
 
-### 1. 绝不用 sudo —— dji 用户没有 root 权限
-
-`sudo` 一律失败（`Sorry, user dji is not allowed to execute ...`），
-`date -s` 也不行。但 **`dji_app_ctl` 不需要 sudo** —— `stop` / `install`
-等命令在 dji 用户下直接可用，别把它归到"需要 root"那一类。
-
-- **改不了系统时间** → 设备时钟可能落后本机几十小时（RTC 无电池，掉电回
-  1970；进一次 Pilot 2 飞行界面会经飞机校时）。若 `tar` 报"时间戳在未来"、
-  `make` 报 `Clock skew detected`（**可能导致构建不完整**），用
-  `tar --mtime='@0'` 把时间戳压到过去再传，不要去改设备时间。
-- **`/data/` 不可写，且 `.dpk` 也解决不了** → 装成 dpk 后应用仍以
-  `uid=1000`（dji）运行，**不是 root**。输出的正确位置是应用目录下的
-  `data/`：官方打包脚本 `build_dpk.sh` 会在包内建好，属主 `dji:dji`、可写。
-  绝对路径 `/data/wt_inspection/` 是当初"手工跑二进制"场景带进来的错误假设。
-
-### 2. 运行前必须让出 PSDK 通道
-
-`Smart3DExplore`（中文"自动探索"，DJI 预装）**开机会自启**并占用 PSDK 通道。
-不同时会导致我们的程序报出**误导性的错误**（看起来像机型不匹配）：
-
-```
-dji_channel_local.c:  local channel bind failed, error: Address already in use
-dji_core.c:           Identify device error, Please confirm that only one PSDK program...
-或  main.c:288          获取机型信息失败，无法确认硬件是否匹配
-```
-
-**每次跑程序前先执行**（判据，退出码 1 = 无进程 = 通道可用）：
+## PC 侧自检（秒级，不依赖 PSDK）
 
 ```bash
-pgrep -x Smart3DExplore >/dev/null || /system/bin/dji_app_ctl stop Smart3DExplore
+cd wt_inspection
+cmake -S . -B build && cmake --build build -j4
+ctest --test-dir build --output-on-failure
 ```
 
-即：**只要有进程就停掉**。`pgrep -x` 是精确匹配进程名，别用 `ps | grep`。
+`CMakeLists.txt` 刻意划了一条界：`wt_core` 纯算法库完全不依赖 PSDK，规划/几何/
+安全校验这些"出错代价最大"的部分必须能在桌面上反复验证；只有真正碰硬件的
+代码才进 PSDK 目标（`src/wt_*_psdk.c`）。
 
-### 3. `.dpk` 安装器会试运行应用（2026-09-17 实测）
+## 机载应用凭据（构建期注入）
 
-`dji_app_ctl install` 会在安装过程中**试运行应用，并要求它走完 SDK 身份
-校验**。应用若在 `DjiCore_Init` 之后、校验完成之前退出，安装即失败，而报
-的却是一句误导性的错误：
+`wt_inspection/wt_credentials.ini`（**未跟踪**，权限 600）由
+`cmake/gen_app_info.cmake` 在构建期生成 `dji_sdk_app_info.h` 到构建目录，
+并遮蔽官方样例里的同名头文件。
 
-```
-Error, verify app user_app_id or version info error
-```
+**换 app 时必须同时改两处**：`wt_credentials.ini` 与 `app_json/app.json` 的
+`user_app_id`（后者写真实值是"凭据只有一处真值"原则的唯一例外）。
 
-**真正的死因在应用内部，安装器看不到**（它只能观测"进程没了"，就归因到
-它唯一能校验的两样东西）。所以：**启动路径上不能有"配置缺失就退出"这类
-防御** —— fail-closed 的边界应划在「作业开始」，不是「进程启动」。
+新 worktree 里这个文件**不会自动出现**（`git worktree add` 不复制未跟踪文件），
+要手工从别的 worktree 拷。
 
-判据：应用日志（`/blackbox/system/app_temp_files/<name>_*.log`）里能看到
-`dji_identity_verify.c:654 Update dji sdk policy file successfully`
-才算走完校验。装包**需要飞机通电并连接**。
-
-## 工作方式
-
-**在设备上本地编译，编好再部署。**不用交叉编译：本机 WSL glibc 2.35 >
-设备 2.31，交叉编译产物要求 `GLIBC_2.34`，设备上 `ldd` 直接报 not found。
+## 打包与安装
 
 ```bash
-# 本机：只打包构建必需的部分（约 1MB，含 dpk 打包脚本 28KB）
+# 设备上编译完成后
+tools/build_dpk/build_dpk.sh <路径>
+dji_app_ctl install <包名>.dpk
+```
+
+- `app.json` 的 `bin` 是**相对 `app.json` 的路径**，且目录名必须是 `build`
+  （写成 `build-native` 时打包直接报 `bin field ... not exist`）。
+- 装包**需要飞机通电并连接**，且启动路径不能提前退出
+  （见仓库级 CLAUDE.md 的「安装器会试运行应用」）。
+
+## 设备侧打包清单
+
+本机打包送上设备的必需部分（约 1MB）：
+
+```bash
 tar czf /tmp/wtbuild.tar.gz --mtime='@0' \
      wt_inspection tools/build_dpk psdk_lib/include \
      psdk_lib/lib/aarch64-linux-gnu-gcc \
      samples/sample_c/platform/linux/{manifold3,common}
-# 注意：CMake 硬编码找 psdk_lib/lib/aarch64-linux-gnu-gcc/libpayloadsdk.a
-#      （即使原生编译也走这条路径），打包时别压平目录层级
-
-# 设备：解包后
-cmake -S . -B build-native -DWT_BUILD_PSDK_APP=ON -DPSDK_ROOT=<包根目录>
-make -C build-native -j4
-ctest --test-dir build-native --output-on-failure
 ```
 
-E-Port 端点 `/dev/usb-ffs/bulk{2,3,4,5}/`（`ep0/ep1/ep2`，可读写）。
+`--mtime='@0'` 与「CMake 硬编码找 `psdk_lib/lib/aarch64-linux-gnu-gcc/libpayloadsdk.a`、
+别压平目录层级」两条，见仓库级 CLAUDE.md。
+
+## 已证伪的路 —— 不要再试
+
+- **交叉编译**（`aarch64-linux-gnu-gcc` 在 WSL）→ 产物要求 `GLIBC_2.34`，
+  设备 `ldd` 报 not found [V]。
+- **拿官方样例源码做对照实验**（凭据未填）→ 日志是
+  `main.c:437 Please fill in correct user information`，**变量没控住**：
+  官方样例源码里是占位符 `your_app_id`，而它的 `app.json` 是 `164884`。
+  这个包不能当对照组 [V]。
+- **在 `/tmp` 下打包/编译** → 设备重启后 `/tmp` 被清空 [V]。重要产物别只放 `/tmp`。
+- **静态链接 / 改 sysroot 绕 glibc** → 未尝试 [X]。已选设备本地编译这条路。
+
+## 已知坑
+
+- **安装器报错会把死因指向错误方向** [V]——应用启动即退出时，报的是
+  `verify app user_app_id or version info error`，而凭据和版本都没问题。
+- **`dji_app_ctl` 不需要 sudo** [V]——`stop` / `install` 在 dji 用户下直接可用。
+- **`.dpk` 不解决 `/data` 写权限** [V]——应用仍以 `uid=1000` 运行。
+- **设备 RTC 无电池，掉电回 1970** [V]——进一次 Pilot 2 飞行界面会经飞机校时。
+
+## 待办（接 HANDOFF.md 第 6 节）
+
+1. 改 `wt_inspection/app/main.c` 的启动路径：配置缺失或输出目录不可写时
+   **不要退出**，要让 SDK 起来走完校验。fail-closed 的边界划在「作业开始」，
+   不是「进程启动」。同时把 `output_dir` 默认值从 `/data/wt_inspection`
+   改为相对应用目录的 `data/`（`WT_DEFAULT_CONFIG_PATH` 同理，`main.c:33`）。
+2. 设备上重新编译 + 打包 + 安装验证：预期 `APP INSTALL SUCCESS`。
+3. 清理设备上的实验残留：`/open_app/wt-iso-g`（`dji_app_ctl uninstall wt-iso-g`）、
+   `/tmp/iso*`、`/tmp/wts2`、`/tmp/probe*`、`~/dpk/`。
+4. 用 `wt_plan_demo` 复现 README 里引用的数字（README 已改为指向该程序，
+   但**没有复核过具体数值是否与程序输出一致**）。
