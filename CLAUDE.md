@@ -62,11 +62,13 @@ ctest --test-dir build --output-on-failure
 ```bash
 cmake -S lz -B build-x64 -DLZ_BUILD_PSDK_APP=ON -DLZ_TARGET_ARCH=x86_64 \
       -DPSDK_ROOT=~/projects/Payload-SDK
-cmake --build build-x64 -j4 && ./build-x64/bin/lz_app
+cmake --build build-x64 -j4
 ```
 
-飞机不在手边时也能验证「程序能不能起来」—— 链接是否通过、启动路径是否正常退出
-（后者正是 `dji_app_ctl install` 会试运行的那段）。**不替代设备上的 aarch64 编译。**
+产物三个：`lz_app` / `lz_rangefinder_probe` / `lz_mission_probe`。
+x86 侧只能验证**编译与链接**（设备没有 `/dev/usb-ffs/bulk*`，跑起来会在
+`hal_usb_bulk.c` 报 Bad file descriptor，这是预期的）。
+**不替代设备上的 aarch64 编译。**
 
 `lz_test_plan` 会打印 SKIP 块 —— 那些是绕飞几何的**规格说明**，等你实现
 `src/lz_plan.c` 的 `TODO(human)` 后把该文件的 `LZ_TODO_PENDING` 改成 `0` 启用。
@@ -151,18 +153,32 @@ python3 -c "import zipfile;z=zipfile.ZipFile('/tmp/lz_test.kmz');print(z.testzip
 
 **用独立的解包器验证** —— 自己写的包自己解，什么都证明不了。
 
-## 待确认（开工后第一件事）
+## 上机已确认与仍待确认
 
-- [ ] **运动规划是否需要额外申请 PSDK 高级权限**？矩阵里个别功能有此标注，未确认
+**已确认（2026-09-20 上机，见 HANDOFF.md）**：
+
+- 控件在 Pilot 2 **相机视图左侧"PSDK"菜单**里显示，三个控件（switch + 2×scale）
+  能渲染、拨动能触发回调 `[V]`
+- KMZ 上传全链路通：41 个分片 + MD5 校验通过 `[V]`
+- GPS 在室内就 3D Fix（卫星 15），RC 档位 `TOPIC_RC.mode=0` 对应 N 档 `[V]`
+
+**仍待确认**：
+
+- [ ] **DJI Assistant 2 模拟器能否启动航点任务** —— 实测 `DjiWaypointV3_Action(START)`
+      返回 `0x000000FF`，而 GPS/RC/上传全部正常。疑模拟器不实现该路径 `[?]`
 - [ ] `droneEnumValue=99` / `payloadEnumValue=89`（M4T）是否被飞机接受
 - [ ] 逐点 `gimbalYawRotateAngle` 实测能否驱动云台指向杆心
-- [ ] 控件上机验证：Pilot 2 里能否看到三个控件、拨动是否触发回调
 - [ ] 激光模式下取到的 `lat/lon` 是否真为飞机所在位置（需室外有 GPS）
 - [ ] **POI（`DjiInterestPoint_*`）在 M4T 上是否可用** —— 文档说"及后续机型"
       也覆盖 M4T；若可用且能接受半径不可控，它比自建 KMZ 省事得多，**值得先试**
-- [x] ~~`lz_credentials.ini` 尚未创建~~ → **已从 wt_inspection 拷入**（2026-09-19）
-- [x] ~~激光测距在哪个挂载位置~~ → **位置 1，已实测可用**（2026-09-19）
-- [x] ~~视觉层用什么方案~~ → **暂用 stub 占位，等圆心来源定下来再做**
+- [ ] 运动规划是否需要额外申请 PSDK 高级权限？矩阵里个别功能有此标注，未确认
+
+**⚠️ PSDK 3.16.0-beta 的实测边界（2026-09-20，别再试）**：
+
+`DjiFcSubscription_GetLatestValueOfTopic` **必崩**（SIGSEGV，栈在
+`DjiDataSubscriptionDds_v3_GetLastValueOfTopic` 内部）。已排除读太快、
+传 NULL 回调、无数据、初始化时机四个嫌疑。**取飞机状态一律走回调缓存**，
+实现见 `src/lz_bridge_psdk.c` 的启动诊断段。
 
 ## 激光测距：已实测可用 `[V]`（2026-09-19）
 
@@ -181,12 +197,22 @@ python3 -c "import zipfile;z=zipfile.ZipFile('/tmp/lz_test.kmz');print(z.testzip
 **取坐标前必须判 `exception`** —— 否则会把"无回波时的 `0,0`"当成真坐标，
 生成的航线会指向几内亚湾。实现见 `lz/app/lz_pole_source.c`。
 
+**⚠️ 但 `exception` 单独不够，还要判 `distance > 0`** `[V]`（2026-09-20 模拟器实测）：
+`exception=2` 且 `distance=0` 时，激光给出的 `lat/lon` 是**模拟器的飞机初始位置**
+（113.1700000, 28.2666000）—— 不是垃圾值，而是解算退化成机身位置的**精确错误值**。
+`distance` 是三个字段里唯一可自证的量（无回波恒为 0），所以把它当入口条件：
+**先要有距离，再谈坐标。**
+
 **`distance` 单位是 0.1 m**（分辨率 0.1 m），所以读数恒定不代表没工作 ——
 真实距离落在同一 0.1 m 区间内读数就该恒定。**判"测距是否工作"要看
 读数是否随目标移动而变化，不是看它有没有抖动。**
 
 查挂载位置的探针：`lz/app/lz_rangefinder_probe.c`
 （`./lz_rangefinder_probe` 扫全部位置；`./lz_rangefinder_probe 1 -1` 连续监视）
+
+查任务链路崩溃点的探针：`lz/app/lz_mission_probe.c`（4 个模式，
+`0`=只上传 / `1`=上传+订阅+启动 / `2`=加读话题 / `3`/`4`=只验证订阅与回调）。
+用法与前提见文件头注释。
 
 ## Pilot 2 控件：操作员的入口 `[V]`
 
@@ -195,8 +221,14 @@ python3 -c "import zipfile;z=zipfile.ZipFile('/tmp/lz_test.kmz');print(z.testzip
 ```text
 控件 0  switch  绕飞     OFF=停止(STOP 非 PAUSE)   ON=上传航线并开始
 控件 1  scale   半径m    0-100% → 5~30 m
-控件 2  scale   高度m    0-100% → 5~40 m
+控件 2  scale   高度m    0-100% → 5~150 m（默认 66% → 100.7 m）
 ```
+
+**控件在 Pilot 2 的相机视图左侧「PSDK」菜单**里，**不在妙算3 应用管理面板** `[V]`
+（2026-09-20 实测；应用管理面板里那个按钮只是 `dji_app_ctl start`）。
+
+**配置目录路径不能写死** `[V]`：装成 dpk 后 CWD = 包根（`widget_file/` 在包根），
+从源码树跑时 CWD = `lz/`（`app/widget_file/`）。`lz_widget.c` 用运行时解析两个候选。
 
 **控件是基础功能**（`basic-function/widget.html`），比航点那条高级功能的路好走
 —— 没有"是否需要申请 PSDK 高级权限"的不确定性。
@@ -220,7 +252,7 @@ LzStatus LzPole_Acquire(LzTarget *out);   // 取不到就不起飞
 
 | 方式 | 开关 | 现状 |
 |---|---|---|
-| **固定坐标** | 默认 | 写死的占位值，室内联调用 |
+| **固定坐标** | 默认 | **当前场地实测坐标**（`28.1788480, 112.9210020`，2026-09-20 用户提供）。场地无实物旗杆时该点作虚拟圆心 |
 | **激光测距** | `-DLZ_POLE_SOURCE_LASER=ON` | 真实路径，需 GPS 锁定 + 激光打中杆 |
 
 **为什么要单列一个模块**：至少三条实现路径（激光 / 视觉定位 / 固定坐标），
@@ -239,6 +271,10 @@ LzStatus LzPole_Acquire(LzTarget *out);   // 取不到就不起飞
 坐标"降级为"确认激光瞄准点是不是杆"—— 那用不着连通域。**在职责定下来之前
 把视觉算法做深，是白做。**
 
+⚠️ **视觉层目前根本没接进主链路** `[V]`（2026-09-20 grep 确认）：
+`app/lz_vision_source.c` 里 `LzVisionSource_Start/Stop()` 只有声明、没有实现，
+也没有任何地方调用。所以**程序不看图，也感知不到"有没有红旗"**。
+
 ## 平台层已抽出共用模块 `[V]`
 
 `lz/app/platform/`（`lz_platform.c` + `lz_user_info.c`，共 ~330 行）——
@@ -246,8 +282,8 @@ LzStatus LzPole_Acquire(LzTarget *out);   // 取不到就不起飞
 逻辑未改。
 
 **为什么要抽**：这段有近 150 行 handler 样板，每个 PSDK 应用都得原样做一遍。
-抽出后 `lz_app` 与 `lz_rangefinder_probe` 共用一份，避免"探针能跑、主应用不行"
-这类由样板差异引起的怪问题。
+抽出后 `lz_app` / `lz_rangefinder_probe` / `lz_mission_probe` 共用一份，
+避免"探针能跑、主应用不行"这类由样板差异引起的怪问题。
 
 ⚠️ **include 路径的坑** `[V]`：CMake 加进搜索路径的是 `${LZ_M3_DIR}/hal`
 （hal 目录**里面**），所以应写 `#include "hal_usb_bulk.h"`，
@@ -271,14 +307,18 @@ LzStatus LzPole_Acquire(LzTarget *out);   // 取不到就不起飞
 ## 打包
 
 ```bash
-# 设备上编译完成后
-tools/build_dpk/build_dpk.sh lz/app_json
-dji_app_ctl install <包名>.dpk
+# 设备上编译完成后（在仓库根，即 ~/lzbuild）
+tools/build_dpk/build_dpk.sh -i lz/app_json/app.json -o ~/dpk
+dji_app_ctl install -i ~/dpk/liangzhourenwu_v01.00.00.00.dpk
 ```
 
 - 构建目录名必须是 `build-native`（`app.json` 的 `bin` 指向 `../build-native/bin/lz_app`）。
+- `app.json` 的 `userconfig` 必须是 `["../app/widget_file"]` —— `build_dpk.sh` 会
+  `cp -r` 到**包根**，产出 `/open_app/<app>/widget_file/`，与运行时 CWD（包根）一致。
 - 装包**需要飞机通电并连接**，且启动路径不能提前退出
   （见仓库级 CLAUDE.md 的「安装器会试运行应用」）。
+- **`app.json` 必须四语言齐全**（`description_{cn,en,jp,fr}`）—— `build_dpk.sh`
+  逐个字段校验，缺一个直接退出，报 `KeyError: 'description_jp'`。
 
 ### 设备清理记录（2026-09-19）
 
@@ -305,15 +345,22 @@ dji_app_ctl install <包名>.dpk
 
 ```bash
 tar czf /tmp/lzbuild.tar.gz --mtime="$(date -d '+30 seconds' '+%Y-%m-%d %H:%M:%S')" \
-     lz psdk_lib/include psdk_lib/lib/aarch64-linux-gnu-gcc \
+     --exclude='lz/build*' --exclude='*.dpk' \
+     lz tools/build_dpk psdk_lib/include psdk_lib/lib/aarch64-linux-gnu-gcc \
      samples/sample_c/platform/linux/{manifold3,common}
 ```
+
+⚠️ **必须带 `--exclude='lz/build*'`** —— 否则会把本机 PC 侧的 `build/`
+（x86 产物）一起传上去，设备上解包后与 aarch64 构建混在一个目录里。
+`tools/build_dpk` 也要带上（打包 dpk 在设备上做）。
 
 ⚠️ **不要用 `--mtime='@0'`** `[V]`（2026-09-19 实测踩到）—— 它把源码时间戳压到
 1970，`make` 会发现**源码比 `.o` 旧**，于是**静默跳过编译**。现象是"传了新代码
 上去，跑的还是旧二进制"，极难察觉。
 
-正确做法：时间戳取**设备当前时间附近**（`date -d '+30 seconds'`）。
+正确做法：时间戳取**设备当前时间附近**。实测 `+30 seconds` 会报
+"is 29.2 s in the future"（tar 取的是打包那一刻，而设备时间在走），
+**用 `-60 seconds`（过去）最稳** —— 既不在未来，也不会倒挂到 1970。
 仓库级 CLAUDE.md 说的"用 `--mtime='@0'` 压到过去"防的是"时间戳在未来"，
 但压到 1970 会造成反方向的倒挂 —— 两边都要防，取中间值。
 
@@ -349,6 +396,12 @@ tar czf /tmp/lzbuild.tar.gz --mtime="$(date -d '+30 seconds' '+%Y-%m-%d %H:%M:%S
 - **输出重定向到管道/文件时 stdio 是全缓冲** `[V]`（2026-09-19）——实时监视
   类程序必须每行 `fflush(stdout)`，否则攒够 4 KB 才可见，"实时"变成"批次"。靠
   `sshd` 转发时同样会踩到。
+- **gdb 抓 PSDK 进程要先 `handle SIG32 nostop noprint pass`** `[V]`
+  （2026-09-20）——PSDK 的 linker 线程用 SIG32 做实时事件通知，gdb 默认会
+  停在它上面，真正的 SIGSEGV 反而看不到。用法：
+  `gdb -batch -ex "handle SIG32 nostop noprint pass" -ex run -ex bt --args <bin> <args>`
+- **诊断程序必须在读之前就打印并 flush** `[V]`（2026-09-20）——崩溃会吞掉
+  stdio 缓冲区里没刷出去的内容，而那几行恰恰是定位崩溃点的关键。
 
 ## API 怎么查
 
