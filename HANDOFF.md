@@ -7,8 +7,9 @@
 
 - 锚点: `feature/liangzhourenwu` @ `7383809`（2026-09-20 21:39）
 - 漂移检查: `git rev-parse HEAD~1` 应 = `7383809` —— HEAD 是本次 handoff 提交，其 parent 才是快照锚点；变了说明快照可能过期
-- ⚠️ **本地领先远端 1 个提交**（push 到 `fork` 三次超时失败）。**下次先重试 push**：
-  `git push fork feature/liangzhourenwu`。不要用 `--no-verify`。
+- **远端已同步** `[V]`（push 成功，`2b00fdf..9031463`）—— 本地与 `fork/feature/liangzhourenwu`
+  一致、工作区干净。若 `git status` 显示领先，按仓库约定重试 `git push fork feature/liangzhourenwu`，
+  不要用 `--no-verify`。
 - 设备**当前不可达** `[V]`（21:39 实测 `kex_exchange_identification: Connection closed`，
   且 `eth5` 网卡消失、ping 不通）。需先恢复妙算3（重插 USB-C 或等它起来）。
 - 先读: `~/projects/liangzhourenwu/CLAUDE.md`（项目约定）+ `~/projects/.psdk-apiref/liangzhourenwu/API-MAP.md`
@@ -68,7 +69,7 @@ x64 侧:   cmake --build lz/build-x64  exit 0，我们自己代码 0 warning
 feature/liangzhourenwu @ 7383809，工作区干净
 af3e284 feat(lz_app): 上机链路修复 —— 启动诊断走回调、返回值拆分、控件图标重做
 7383809 docs(claude): 更新项目约束 —— 上机实测结论、PSDK 3.16.0-beta 的坑、打包细节
-（本地领先 fork/feature/liangzhourenwu 1 个提交，push 未成功，见 §0）
+本地与远端一致（push 成功，见 §0）
 ```
 
 ## 3. 决策与理由
@@ -148,7 +149,7 @@ af3e284 feat(lz_app): 上机链路修复 —— 启动诊断走回调、返回�
 
 1. **恢复设备连接**（重插 USB-C / 等妙算3 起来）。判据：`ping 192.168.42.120` 通 +
    `ip neigh` 有 ARP 条目。**不要用 `/dev/tcp` 扫描。**
-2. **push 本地那个提交**（若 §0 的漂移检查仍显示领先）：`git push fork feature/liangzhourenwu`
+2. （已完成，见 §0）push 本地提交 —— 远端已同步
 3. **真机首飞**（不再耗在模拟器上）：
    - 停在场地坐标处起飞，`pgrep -x Smart3DExplore >/dev/null || /system/bin/dji_app_ctl stop Smart3DExplore`
    - 拨 Pilot 2 的 PSDK 开关 → 观察浮窗（新版会直接显示 `启动被拒：空中 RC=0 GPS状态=3 卫星=15`）
