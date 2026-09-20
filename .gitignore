@@ -1,0 +1,16 @@
+# 构建产物
+build/
+build-*/
+lz/build/
+lz/build-*/
+
+# 机载应用凭据（明文密钥，绝不入库）
+lz/lz_credentials.ini
+lz_credentials.ini
+
+# 运行产物
+lz/data/
+*.dpk
+
+# 视觉调试产物（掩码图等）
+lz/debug/
