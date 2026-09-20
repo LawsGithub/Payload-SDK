@@ -1,0 +1,32 @@
+{
+    "user_app_id": "184842",
+    "firmware_version": "01.00.00.00",
+    "is_ai_rendering": "false",
+    "platform": "manifold3",
+    "name": {
+        "name_cn": "视觉航点规划",
+        "name_en": "liangzhourenwu",
+        "name_jp": "ビジョンウェイポイント",
+        "name_fr": "Planification visuelle"
+    },
+    "description": {
+        "description_cn": [
+            "调用视觉识别目标并规划航点航线，运行于妙算3。",
+            "取图 → 识别 → 规划 → 上传航点，全流程机载完成。"
+        ],
+        "description_en": [
+            "Vision-based target recognition and waypoint route planning on Manifold 3.",
+            "Capture, detect, plan, upload — all onboard."
+        ]
+    },
+    "maintainer": {
+        "maintainer_cn": "law",
+        "maintainer_en": "law",
+        "maintainer_jp": "law",
+        "maintainer_fr": "law"
+    },
+    "ver_min": "00.00.00.00",
+    "ver_max": "99.99.99.99",
+    "bin": "../build-native/bin/lz_app",
+    "userconfig": []
+}
