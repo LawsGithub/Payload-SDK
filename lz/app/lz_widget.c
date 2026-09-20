@@ -21,6 +21,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /* ------------------------------------------------------------------ */
 /* 控件索引（必须与 app/widget_file 下的 widget_config.json 一致）        */
@@ -30,11 +32,18 @@
 #define LZ_WIDGET_IDX_HEIGHT_SCALE 2
 #define LZ_WIDGET_COUNT            3
 
-/* 范围条是 0–100 的百分比，这里映射到实际物理量 */
+/* 范围条是 0–100 的百分比，这里映射到实际物理量。
+ *
+ * 高度上限 150 m 是 2026-09-20 按场地要求定的：场地地面海拔约 50–80 m，
+ * 相对起飞点 100 m 即约 150 m ASL。
+ *
+ * ⚠️ 这是**相对起飞点**的高度（KMZ 里 executeHeightMode=relativeToStartPoint），
+ *    不是绝对海拔。要飞真正的 ASL 高度得改高度模式并处理大地水准面差距，
+ *    那是另一回事。 */
 #define LZ_RADIUS_MIN_M   5.0
 #define LZ_RADIUS_MAX_M   30.0
 #define LZ_ALTITUDE_MIN_M 5.0
-#define LZ_ALTITUDE_MAX_M 40.0
+#define LZ_ALTITUDE_MAX_M 150.0
 
 #define LZ_MSG_MAX_LEN  256
 #define LZ_MSG_PERIOD_MS 500    /* 浮窗消息推送周期，远低于 2 KB/s 上限 */
@@ -44,7 +53,7 @@
 /* ------------------------------------------------------------------ */
 static bool s_orbitRequested = false;
 static int32_t s_radiusPercent = 50;   /* 默认 50% → 17.5 m，与 demo 的 20 m 接近 */
-static int32_t s_heightPercent = 20;   /* 默认 20% → 12 m，与 demo 的 12 m 一致 */
+static int32_t s_heightPercent = 66;   /* 默认 66% → 100.7 m 相对高度 ≈ 150 m ASL（场地地面约 50 m） */
 static T_DjiTaskHandle s_msgTask = NULL;
 static volatile bool s_msgTaskRun = false;
 static char s_msgBuf[LZ_MSG_MAX_LEN];
@@ -203,6 +212,53 @@ static void *LzWidget_MsgTask(void *arg)
 /* 初始化                                                              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * @brief 找到控件配置目录，写进 out
+ *
+ * 为什么不能写死一个路径：**PSDK 的路径是相对进程 CWD 解析的**，而 CWD 在两种
+ * 运行方式下不同 ——
+ *
+ *   手工调试：`cd lz && ./build-native/bin/lz_app`      → CWD = lz/
+ *   装成 dpk：`dji_app_ctl start` 把 CWD 设在**包根**  → CWD = /open_app/<app>/
+ *
+ * 所以两个候选都要试，顺序是"装包优先"：
+ *   1. `widget_file/...`      —— dpk 布局（`app.json` 的 userconfig 把它拷到包根）
+ *   2. `app/widget_file/...`  —— 源码树里从 lz/ 手工跑
+ *
+ * 设备上已有先例佐证 dpk 布局：预装的 `proj1_app` 二进制里字符串就是
+ * `widget_file/en_big_screen`，而 `/open_app/install/widget_file/` 正在包根。
+ */
+static const char *lz_widget_resolve_dir(const char *lang_dir)
+{
+    static char resolved[256];
+    struct stat st;
+
+    const char *candidates[] = {
+        "widget_file",       /* dpk 安装后：CWD = 包根 */
+        "app/widget_file",   /* 源码树里从 lz/ 手工跑 */
+    };
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        snprintf(resolved, sizeof(resolved), "%s/%s", candidates[i], lang_dir);
+        if (stat(resolved, &st) == 0 && S_ISDIR(st.st_mode)) {
+            USER_LOG_INFO("控件配置目录: %s（相对 CWD %s）", resolved, candidates[i]);
+            return resolved;
+        }
+    }
+
+    /* 都没找到：返回第一个候选，让 SDK 报出它自己的错，
+     * 同时把 CWD 打进日志 —— 这类"文件找不到"没有 CWD 根本没法排查。 */
+    char cwd[128] = {0};
+    /* getcwd 带 warn_unused_result：显式消费返回值，失败也只是 CWD 留空，
+     * 不影响诊断价值（路径本身已经打出来了） */
+    if (getcwd(cwd, sizeof(cwd) - 1) == NULL) {
+        snprintf(cwd, sizeof(cwd), "(读取失败)");
+    }
+    USER_LOG_ERROR("找不到控件配置目录 %s/*（当前 CWD = %s）", lang_dir, cwd);
+    snprintf(resolved, sizeof(resolved), "%s/%s", candidates[0], lang_dir);
+    return resolved;
+}
+
 T_DjiReturnCode LzWidget_Init(void)
 {
     T_DjiReturnCode rc = DjiWidget_Init();
@@ -212,7 +268,7 @@ T_DjiReturnCode LzWidget_Init(void)
     }
 
     /* UI 配置：两份（中/英），控件类型/索引/数量必须一致，否则行为未定义 */
-    rc = DjiWidget_RegDefaultUiConfigByDirPath("app/widget_file/cn_big_screen");
+    rc = DjiWidget_RegDefaultUiConfigByDirPath(lz_widget_resolve_dir("cn_big_screen"));
     if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
         USER_LOG_ERROR("注册默认控件配置失败 rc=0x%08X", (unsigned)rc);
         return rc;
@@ -220,7 +276,7 @@ T_DjiReturnCode LzWidget_Init(void)
 
     rc = DjiWidget_RegUiConfigByDirPath(DJI_MOBILE_APP_LANGUAGE_CHINESE,
                                         DJI_MOBILE_APP_SCREEN_TYPE_BIG_SCREEN,
-                                        "app/widget_file/cn_big_screen");
+                                        lz_widget_resolve_dir("cn_big_screen"));
     if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
         USER_LOG_ERROR("注册中文控件配置失败 rc=0x%08X", (unsigned)rc);
         return rc;
@@ -228,7 +284,7 @@ T_DjiReturnCode LzWidget_Init(void)
 
     rc = DjiWidget_RegUiConfigByDirPath(DJI_MOBILE_APP_LANGUAGE_ENGLISH,
                                         DJI_MOBILE_APP_SCREEN_TYPE_BIG_SCREEN,
-                                        "app/widget_file/en_big_screen");
+                                        lz_widget_resolve_dir("en_big_screen"));
     if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
         USER_LOG_ERROR("注册英文控件配置失败 rc=0x%08X", (unsigned)rc);
         return rc;

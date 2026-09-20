@@ -90,8 +90,29 @@ T_DjiReturnCode LzMission_Init(void)
         return rc2;
     }
 
+    /* 启动诊断**不能**在这里订阅 —— 见 LzMission_StartPostApp() 的说明。
+     * 这里只做注册航点回调，那是确实要在 ApplicationStart 之前完成的。 */
+
     s_state = LZ_MISSION_STATE_IDLE;
     s_missionEnded = false;
+    return DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS;
+}
+
+T_DjiReturnCode LzMission_StartPostApp(void)
+{
+    /* 订阅飞机状态话题，供"启动被拒"时排除法定位。
+     *
+     * ⚠️ 官方文档（.psdk-apiref/docs/cn/20.basic-function/50.fc-subscription.md）：
+     *   "请勿在 main() 函数中调用本接口，请在用户线程中调用本接口，
+     *    启动调度器后，该接口将正常运行。"
+     * 实测 2026-09-20：在 ApplicationStart 之前调它 → 返回 SUCCESS，
+     * 但随后读话题时 SIGSEGV。**返回成功不代表调用合法。**
+     *
+     * 失败不阻断启动 —— 诊断只服务于可观测性，不该拖累主流程。 */
+    const LzStatus st = LzBridge_InitStartDiagnostics();
+    if (st != LZ_OK) {
+        USER_LOG_WARN("启动诊断订阅失败（%s）—— 不影响作业，仅日志信息会少", LzStatus_Str(st));
+    }
     return DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS;
 }
 
@@ -164,7 +185,18 @@ static bool lz_mission_start_orbit(void)
     /* ---- 3. 做：上传并启动（只能上机验证）---- */
     st = LzBridge_UploadKmzV3(kmzPath, true);
     if (st != LZ_OK) {
-        LzWidget_PostMessage("上传航线失败：%s", LzStatus_Str(st));
+        /* 上传失败与启动失败要分开说 —— 两者的排查方向完全不同。
+         * 早期版本这里只有一句"上传航线失败：文件读写失败"，
+         * 而实测（2026-09-20）真实死因是"上传成功、启动被拒"。 */
+        if (st == LZ_ERR_START) {
+            /* 浮窗带宽上限 2KB/s，且操作员在室外看不到 SDK 日志 ——
+             * 把最关键的几项塞进一条短消息里。 */
+            LzWidget_PostMessage("启动被拒：%s", LzBridge_StartDiagSummary());
+        } else if (st == LZ_ERR_UPLOAD) {
+            LzWidget_PostMessage("上传被拒：%s", LzStatus_Str(st));
+        } else {
+            LzWidget_PostMessage("航线文件处理失败：%s", LzStatus_Str(st));
+        }
         return false;
     }
 

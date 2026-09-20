@@ -17,6 +17,14 @@
         "description_en": [
             "Vision-based target recognition and waypoint route planning on Manifold 3.",
             "Capture, detect, plan, upload — all onboard."
+        ],
+        "description_jp": [
+            "Manifold 3上でビジョン認識による目標検出とウェイポイント航路計画を行います。",
+            "撮影 → 認識 → 計画 → アップロード、すべて機上で完結。"
+        ],
+        "description_fr": [
+            "Reconnaissance visuelle de cible et planification de trajet par waypoints sur Manifold 3.",
+            "Capture, détection, planification, téléversement — tout à bord."
         ]
     },
     "maintainer": {
@@ -28,5 +36,7 @@
     "ver_min": "00.00.00.00",
     "ver_max": "99.99.99.99",
     "bin": "../build-native/bin/lz_app",
-    "userconfig": []
+    "userconfig": [
+        "../app/widget_file"
+    ]
 }

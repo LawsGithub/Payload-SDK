@@ -21,11 +21,20 @@
 /* 方式一：固定坐标（默认）                                              */
 /* ------------------------------------------------------------------ */
 
-/* 一个用于室内联调的写死坐标。真机作业时必须换成实测值 —— 这个数字
- * 落在武汉某处，纯属占位。 */
-#define LZ_FIXED_POLE_LAT 30.500500
-#define LZ_FIXED_POLE_LON 114.300300
-#define LZ_FIXED_POLE_ALT 30.0
+/* 固定杆位：**2026-09-20 换成实测场地坐标**（用户提供）。
+ *
+ * 这是"绕飞圆心"的直接来源 —— 圆形航线的圆心就是这一点，半径来自控件。
+ * 当前场地没有真实的旗杆，所以这个点起到的是**虚拟圆心**的作用：
+ * 站在该点起飞，飞机就会绕着起飞点上方画一个半径 17.5 m 的圆。
+ *
+ * ⚠️ 换成真实旗杆时只改这三行 —— 或改用激光测距（-DLZ_POLE_SOURCE_LASER=ON）。
+ *
+ * 海拔（altitudeM）是**椭球高**，当前kmz生成并不使用它（高度走
+ * `executeHeightMode=relativeToStartPoint`，由控件给出相对起飞点的高度）。
+ * 这个值只是让 LzGeo 是一个合法坐标，精度不影响飞行。 */
+#define LZ_FIXED_POLE_LAT 28.1788480
+#define LZ_FIXED_POLE_LON 112.9210020
+#define LZ_FIXED_POLE_ALT 60.0
 
 /* ------------------------------------------------------------------ */
 /* 方式二：激光测距                                                     */
@@ -72,6 +81,25 @@ LzStatus LzPole_Acquire(LzTarget *out)
         return LZ_ERR_NO_TARGET;
     }
 
+    /* ⚠️ 还要判 distance —— 这条是 2026-09-20 实测补上的。
+     *
+     * 激光给出的经纬度是「机身位置 + 云台朝向 + 距离」解算出的瞄准点。当
+     * **距离为 0 时，这个算式退化成机身自身的位置** —— 不是垃圾值，而是
+     * 一个精确可预测的退化情形。实测（DJI Assistant 2 模拟器）：
+     *
+     *     exception = 2, distance = 0.0, lat/lon = 113.1700000, 28.2666000
+     *
+     * 那个坐标是模拟器设的飞机初始位置，**离旗杆十万八千里**。若只判
+     * exception 就把航线指向了飞机自己脚下。
+     *
+     * `distance` 是这三个字段里唯一可自证的量（无回波恒为 0），
+     * 所以把它当入口条件：**先要有距离，再谈坐标。** */
+    if (info.distance <= 0) {
+        USER_LOG_WARN("激光距离为 0（exception=%u）—— 瞄准点会退化成机身位置，"
+                      "拒绝采用", (unsigned)info.exception);
+        return LZ_ERR_NO_TARGET;
+    }
+
     LzGeo geo = {
         .latitudeDeg = info.latitude,
         .longitudeDeg = info.longitude,
@@ -98,7 +126,7 @@ LzStatus LzPole_Acquire(LzTarget *out)
 
 const char *LzPole_SourceName(void)
 {
-    return "固定坐标（室内联调用）";
+    return "固定坐标";
 }
 
 LzStatus LzPole_Acquire(LzTarget *out)
@@ -116,8 +144,8 @@ LzStatus LzPole_Acquire(LzTarget *out)
     out->radiusM = 0.1;
     out->confidence = 0.9;
 
-    USER_LOG_WARN("杆位用的是写死的固定坐标（%.7f, %.7f）—— 仅供室内联调，"
-                  "真机作业前必须换实测值",
+    USER_LOG_INFO("杆位取自固定坐标（%.7f, %.7f）—— 当前场地无实物杆，"
+                  "该点作虚拟圆心用",
                   out->geo.latitudeDeg, out->geo.longitudeDeg);
     return LZ_OK;
 }

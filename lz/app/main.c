@@ -102,6 +102,13 @@ int main(int argc, char **argv)
         printf("[lz] DjiCore_ApplicationStart 失败\n");
     }
 
+    /* ️ 顺序硬约束：**必须在 ApplicationStart 之后**。
+     * 这里订阅飞机状态话题（启动诊断用），而官方文档明写
+     * DjiFcSubscription_Init "请勿在 main() 函数中调用……启动调度器后，
+     * 该接口将正常运行"。放在前面会返回 SUCCESS 但随后 SIGSEGV
+     * （实测 2026-09-20，见 lz_mission.h 的 LzMission_StartPostApp 说明）。 */
+    (void)LzMission_StartPostApp();
+
     /* ---- 5. 业务循环 --------------------------------------------- */
     /* 只做一件事：推进任务状态机。所有决策都在 LzMission_Tick 里，
      * 这里保持极薄 —— 循环体越简单，越容易看出"程序在干什么"。 */

@@ -17,6 +17,8 @@ const char *LzStatus_Str(LzStatus status)
     case LZ_ERR_NO_TARGET:   return "没有可用目标";
     case LZ_ERR_IO:          return "文件读写失败";
     case LZ_ERR_UNSUPPORTED: return "当前机型不支持";
+    case LZ_ERR_UPLOAD:      return "上传航线被拒";
+    case LZ_ERR_START:       return "任务启动被拒";
     }
     return "未知状态";
 }

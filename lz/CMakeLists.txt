@@ -187,7 +187,16 @@ if(LZ_BUILD_PSDK_APP)
         ${LZ_PLATFORM_SRC}
     )
 
-    foreach(lz_target lz_app lz_rangefinder_probe)
+    # 任务链路探针 —— 复现"上传成功但启动航点时崩溃"，把崩溃点夹出来。
+    # 与 lz_app 分开的理由同激光探针：它是**一次性的诊断工具**，
+    # 且必须把变量收干净（不建线程、不注册控件），才能分清
+    # 崩溃是在 SDK 内部还是在我们的诊断代码里。
+    add_executable(lz_mission_probe
+        app/lz_mission_probe.c
+        ${LZ_PLATFORM_SRC}
+    )
+
+    foreach(lz_target lz_app lz_rangefinder_probe lz_mission_probe)
         target_include_directories(${lz_target} PRIVATE
             ${LZ_APP_INFO_DIR}
             include
