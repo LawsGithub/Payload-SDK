@@ -6,7 +6,10 @@
 ## 0. 复核（下一会话先做）
 
 - 锚点: `feature/liangzhourenwu` @ `7383809`（2026-09-20 21:39）
-- 漂移检查: `git rev-parse HEAD~1` 应 = `7383809` —— HEAD 是本次 handoff 提交，其 parent 才是快照锚点；变了说明快照可能过期
+- 漂移检查: 快照写完后我又补了一个文档修正提交（`2ec41b7` 改 push 状态），
+  所以现在 `HEAD~1` = `9031463`、`HEAD~2` = `7383809`。
+  **判据改成：`git log --oneline` 里应能看到 `7383809` 这条持久文档提交**；
+  看不到说明历史被改写，快照作废。
 - **远端已同步** `[V]`（push 成功，`2b00fdf..9031463`）—— 本地与 `fork/feature/liangzhourenwu`
   一致、工作区干净。若 `git status` 显示领先，按仓库约定重试 `git push fork feature/liangzhourenwu`，
   不要用 `--no-verify`。
@@ -69,6 +72,8 @@ x64 侧:   cmake --build lz/build-x64  exit 0，我们自己代码 0 warning
 feature/liangzhourenwu @ 7383809，工作区干净
 af3e284 feat(lz_app): 上机链路修复 —— 启动诊断走回调、返回值拆分、控件图标重做
 7383809 docs(claude): 更新项目约束 —— 上机实测结论、PSDK 3.16.0-beta 的坑、打包细节
+9031463 docs: handoff —— 上机链路修复完成，启动航点卡在模拟器，待真机首飞
+2ec41b7 docs(handoff): 修正 push 状态与下一步
 本地与远端一致（push 成功，见 §0）
 ```
 
