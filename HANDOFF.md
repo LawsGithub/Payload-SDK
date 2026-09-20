@@ -1,88 +1,172 @@
 # HANDOFF — 读全文再开始干活
 
-生成时间: 2026-09-20T11:50:53+0800 · Git HEAD: de05a46
+生成时间: 2026-09-20T21:39:45+0800 · Git HEAD: 7383809
 信任规则: [V] = 交接时已用命令验证；[?] = 仅记忆未复核，当线索对待；[X] = 已证伪，别用。
 
 ## 0. 复核（下一会话先做）
 
-- 锚点: `feature/liangzhourenwu` @ `de05a46`（2026-09-20 11:50）
-- 漂移检查: `git rev-parse HEAD~1` 应 = `de05a46` —— HEAD 是本次 handoff 提交，其 parent 才是快照锚点；变了说明快照可能过期
-- 先读: `~/projects/liangzhourenwu/CLAUDE.md`（项目约定）+ `~/projects/.psdk-apiref/liangzhourenwu/API-MAP.md`（API 路由与实测记录）
-- 设备: `sshpass -p 'dji' ssh dji@192.168.42.120`（`[V]` 通；链路刚建立时 ping 会假性丢包，重试一次再下结论）
+- 锚点: `feature/liangzhourenwu` @ `7383809`（2026-09-20 21:39）
+- 漂移检查: `git rev-parse HEAD~1` 应 = `7383809` —— HEAD 是本次 handoff 提交，其 parent 才是快照锚点；变了说明快照可能过期
+- ⚠️ **本地领先远端 1 个提交**（push 到 `fork` 三次超时失败）。**下次先重试 push**：
+  `git push fork feature/liangzhourenwu`。不要用 `--no-verify`。
+- 设备**当前不可达** `[V]`（21:39 实测 `kex_exchange_identification: Connection closed`，
+  且 `eth5` 网卡消失、ping 不通）。需先恢复妙算3（重插 USB-C 或等它起来）。
+- 先读: `~/projects/liangzhourenwu/CLAUDE.md`（项目约定）+ `~/projects/.psdk-apiref/liangzhourenwu/API-MAP.md`
 
 ## 1. 当前目标
 
-**让「操作员在 Pilot 2 拨开关 → 飞机绕国旗杆飞一圈」这条链路完整可用。**
-代码已全部就位，只差现场参数确认。完成定义：拨 ON 后飞机按设定半径高度绕杆一周并返航。
+**让「操作员在 Pilot 2 拨开关 → 飞机绕国旗杆飞一圈」完整可用。**
+
+完成定义 = 拨 ON 后飞机按设定半径/高度绕杆一周并返航。
+
+**当前卡点：整条链路只差"启动航点任务"这一步，且它卡在 DJI Assistant 2 模拟器上。**
 
 ## 2. 已验证状态 — 工作实际停在哪
 
-**全部代码已提交并推送** `[V]`（见下方三个 SHA）。工作区干净，无未提交改动。
+**代码侧全部就绪并已提交** `[V]`（两个切片，见 §2 末尾 SHA）。本会话把三个上机暴露的
+问题逐个定位并修掉。
 
-- **绕飞算法完整**：8 点圆、半径误差 0.000000 m、云台逐点指向杆心 8/8 一致 `[V]`
-- **绕行方向经双重独立验证**：测试逐点断言方位角 + 独立程序用鞋带公式算有向面积，`clockwise=true` 得 −1131.37 m²（= 顺时针）`[V]`
-- **KMZ 生成经独立解包器验证**：Python `zipfile.testzip()` 返回 None（CRC 全通过）`[V]`
-- **激光测距已实测可用**：位置 1，`enable_lidar=1`；移动飞机时 `distance` 在 0.8–2.1 m 间实时变化 `[V]`
-- **控件模块已实现未上机**：三个控件（绕飞开关/半径/高度）配置与回调都在，[?] 能否在 Pilot 2 显示未验证
+### 本会话新验证的（都是设备实测）
 
-### 测试/build 输出（本次交接从全新 shell 跑的真实输出）
+- **控件在 Pilot 2 显示且回调真的触发** `[V]` —— 日志 `DJI_0002`：19:53:53.100
+  `[widget] 收到绕飞请求：半径 17.5 m，高度 100.7 m`。
+  控件面板在 **Pilot 2 相机视图左侧「PSDK」菜单**里，**不在妙算3 应用管理面板**。
+- **KMZ 上传全链路通** `[V]` —— 41 个分片 + `Check kmz file md5sum success`，
+  `LzBridge_UploadKmzV3` 的 `上传返回 rc=0x00000000`。
+- **GPS/RC/飞行状态全部正常** `[V]`（探针模式 4 实测）：`fixState=3`（3D Fix）、
+  卫星 15、`TOPIC_RC.mode=0`（对应 N 档）、融合位置 `28.1788565, 112.9210166`
+  —— 与场地坐标只差 1.2 m，飞机就在场地上方。
+- **`DjiFcSubscription_GetLatestValueOfTopic` 必崩** `[V]` —— gdb 抓到栈：
+  `DjiDataSubscriptionDds_v3_GetLastValueOfTopic` 内 SIGSEGV，**SDK 内部**。
+  已排除读太快 / 传 NULL 回调 / 无数据 / 初始化时机四个嫌疑。
+- **DPK 全流程通** `[V]` —— `build_dpk.sh` 打包 → `uninstall` → `install`
+  （APP INSTALL SUCCESS）→ `start` → 进程持续运行，`widget_file/` 在包根。
+
+### 启动航点失败 —— 真实死因已定位到 SDK，不是我们代码
 
 ```
-cmake 配置退出码: 0
-cmake 构建退出码: 0    告警/错误行数: 0
-ctest 退出码: 0        100% tests passed, 0 tests failed out of 4
-  lz_test_geo     34 项检查，0 项失败
-  lz_test_plan    74 项检查，0 项失败
-  lz_test_bridge  12 项检查，0 项失败
-  lz_test_kmz     22 项检查，0 项失败
+DjiWaypointV3_Action(START) → rc = 0x000000FF
+```
 
-四个构建组合全部 0 问题：
-  PC 侧 stub 后端 / PC 侧 hsv 后端 / 机载 x86_64 固定杆位 / 机载 x86_64 激光杆位
-产物：build/bin/{lz_app, lz_rangefinder_probe}
+**注意是 `0xFF` 不是 `770/0x302`**（RC 模式错）。GPS ✓、N 档 ✓、上传 ✓、MD5 ✓
+全部正常，仍返回 `0xFF` —— **这不是"哪项前置条件不满足"**。
+判断：DJI Assistant 2 模拟器不实现航点任务的启动路径 `[?]`（无确证，但证据链完整）。
+
+### 测试/build 输出（本会话真实运行，含退出码）
+
+```
+PC 侧:    cmake --build build   exit 0
+          ctest --test-dir build  exit 0   → 100% tests passed, 0 failed out of 4
+x64 侧:   cmake --build lz/build-x64  exit 0，我们自己代码 0 warning
+设备侧:   本机 aarch64 make  exit 0，0 warning，产物 lz_app / lz_mission_probe
+探针模式 4（回调缓存版）: exit 0，回调 240 次，5 个话题全部有数据
+```
+
+### git 状态（事实快照，非待办）
+
+```
+feature/liangzhourenwu @ 7383809，工作区干净
+af3e284 feat(lz_app): 上机链路修复 —— 启动诊断走回调、返回值拆分、控件图标重做
+7383809 docs(claude): 更新项目约束 —— 上机实测结论、PSDK 3.16.0-beta 的坑、打包细节
+（本地领先 fork/feature/liangzhourenwu 1 个提交，push 未成功，见 §0）
 ```
 
 ## 3. 决策与理由
 
-- **绕飞走 Waypoint V3（自建 KMZ）而非 V2** `[V]` —— 官方文档明文 V2「仅支持 M300 RTK 和 M350 RTK」，M4T 不在内。否决方案：V2 结构体直传（机型不支持）。
-- **KMZ 里用 `gimbalRotate` + `gimbalYawRotateEnable` + `absoluteAngle`** `[V]` —— 那是绕飞的核心。**推翻了上一会话"KMZ 对第三方负载没意义"的判断**：当时只看了 `takePhoto` 一个动作实例就下了全局结论，而 `gimbalRotate` 是独立于相机的动作。`takePhoto`/`fileSuffix` 那些相机语义参数我们不填。
-- **视觉用纯 C 不用 OpenCV** `[V]` —— 设备上**确实有** OpenCV 4.2（含 dnn），但结论不变：纯 C 能桌面测、零依赖、**失败可解释**（阴天→调阈值），模型失效是不可预测的自信错误。否决方案：训练模型（需要先拍旗杆才能标注，而拍旗杆需要先有这套系统 —— 前置依赖死循环）。
-- **控件回调只记状态、不做动作** `[V]` —— 回调在 PSDK 工作线程上，上传 KMZ 会阻塞它。所有作业决策集中在 `LzMission_Tick()`。否决方案：回调里直接开飞（阻塞 + 决策散落各处难审查）。
-- **拨 OFF 走 STOP 而非 PAUSE** `[V]` —— 操作员想停通常是发现了异常，要的是"停下来"不是"悬停等决定"。
-- **视觉后端默认 `stub` 占位而非 `hsv`** `[V]` —— 激光测距可用后，视觉职责可能从"解算绝对坐标"降级为"确认瞄准点是不是杆"，那样用不着连通域。**职责定下来之前做深视觉是白做。**
+- **启动诊断改走回调缓存，不用 `GetLatestValueOfTopic`** `[V]` —— 后者必崩且崩在
+  SDK 内部。回调 10 秒收 518 次，数据一直在到，**说明取数据不必经过那个 getter**。
+  否决方案：继续调 getter（试过 sleep 3s、传回调、改顺序，全崩）。
+- **`LZ_ERR_UPLOAD` 与 `LZ_ERR_START` 拆成两个返回值** `[V]` —— 原来两者都返回
+  `LZ_ERR_IO`，上层只能报"文件读写失败"，而真实死因是启动被拒。
+  **与 `.dpk` 安装器把"提前退出"误报成"凭据错"是同一形状：一个返回值承载多种失败，
+  调用方必然误报。**
+- **高度方案取"相对起飞点 100 m"而非绝对 ASL** `[V]` —— 用户 2026-09-20 选甲。
+  绝对模式要改 `executeHeightMode` 并处理大地水准面差距，错了会飞到错误高度。
+- **固定坐标 = 用户提供的场地坐标** `[V]`（`28.1788480, 112.9210020`）——
+  场地无实物旗杆，该点作虚拟圆心。飞机在圆心正上方，即"绕自己画圆"。
+- **控件路径运行时解析两个候选** `[V]` —— dpk 装后 CWD = 包根（`widget_file/`），
+  源码树里跑 CWD = `lz/`（`app/widget_file/`）。否决方案：只写一个路径
+  （两种调试方式必有一种坏）。
+- **switch 图标重做成圆环+三角/方块** `[V]` —— 原用 DJI 官方样例图标
+  （半圆+三横线），**形状与"开关"无任何视觉关联，开关状态只体现在颜色上**。
+  新图标形状随状态改变 —— 户外强光下颜色不可靠。
+  用纯标准库（zlib+struct）手写 PNG，本机无 PIL/ImageMagick。
 
 ## 4. 失败的尝试 — 不要再试
 
-- **`tar --mtime='@0'` 传源码** `[V]` —— 时间戳压到 1970 后 `make` 发现**源码比 `.o` 旧**，**静默跳过编译**。现象是"传了新代码上去，跑的还是旧二进制"。改用 `--mtime="$(date -d '+30 seconds' ...)"`。**仓库级 CLAUDE.md 那条"必须用 `--mtime='@0'`"在这里反而成了陷阱。**
-- **在 `lz_widget.c` 注释里写 `widget_file/*/`** `[V]` —— `*/` 提前闭合了块注释，后面整段代码变语法垃圾，报错位置与病因完全对不上。
-- **探针用 `samples <= 1` 判断单次模式** `[V]` —— `-1`（连续监视哨兵）满足 `<= 1`，掉进单次分支。**负值哨兵与正数阈值共用变量时判断顺序决定成败。**
-- **`DjiWidget_DeInit()`** `[X]` —— 该函数**不存在**。核实过 `dji_widget.h` 全部 9 个导出函数，只有 `Init`。别再找它。
-- **"KMZ 的动作对第三方负载没意义"** `[X]` —— 已证伪，见 §3。
-- **Waypoint V2 用于 M4T** `[X]` —— 官方明文只支持 M300/M350。
-- **兴趣点环绕（`DjiInterestPoint_*`）可控半径** `[X]` —— `T_DjiInterestPointSettings` 里没有 radius/height 字段，半径由飞机按"当前位置到兴趣点的距离"自动定。
-- **交叉编译** `[V]` —— 产物要求 `GLIBC_2.34`，设备 glibc 是 2.31，`ldd` 报 not found。设备本机编译只要求 `GLIBC_2.17` `[V]`。
+- **`DjiFcSubscription_GetLatestValueOfTopic`** `[V]` —— SIGSEGV，栈在
+  `DjiDataSubscriptionDds_v3_GetLastValueOfTopic` 内部。已排除：读太快
+  （sleep 3s 仍崩）、传 NULL 回调（传了也崩）、无数据（回调 518 次）、
+  初始化时机（已在 ApplicationStart 之后）。**换回调缓存，别再回头试。**
+- **在 `ApplicationStart()` 之前调 `DjiFcSubscription_Init()`** `[V]` —— 它返回
+  `SUCCESS` 但随后 SIGSEGV。官方文档："请勿在 main() 函数中调用本接口……
+  启动调度器后，该接口将正常运行。"**返回成功不代表调用合法**，且崩溃点与病因
+  在栈上完全对不上。已改为 `LzMission_StartPostApp()`，在 ApplicationStart 之后调。
+- **用 `/dev/tcp` 扫网段找设备** `[X]` —— 会给出 **254 个假阳性**（本地拦截器
+  让所有 IP 的 22 端口都显示 OPEN）。正确判据是 `ping` + `ip neigh`（看 ARP）。
+- **`tar --mtime='@0'` 传源码** `[V]` —— 时间戳压到 1970 后 `make` 发现源码比
+  `.o` 旧，**静默跳过编译**。改用**设备当前时间 `-60 seconds`**（`+30s` 仍会报
+  "is 29.2 s in the future"，因为设备时间在走）。
+- **不排除 `lz/build*` 就打 tar** `[V]` —— 会把本机 x86 侧 build/ 传上设备，
+  与 aarch64 构建混在一个目录。
+- **`app.json` 只写 cn/en 两语言描述** `[V]` —— `build_dpk.sh` 逐个字段校验，
+  缺 `description_jp` 直接退出报 `KeyError`。**四语言必须齐全。**
+- **在妙算3 应用管理面板里找控件** `[X]` —— 那只是 `dji_app_ctl start`。
+  控件在 **Pilot 2 相机视图左侧「PSDK」菜单**。
+- **只判激光 `exception` 不判 `distance`** `[V]` —— `distance=0` 时激光给出的
+  `lat/lon` 是模拟器飞机初始位置（113.1700000, 28.2666000），是**精确的错误值**
+  不是垃圾值。已加 `distance <= 0` 拒绝。
+
+（以下为上一份 HANDOFF.md 前向搬运，标 `[?]`，未在本会话重新验证：）
+
+- **`tar --mtime='@0'`** `[?]` —— 见上，已用 `-60 秒` 规避。
+- **`lz_widget.c` 注释里写 `widget_file/*/`** `[?]` —— `*/` 提前闭合块注释。
+- **探针用 `samples <= 1` 判断单次模式** `[?]` —— `-1` 哨兵满足 `<= 1`。
+- **`DjiWidget_DeInit()`** `[X]` —— 该函数不存在，全模块只有 `Init`。
+- **"KMZ 动作对第三方负载没意义"** `[X]` —— `gimbalRotate` 独立于相机。
+- **Waypoint V2 用于 M4T** `[X]` —— 官方只支持 M300/M350。
+- **兴趣点环绕（`DjiInterestPoint_*`）可控半径** `[X]` —— settings 里无 radius 字段。
+- **交叉编译** `[V]` —— 产物要求 `GLIBC_2.34`，设备 2.31。
 
 ## 5. 已知坑
 
-- **官方文档没写 `exception` 取值** `[V]` —— 头文件与中英文档都只有"异常标志"四字。实测反推：**1 = 无回波，3 = 正常读数，2 = 过渡态**。取坐标前必须判 `exception`，否则会把无回波时的 `0,0` 当成真坐标。
-- **`distance` 单位是 0.1 m** `[V]` —— 分辨率 0.1 m，所以读数恒定**不代表**没工作。判"测距是否工作"要看读数是否随目标移动而变化。
-- **方位角不能用绝对差比较** `[V]` —— 正北处球面计算返回 `359.999999998°`，与 `0°` 绝对差是 360。角量是圆周量，容差调多大都没用。测试用 `LZ_CHECK_ANGLE_NEAR`。
-- **`LzGeo_NormalizeDeg` 区间是 [0,360) 左闭右开** `[V]` —— 极小负数加 360 会因舍入恰好得 `360.0`，函数里已收回，别删那个判断。
-- **管道下 stdio 是全缓冲** `[V]` —— 实时监视类程序必须每行 `fflush(stdout)`，否则攒够 4 KB 才可见。
-- **`/blackbox/system/app_temp_files/` 是 root:root 0755** `[V]` —— `dji` 用户无写权限且没有 sudo，里面的日志删不掉。且该目录**混有别的项目的日志**（如 `matrice4t-square-mission_*.log`），不是我们的地盘。
-- **本 worktree 是稀疏检出** `[V]` —— `lz` 目录是在 `git sparse-checkout add lz` 之后才能 `git add` 的。**新建 worktree 后第一件事是 `git sparse-checkout add lz`**，否则 `git add lz/...` 会静默失败（报 "outside of your sparse-checkout definition"）。
+- **`proj1_app` 是系统预装的，不是残留** `[V]`（三条证据：`dji_app_ctl list`
+  只有 1 个应用；`/open_app/install` 时间戳 Apr–Jul 2025；其构建路径
+  `/home/dji/Payload-SDK/proj1_app/` 在设备上不存在）。**别再清它。**
+- **gdb 抓 PSDK 进程要先 `handle SIG32 nostop noprint pass`** `[V]` —— PSDK 的
+  linker 线程用 SIG32 做实时事件，gdb 默认停在它上面，真正的 SIGSEGV 看不到。
+- **诊断程序必须在读之前就打印并 flush** `[V]` —— 崩溃吞掉 stdio 缓冲，
+  而那几行正是定位关键。
+- **方位角不能用绝对差比较** `[?]` —— 正北处返回 `359.999999998°`。用 `LZ_CHECK_ANGLE_NEAR`。
+- **`LzGeo_NormalizeDeg` 区间 [0,360) 左闭右开** `[?]` —— 极小负数加 360 会因舍入得 `360.0`。
+- **`-1` 会满足 `<= 1`** `[?]` —— 负值哨兵与正数阈值共用变量时，判断顺序决定成败。
+- **管道下 stdio 全缓冲** `[?]` —— 实时监视类程序每行 `fflush(stdout)`。
+- **`/blackbox/system/app_temp_files/` 是 root:root 0755** `[?]` —— 删不掉，且混有别的项目日志。
+- **本 worktree 是稀疏检出** `[?]` —— `lz` 目录需先 `git sparse-checkout add lz` 才能 `git add`。
 
 ## 6. 下一步（有序）
 
-1. **上机跑控件验证**：设备上编译后装 dpk，在 Pilot 2 里确认三个控件显示、拨动触发回调。
-   - 前置：让出 PSDK 通道 `pgrep -x Smart3DExplore >/dev/null || /system/bin/dji_app_ctl stop Smart3DExplore`
-   - 前置：飞机通电并连接（`.dpk` 安装器会试运行应用并要求走完身份校验）
-2. **室外验证杆位来源**：用 `-DLZ_POLE_SOURCE_LASER=ON` 编译，确认激光取到的 `lat/lon` 是飞机所在位置（室内无 GPS 恒为 0，这条只能在室外验）。
-3. **定视觉层的职责**：若第 2 步成立（激光能打中杆），视觉层只需"确认瞄准点是不是杆"—— 那 `lz_vision` 的连通域可以不实现，改用 `screenX/screenY` 与红色像素占比的简单判据。
-4. **补 `lz_app_config.h` 的实际使用**：该文件目前只有类型定义，`lz_mission.c` 直接从控件取值，没有读配置文件。若要支持"不改代码调参数"，把半径/高度/速度落到 yaml/ini。
+1. **恢复设备连接**（重插 USB-C / 等妙算3 起来）。判据：`ping 192.168.42.120` 通 +
+   `ip neigh` 有 ARP 条目。**不要用 `/dev/tcp` 扫描。**
+2. **push 本地那个提交**（若 §0 的漂移检查仍显示领先）：`git push fork feature/liangzhourenwu`
+3. **真机首飞**（不再耗在模拟器上）：
+   - 停在场地坐标处起飞，`pgrep -x Smart3DExplore >/dev/null || /system/bin/dji_app_ctl stop Smart3DExplore`
+   - 拨 Pilot 2 的 PSDK 开关 → 观察浮窗（新版会直接显示 `启动被拒：空中 RC=0 GPS状态=3 卫星=15`）
+   - 若成功 → 验绕行方向（顺时针）、云台逐点指向、返航
+4. **`-DLZ_POLE_SOURCE_LASER=ON` 编译**，室外用激光打旗杆，验 `lat/lon` 是否为瞄准点
+5. **定视觉层职责**：激光若可用，视觉降级为"确认瞄准点是不是杆"，`lz_vision` 的
+   连通域可不实现。注意 `lz_vision_source.c` 目前是**空壳、未接进主链路**。
 
 ## 7. 留给用户的开放问题
 
-- **运动规划是否需要额外申请 PSDK 高级权限？** 能力矩阵里 M4 系标注"高级功能需要用妙算3"（本配置满足），但个别功能另有"需要申请"的标注，运动规划是否在内**未查到确证**。这是上机前唯一无法从文档确定的事。
-- **`droneEnumValue=99` / `payloadEnumValue=89` 是否被 M4T 接受？** KMZ 里写的是这两个值（对照 `dji_typedef.h` 的 `DJI_AIRCRAFT_TYPE_M4T` / `DJI_CAMERA_TYPE_M4T`），但没有实测。
-- **室外调试通道怎么解决？** 妙算3 本体无内置无线（只有 `rndis0` USB 网卡），但**内核带了 103 个无线驱动模块**、`dnsmasq`/`nmcli`/`wpa_supplicant` 齐全 —— 插一个驱动已覆盖的 USB WiFi dongle 接手机热点是最现实的路径 `[?]` 未实测。
-- **杆的 WGS84 坐标最终用哪条路？** 激光（现成、精度高，但需打中杆）vs 视觉定位（算法未做）。这决定了 `lz_vision` 要做多深。
+- **DJI Assistant 2 模拟器到底支不支持航点启动？** `[?]` 证据指向不支持，但无确证。
+  如果不想上真机，可在模拟器里用**官方 waypoint_v3 样例**做对照实验 —— 它同样
+  失败即坐实模拟器问题；它成功则说明是我们 KMZ 的问题，要回去查 wpml。
+- **杆的 WGS84 坐标最终用哪条路？** 激光（现成、精度高，需打中杆）vs 视觉定位（未做）。
+  注意红旗横向展开，激光打中旗面中心会偏离杆轴最多半个旗宽（1–1.5 m），
+  对 5–30 m 半径是 2–20% 的圆心偏差 —— **要"打杆不打旗"，或做几何下推。**
+- **室外调试通道怎么解决？** 妙算3 无内置无线，但内核带 103 个无线驱动模块、
+  `dnsmasq`/`nmcli`/`wpa_supplicant` 齐全。插一个驱动已覆盖的 USB WiFi dongle
+  接手机热点是最现实的路径 `[?]` 未实测。
+- **150 m ASL 要不要改成真正的绝对高度？** 当前是"相对起飞点 100.7 m"，
+  而场地地面实测约 17 m ASL，所以实际约 118 m ASL，不是 150。
