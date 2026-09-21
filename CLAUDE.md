@@ -61,9 +61,17 @@ ctest --test-dir build --output-on-failure
 
 ```bash
 cmake -S lz -B build-x64 -DLZ_BUILD_PSDK_APP=ON -DLZ_TARGET_ARCH=x86_64 \
-      -DPSDK_ROOT=~/projects/Payload-SDK
+      -DPSDK_ROOT=$HOME/projects/Payload-SDK
 cmake --build build-x64 -j4
 ```
+
+⚠️ **必须用 `$HOME` 不能用 `~`** `[V]`（2026-09-21 实测）——
+`-DVAR=~/path` 里的 `~` **不会被 shell 展开**（波浪号展开只认词首与 `=`/`:` 之后，
+而 `-DPSDK_ROOT=~/...` 整个是一个词）。CMake 会把它当字面目录名，
+报的是 `找不到 PSDK 静态库: ~/projects/...` —— 错误信息指向"库不存在"，
+而真实原因是输入格式。
+**注意 `-DPSDK_ROOT=...` 改了必须重跑 cmake 配置**：只 `--build` 不会重新生成
+`dji_sdk_app_info.h`，而且新的文件列表也不会被采纳。
 
 产物三个：`lz_app` / `lz_rangefinder_probe` / `lz_mission_probe`。
 x86 侧只能验证**编译与链接**（设备没有 `/dev/usb-ffs/bulk*`，跑起来会在
@@ -153,6 +161,37 @@ python3 -c "import zipfile;z=zipfile.ZipFile('/tmp/lz_test.kmz');print(z.testzip
 
 **用独立的解包器验证** —— 自己写的包自己解，什么都证明不了。
 
+## wpml 必需元素：以规范为准，**不以官方样例为准** `[V]`（2026-09-21）
+
+规范原文在 **Cloud-API-Doc 仓库**（不在 `.psdk-apiref` 里，那个只收了 PSDK 文档）：
+
+```bash
+B=https://raw.githubusercontent.com/dji-sdk/Cloud-API-Doc/master/docs/cn/60.api-reference/00.dji-wpml
+curl -sL $B/20.template-kml.md $B/30.waylines-wpml.md $B/40.common-element.md
+```
+
+**为什么样例不能当权威**：实测官方样例 KMZ 自身也缺
+`wpml:globalRTHHeight`（规范标为必需元素）却照样能飞。所以：
+
+> "样例里有" 推不出 "必需"；"样例里没有" 推不出 "不必需"。**方向是反的。**
+
+而且**逐元素加"必需"项是错的**，必须同时看两列：
+
+| 元素 | 「是否必需」 | 「支持机型」 | 结论 |
+|---|---|---|---|
+| `gimbalHeadingYawBase` | 必需 | 含 M4T | **要加**（我们使能 yaw，依赖这个基准） |
+| `missionAutoRerouteMode` | 必需 | 仅 **M3D/M3TD** | 不加 |
+| `imageFormat` | 必需 | — | 不加（属相机动作，我们不做 takePhoto） |
+| 各类 `shootType`/`margin`/… | 必需 | — | 不加（属 `mapping2d/3d` 模板，我们用 `waypoint`） |
+
+**只 grep "必需元素" 会把 M3D 专属元素也加进来。** 这条方法论写进了
+`tests/lz_test_wpml.c`（"不应写入 M3D 专属的绕行元素"用例）。
+
+**当前 KMZ 缺的元素里，只有 `gimbalHeadingYawBase` 是真正可疑的** ——
+官方样例也缺它，但样例的 `gimbalYawRotateEnable` 是 **0**（只用俯仰），
+而我们使能 yaw，`absoluteAngle` 正依赖"相对正北"这个声明。
+**样例能飞不能用来给我们开脱：两者处境不同。**
+
 ## 上机已确认与仍待确认
 
 **已确认（2026-09-20 上机，见 HANDOFF.md）**：
@@ -164,8 +203,17 @@ python3 -c "import zipfile;z=zipfile.ZipFile('/tmp/lz_test.kmz');print(z.testzip
 
 **仍待确认**：
 
-- [ ] **DJI Assistant 2 模拟器能否启动航点任务** —— 实测 `DjiWaypointV3_Action(START)`
-      返回 `0x000000FF`，而 GPS/RC/上传全部正常。疑模拟器不实现该路径 `[?]`
+- [ ] **`DjiWaypointV3_Action(START)` 被拒的真实原因** —— 上一版结论"模拟器不实现"
+      **证据不足，已撤回** `[X]`（2026-09-21）。两个理由：
+      ① `0x000000FF` 是 SYSTEM 模块的"未知错误"，**不携带业务信息**，
+         而我们用 `(unsigned)rc` 配 `%08X` 把高 32 位的模块号**截掉了** ——
+         对它的解读建立在错误数据上（已改 `%llX`）；
+      ② 真实原因是飞机给的 `error_code: 770` = `CANNOT_START_AT_CURRENT_RC_MODE`，
+         它在 SDK 日志里，我们一直没去捞（已加 `lz_sdk_log_watch`）。
+      另外：**同一份 KMZ 从未通过任何一次 wpml 内容校验** ——
+      上传只做字节与 MD5 传输校验，内容校验在 START 时才发生。
+      而当时的 KMZ 确实缺必需元素（已修，见上）。所以"KMZ 问题 vs RC 档位问题"
+      这两条路都还没排除干净。
 - [ ] `droneEnumValue=99` / `payloadEnumValue=89`（M4T）是否被飞机接受
 - [ ] 逐点 `gimbalYawRotateAngle` 实测能否驱动云台指向杆心
 - [ ] 激光模式下取到的 `lat/lon` 是否真为飞机所在位置（需室外有 GPS）
@@ -179,6 +227,63 @@ python3 -c "import zipfile;z=zipfile.ZipFile('/tmp/lz_test.kmz');print(z.testzip
 `DjiDataSubscriptionDds_v3_GetLastValueOfTopic` 内部）。已排除读太快、
 传 NULL 回调、无数据、初始化时机四个嫌疑。**取飞机状态一律走回调缓存**，
 实现见 `src/lz_bridge_psdk.c` 的启动诊断段。
+
+## 失败可观测性：三条"看起来有、实际没有"的坑 `[V]`（2026-09-21 审计）
+
+这三条都是"代码写了、注释说得像真的、但实际没生效"，比明显的 bug 危险：
+
+### 1. PSDK **没有**反向推控件状态的接口 —— 别写"把开关拨回去"
+
+`lz_widget.c` 曾这样写，注释还写着"程序化拨回 OFF"：
+
+```c
+(void)LzWidget_SetWidgetValue(DJI_WIDGET_TYPE_SWITCH, ..., OFF, NULL);  // 空头承诺
+```
+
+那是**我们自己**注册给 SDK 的回调，被 Pilot 调用时才生效；直接调它只改本地变量。
+`dji_widget.h` 全部 **9 个**导出函数里没有任何 setter；`dji_widget_manager.h` 的
+`DjiWidgetManager_SetWidgetState` 目标是**机上挂载的负载**，不是本应用在 Pilot 的 UI。
+
+**真实后果**：开关**保持 ON**（持续可见）而浮窗说"绕飞结束"（会被下一条覆盖）——
+矛盾的两条信息里，持续可见的那条是错的。现在的做法是如实提示
+"⚠ 开关仍在 ON 位，请手动拨回"。
+
+### 2. 浮窗去重表：发送失败也标记"已发" = 该消息永不重发
+
+`LzWidget_MsgTask` 里发完就 `memcpy(lastMsg, ...)`，一次失败（通道未就绪）
+就让这条消息**永远消失**。浮窗是室外**唯一**的反馈通道，
+"启动被拒：…" 丢了等于没有反馈。**只在返回成功时才更新去重表。**
+
+### 3. `(void)f()` 丢掉的是"停止失败"
+
+拨 OFF 的 `(void)LzBridge_StopMissionV3()` 曾把 STOP 失败完全吞掉，
+随后照样报"绕飞结束"。**静默的失败等于假装成功**，而在飞控语境里
+这直接关系到安全（飞机还在杆旁边绕，操作员以为停了）。
+现在：加日志、检查返回值、失败时**保持 RUNNING**（状态与事实一致）
+并只报一次浮窗（Tick 是 100 ms 一拍，不加闸会每秒刷 10 条）。
+
+## 测试框架：0 项检查也算失败 `[V]`（2026-09-21）
+
+`LZ_TEST_SUMMARY()` 现在把"检查项数为 0"判为失败。
+
+**为什么**：本工程的用例大量写成 `if (obj != NULL) { LZ_CHECK(...) }`。
+一旦构建静默失败（缓冲区算小了、入参校验误拒），那些断言**整体不执行**，
+汇总打印"0 项检查，0 项失败"并返回 0 —— **测试绿着，但什么都没验**。
+这种"空跑成功"比失败更危险：它让一次真实的回归伪装成通过。
+
+## 反向验证：修复必须能变红 `[V]`（2026-09-21 起执行）
+
+每修一处关键缺陷，都**逐条回退该修复、确认对应断言变红**，再恢复。
+本会话实测：
+
+| 回退的修复 | 变红的断言 |
+|---|---|
+| wpml 三元素（`globalRTHHeight`/`yaw` 归一/…） | 12 条 FAIL |
+| 安全包线检查 | 6 条 FAIL |
+| 零检查守卫 | 单跑空测试退出码 1 |
+
+**不这么做的代价**：断言可能因为某个前置条件恒假而从未真正执行过 ——
+那正是本项目已经踩过的形状（`LZ_TODO_PENDING`、`if (f.xxx != NULL)` 守卫）。
 
 ## 激光测距：已实测可用 `[V]`（2026-09-19）
 
@@ -220,8 +325,8 @@ python3 -c "import zipfile;z=zipfile.ZipFile('/tmp/lz_test.kmz');print(z.testzip
 
 ```text
 控件 0  switch  绕飞     OFF=停止(STOP 非 PAUSE)   ON=上传航线并开始
-控件 1  scale   半径m    0-100% → 5~30 m
-控件 2  scale   高度m    0-100% → 5~150 m（默认 66% → 100.7 m）
+控件 1  scale   半径m    0-100% → 5~20 m（默认 50% → 12.5 m）
+控件 2  scale   高度m    0-100% → 5~120 m（默认 66% → 约 80.9 m）
 ```
 
 **控件在 Pilot 2 的相机视图左侧「PSDK」菜单**里，**不在妙算3 应用管理面板** `[V]`
@@ -235,6 +340,23 @@ python3 -c "import zipfile;z=zipfile.ZipFile('/tmp/lz_test.kmz');print(z.testzip
 
 **架构要点**：控件回调**只记状态不做动作**，真正的作业决策集中在
 `LzMission_Tick()`。理由是回调跑在 PSDK 工作线程上，而上传 KMZ 是耗时操作。
+
+**安全包线是硬约束，唯一真值在 `lz_plan.h`** `[V]`（2026-09-21）：
+
+```c
+#define LZ_PLAN_RADIUS_MIN_M     5.0
+#define LZ_PLAN_RADIUS_MAX_M     20.0   /* 场地约束：杆周围 20 m 内无建筑物 */
+#define LZ_PLAN_ALTITUDE_MIN_M   5.0
+#define LZ_PLAN_ALTITUDE_MAX_M   120.0  /* 相对起飞点，不是 ASL */
+```
+
+`LzPlan_Validate` 按它拒（超限返回 `LZ_ERR_UNSAFE`，不是 `LZ_ERR_PARAM` ——
+前者"合法但危险、操作员可修正"，后者"数值非法、是编程错误"，排查方向不同）；
+**控件层引用同一组常量**，不得自备一份。
+
+> 教训：原先上限只活在控件层的滑杆映射宏里，`LzPlan_Validate` 看不到 ——
+> 换个调用点（探针、demo、将来的自动规划）就能构造超限剖面并通过校验。
+> **校验层的判据不该取决于谁在调用。**
 
 **四条约束**（`[V]` 已核实）：
 1. **没有 `DjiWidget_DeInit()`** —— 全模块 9 个接口里只有 `Init`
@@ -379,6 +501,11 @@ tar czf /tmp/lzbuild.tar.gz --mtime="$(date -d '+30 seconds' '+%Y-%m-%d %H:%M:%S
 - **"KMZ 对第三方负载没意义"** → **已证伪**：`gimbalRotate` 是独立于相机的动作，
   且支持 `gimbalYawRotateEnable` + `absoluteAngle` `[V]`
 - **`tar --mtime='@0'`** → **已证伪**：导致 make 跳过编译（见上）`[V]`
+- **"模拟器不实现航点启动"** → **已证伪（证据不足）** `[X]`（2026-09-21）：
+  该结论建立在 `0x000000FF` 上，而那是被 `(unsigned)` 截断后的假象；
+  且当时那份 KMZ 确实缺 wpml 必需元素，**从未通过过内容校验**。
+  详见「上机已确认与仍待确认」第一条。
+- **`-DPSDK_ROOT=~/path`** → **已证伪** `[V]`：`~` 不被展开，用 `$HOME`（见上）
 
 ## 已知坑（本项目特有）
 
@@ -387,6 +514,13 @@ tar czf /tmp/lzbuild.tar.gz --mtime="$(date -d '+30 seconds' '+%Y-%m-%d %H:%M:%S
   `LZ_CHECK_ANGLE_NEAR`（圆周差），见 `tests/lz_test.h`。
 - **`LzGeo_NormalizeDeg` 的区间是 [0,360) 左闭右开** `[V]` ——极小负数加 360
   会因舍入得到恰好 `360.0`，函数里已收回；改动时别删那个判断。
+- **SDK 的日志流在我们手上路过** `[V]`（2026-09-21）—— PSDK 不把真正的错误码
+  通过 API 给我们（`DjiWaypointV3_Action` 只回 `0x000000FF`），但飞机给的原因在
+  SDK 自己的 `USER_LOG_ERROR` 里，而那个 console 是我们注册的。
+  实现见 `app/platform/lz_sdk_log_watch.c`：两个 console **先喂再输出**，
+  自己拼行（`ConsoleFunc` 的 `dataLen` 是任意长度，可能给半行 ——
+  直接对 chunk 做 strstr 会在跨 chunk 时漏掉目标串）。
+  **抓不到要返回 NULL 并让调用方容忍"没有这条信息"，不能把"抓不到"当成"没失败"。**
 - **注释里不能写 `*/`** `[V]`（2026-09-20）——在 `/* ... */` 块注释里写
   `widget_file/*/` 会**提前闭合注释块**，后面整段代码变成语法垃圾。报错位置
   和病因完全对不上。
