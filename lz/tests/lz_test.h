@@ -64,8 +64,25 @@ static const char *lz_test_case = "(未命名)";
         }                                                                      \
     } while (0)
 
+/**
+ * @brief 打印汇总并返回进程退出码
+ *
+ * ⚠️ **检查项数为 0 也算失败。**
+ *
+ * 为什么：本工程的测试用例大量依赖"先构建一个对象、再断言它的内容"，
+ * 写成 `if (obj != NULL) { LZ_CHECK(...) }` 的形式。一旦构建静默失败
+ * （缓冲区算小了、依赖的入参校验误拒…），那些断言**整体不执行**，
+ * 汇总会打印"0 项检查，0 项失败"并返回 0 —— **测试绿着，但什么都没验**。
+ * 这种"空跑成功"比失败更危险：它会让一次真实的回归伪装成通过。
+ *
+ * 判据取自 lz_test_plan.c 的历史：早期 `LZ_TODO_PENDING` 把整块规格用例
+ * 用 `#if 0` 关掉时，正是靠"检查项数为 0"才发现那些断言没跑。
+ */
 #define LZ_TEST_SUMMARY()                                                      \
     (printf("[=====] %d 项检查，%d 项失败\n", lz_test_checks, lz_test_failures),\
-     lz_test_failures == 0 ? 0 : 1)
+     (lz_test_checks == 0)                                                     \
+         ? (fprintf(stderr, "[FAIL ] 一项检查都没跑 —— 断言被整体跳过了，"     \
+                            "不能算通过\n"), 1)                                \
+         : (lz_test_failures == 0 ? 0 : 1))
 
 #endif /* LZ_TEST_H */

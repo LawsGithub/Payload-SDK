@@ -515,8 +515,41 @@ LzStatus LzBridge_UploadKmzV3(const char *kmzPath, bool startImmediately)
     return LZ_OK;
 }
 
+/**
+ * @brief 停止正在执行的航点任务
+ *
+ * ⚠️ **失败必须让调用方看见。** 早先这里一行日志都没有，调用方又用
+ * `(void)` 丢掉返回值 —— 于是"操作员拨 OFF 但飞机没停"这件事
+ * 在日志和界面上**完全不可见**，程序照样报"绕飞结束"。
+ *
+ * 后果是物理的：飞机可能在杆旁边继续绕，而操作员以为已经停了。
+ * 这与 START 失败那条是同一形状的问题（一个返回值承载多种失败、
+ * 且没人看），只是这次没人看的是 STOP。
+ *
+ * 返回码说明：`DjiWaypointV3_Action(STOP)` 在任务没在跑时会返回
+ * `CANNOT_STOP_WAYLINE_WHEN_WAYLINE_NOT_RUNNING`（raw 259）——
+ * 那其实不是失败。但我们无从区分"没在跑"与"拒绝停止"，
+ * 因为 `T_DjiReturnCode` 只给 `0x000000FF`（SYSTEM·UNKNOWN），
+ * 真实原因只在 SDK 日志里（同 START 那条，见文件顶部的说明）。
+ * 所以这里**如实上报失败**，把判断留给调用方。
+ */
 LzStatus LzBridge_StopMissionV3(void)
 {
     const T_DjiReturnCode rc = DjiWaypointV3_Action(DJI_WAYPOINT_V3_ACTION_STOP);
-    return (rc == DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) ? LZ_OK : LZ_ERR_IO;
+    if (rc == DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+        USER_LOG_INFO("已下发停止航点任务");
+        return LZ_OK;
+    }
+
+    /* 用 %llX 配 64 位 —— 与 START 那条同样的理由：
+     * T_DjiReturnCode 是 uint64_t，模块号在高 32 位，用 (unsigned) 会截掉。 */
+    USER_LOG_ERROR("停止航点任务被拒 rc=0x%08llX", (unsigned long long)rc);
+
+    /* 顺手把 SDK 日志里同一失败的那行捞出来 —— 它才是带原因的那条。
+     * 抓不到不算错（那只是少一条信息），这里刻意不 fallback 造消息。 */
+    const char *act = LzSdkLogWatch_LastActionError();
+    if (act != NULL) {
+        USER_LOG_ERROR("  ↑ SDK 把同一失败转成的返回值：%s", act);
+    }
+    return LZ_ERR_IO;
 }

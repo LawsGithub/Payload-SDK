@@ -225,6 +225,91 @@ int main(void)
         LzRoute_Free(&route);
     }
 
+    LZ_CASE("gimbalRotate 的参数块必须齐备（含 gimbalHeadingYawBase）");
+    {
+        LzTarget p = pole();
+        const LzGeo takeoff = p.geo;
+        LzOrbitProfile pr = profile_of(100.7);
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &takeoff, &pr, &route) == LZ_OK);
+
+        LzWpmlFiles f = build(&route, &p, &pr);
+        if (f.templateKml != NULL && f.waylinesWpml != NULL) {
+            /* `gimbalHeadingYawBase` 声明 yaw 角"相对什么"，在规范的
+             * gimbalRotate 一节里标为**必需元素**。我们缺它、官方样例也缺它 ——
+             * 但官方样例的 gimbalYawRotateEnable 是 0（不用 yaw），
+             * 而我们的 yaw 是绕飞的全部意义，`absoluteAngle` 正依赖这个基准。
+             * 所以这条断言守的是"不能因为样例没写就也不写"。 */
+            LZ_CHECK(count_occurrences(f.templateKml, "<wpml:gimbalHeadingYawBase>north</wpml:gimbalHeadingYawBase>")
+                     == (int)route.count);
+            LZ_CHECK(count_occurrences(f.waylinesWpml, "<wpml:gimbalHeadingYawBase>north</wpml:gimbalHeadingYawBase>")
+                     == (int)route.count);
+
+            /* 基准必须在 gimbalRotateMode 之前出现 —— 规范的表格顺序如此，
+             * 且"先声明坐标系、再给角度"读起来才不歧义。 */
+            const char *base = strstr(f.templateKml, "<wpml:gimbalHeadingYawBase>");
+            const char *mode = strstr(f.templateKml, "<wpml:gimbalRotateMode>");
+            LZ_CHECK(base != NULL && mode != NULL && base < mode);
+        }
+        LzWpml_Free(&f);
+        LzRoute_Free(&route);
+    }
+
+    LZ_CASE("偏航角模式与绕行相关的必需元素");
+    {
+        LzTarget p = pole();
+        const LzGeo takeoff = p.geo;
+        LzOrbitProfile pr = profile_of(100.7);
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &takeoff, &pr, &route) == LZ_OK);
+
+        LzWpmlFiles f = build(&route, &p, &pr);
+        if (f.templateKml != NULL && f.waylinesWpml != NULL) {
+            /* globalWaypointHeadingParam 里写一份（我们逐点 useGlobalHeadingParam=1），
+             * waylines 里每个航点各写一份。 */
+            LZ_CHECK(count_occurrences(f.templateKml, "<wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>") == 1);
+            LZ_CHECK(count_occurrences(f.waylinesWpml, "<wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>") == (int)route.count);
+
+            /* payloadParam 容器：template.kml 的 Folder 尾部，官方样例有、我们原先没有。
+             * 只在 template 里写一次（它是航线级的默认负载位置）。 */
+            LZ_CHECK(count_occurrences(f.templateKml, "<wpml:payloadParam>") == 1);
+            LZ_CHECK(count_occurrences(f.waylinesWpml, "<wpml:payloadParam>") == 0);
+
+            /* payloadParam 必须在 </Folder> 之前 */
+            const char *pp = strstr(f.templateKml, "<wpml:payloadParam>");
+            const char *fold = strstr(f.templateKml, "</Folder>");
+            LZ_CHECK(pp != NULL && fold != NULL && pp < fold);
+        }
+        LzWpml_Free(&f);
+        LzRoute_Free(&route);
+    }
+
+    LZ_CASE("不应写入 M3D 专属的绕行元素");
+    {
+        LzTarget p = pole();
+        const LzGeo takeoff = p.geo;
+        LzOrbitProfile pr = profile_of(100.7);
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &takeoff, &pr, &route) == LZ_OK);
+
+        LzWpmlFiles f = build(&route, &p, &pr);
+        if (f.templateKml != NULL && f.waylinesWpml != NULL) {
+            /* autoRerouteInfo 一族在规范的「支持机型」列写的是 **M3D/M3TD**，
+             * M4T 不在列内。这条断言守的是**判断必需元素的方法论**：
+             * 必须同时看「是否必需」与「支持机型」两列 ——
+             * 只 grep "必需元素" 会把 M3D 专属元素也加进来。 */
+            LZ_CHECK(strstr(f.templateKml, "autoRerouteInfo") == NULL);
+            LZ_CHECK(strstr(f.waylinesWpml, "autoRerouteInfo") == NULL);
+            LZ_CHECK(strstr(f.templateKml, "missionAutoRerouteMode") == NULL);
+            LZ_CHECK(strstr(f.waylinesWpml, "transitionalAutoRerouteMode") == NULL);
+        }
+        LzWpml_Free(&f);
+        LzRoute_Free(&route);
+    }
+
     LZ_CASE("空入参被拒绝");
     {
         LzWpmlFiles files;

@@ -157,6 +157,32 @@ LzStatus LzPlan_Validate(const LzRoute *route, const LzOrbitProfile *profile)
     if (profile->radiusM <= 0.0 || profile->waypointCount < 3) {
         return LZ_ERR_PARAM;
     }
+    if (!isfinite(profile->radiusM) || !isfinite(profile->altitudeM)) {
+        return LZ_ERR_PARAM;
+    }
+
+    /* ---- 安全包线：合法但危险的数值 ----
+     *
+     * 与上面的 `<= 0` / 非有限数**分开判**，且返回**不同的**错误码：
+     *   `LZ_ERR_PARAM`  = 数值本身非法（0、负数、NaN）—— 是编程错误
+     *   `LZ_ERR_UNSAFE` = 数值合法但超出安全范围 —— 是**操作员可修正**的输入
+     * 两者排查方向完全不同：前者去查代码，后者去查现场条件与控件设定。
+     *
+     * 边界取**闭区间**（恰好等于上限算通过）—— 上限本身就是从现场条件
+     * 推出来的可用值，没有理由把"正好 20 m"判为越界。
+     *
+     * 上限只认 lz_plan.h 的 `LZ_PLAN_*`。**不再接受调用方自带的上限**：
+     * 原先这些边界只活在控件层（`app/lz_widget.c` 的滑杆映射宏），
+     * 规划层看不见 —— 换个调用点（探针、demo、将来的自动规划）就能绕过，
+     * 而 `LzPlan_Validate` 是起飞前最后一道关卡，它的判据不该取决于谁在调用。 */
+    if (profile->radiusM < LZ_PLAN_RADIUS_MIN_M ||
+        profile->radiusM > LZ_PLAN_RADIUS_MAX_M) {
+        return LZ_ERR_UNSAFE;
+    }
+    if (profile->altitudeM < LZ_PLAN_ALTITUDE_MIN_M ||
+        profile->altitudeM > LZ_PLAN_ALTITUDE_MAX_M) {
+        return LZ_ERR_UNSAFE;
+    }
 
     for (size_t i = 0; i < route->count; ++i) {
         const LzWaypoint *wp = &route->points[i];
@@ -172,6 +198,14 @@ LzStatus LzPlan_Validate(const LzRoute *route, const LzOrbitProfile *profile)
          * 不做自动抬升：自动"修正"会让航线悄悄偏离操作员的意图，
          * 现场更难判断发生了什么。 */
         if (wp->relativeAltM <= 0.0) {
+            return LZ_ERR_UNSAFE;
+        }
+        /* 逐点也受安全包线约束。
+         * 为什么不只靠上面的 profile 检查：`route` 是调用方给的，
+         * 不一定出自 `LzPlan_BuildOrbit`（探针、demo、将来的自动规划都可能
+         * 构造它）。校验的对象是**航线内容**，不是"生成它的那份剖面"。 */
+        if (wp->relativeAltM < LZ_PLAN_ALTITUDE_MIN_M ||
+            wp->relativeAltM > LZ_PLAN_ALTITUDE_MAX_M) {
             return LZ_ERR_UNSAFE;
         }
         if (wp->speedMs <= 0.0) {

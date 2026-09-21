@@ -13,6 +13,11 @@
 
 #include "lz_widget.h"
 
+/* 滑杆的映射区间取自规划层 —— 见文件下方"映射区间不在这里定义"的说明。
+ * 包含 lz_plan.h 而不是 lz_plan.c：常量定义在头文件里，零依赖，
+ * 不破坏 lz_app 与 lz_core 的分层（方向本来就是 lz_app → lz_core）。 */
+#include "lz_plan.h"
+
 #include <dji_logger.h>
 #include <dji_platform.h>
 #include <dji_widget.h>
@@ -34,16 +39,17 @@
 
 /* 范围条是 0–100 的百分比，这里映射到实际物理量。
  *
- * 高度上限 150 m 是 2026-09-20 按场地要求定的：场地地面海拔约 50–80 m，
- * 相对起飞点 100 m 即约 150 m ASL。
+ * ⚠️ **映射区间不在这里定义** —— 用 `lz_plan.h` 的 `LZ_PLAN_RADIUS_*` /
+ * `LZ_PLAN_ALTITUDE_*`。那是规划层安全校验用的**同一组**常量。
  *
- * ⚠️ 这是**相对起飞点**的高度（KMZ 里 executeHeightMode=relativeToStartPoint），
+ * 为什么不各写一份：先前控件层自备 30 m / 150 m 的上限，而 `LzPlan_Validate`
+ * 完全看不到它 —— 结果会出现"滑杆拨到底给 30 m，但校验按 20 m 拒绝"
+ * 这种界面与校验打架的情况。它只在起飞前才暴露，操作员看到的是
+ * "拨了开关但飞机不动"，无从判断是控件错了还是校验错了。
+ *
+ * ⚠️ 高度是**相对起飞点**（KMZ 里 executeHeightMode=relativeToStartPoint），
  *    不是绝对海拔。要飞真正的 ASL 高度得改高度模式并处理大地水准面差距，
  *    那是另一回事。 */
-#define LZ_RADIUS_MIN_M   5.0
-#define LZ_RADIUS_MAX_M   30.0
-#define LZ_ALTITUDE_MIN_M 5.0
-#define LZ_ALTITUDE_MAX_M 150.0
 
 #define LZ_MSG_MAX_LEN  256
 #define LZ_MSG_PERIOD_MS 500    /* 浮窗消息推送周期，远低于 2 KB/s 上限 */
@@ -52,8 +58,11 @@
 /* 状态                                                                */
 /* ------------------------------------------------------------------ */
 static bool s_orbitRequested = false;
-static int32_t s_radiusPercent = 50;   /* 默认 50% → 17.5 m，与 demo 的 20 m 接近 */
-static int32_t s_heightPercent = 66;   /* 默认 66% → 100.7 m 相对高度 ≈ 150 m ASL（场地地面约 50 m） */
+/* 默认档位。换算见下方 LzWidget_GetRadiusM/GetAltitudeM ——
+ * 区间收窄到 5–20 m / 5–120 m 后，50% → 12.5 m、66% → 约 80.9 m。
+ * 这两个值**不是**"设计目标值"，只是出厂默认，操作员可拨。 */
+static int32_t s_radiusPercent = 50;
+static int32_t s_heightPercent = 66;
 static T_DjiTaskHandle s_msgTask = NULL;
 static volatile bool s_msgTaskRun = false;
 static char s_msgBuf[LZ_MSG_MAX_LEN];
@@ -199,9 +208,26 @@ static void *LzWidget_MsgTask(void *arg)
     while (s_msgTaskRun) {
         /* 只在消息变化时才发 —— 避免刷屏，也省带宽（上限 2 KB/s） */
         if (strcmp(lastMsg, s_msgBuf) != 0) {
-            (void)DjiWidgetFloatingWindow_ShowMessage(s_msgBuf);
-            memcpy(lastMsg, s_msgBuf, sizeof(lastMsg) - 1);
-            lastMsg[sizeof(lastMsg) - 1] = '\0';
+            const T_DjiReturnCode rc = DjiWidgetFloatingWindow_ShowMessage(s_msgBuf);
+
+            /* ⚠️ 只有**发送成功**才把它记为"已发"。
+             *
+             * 早先的写法是发完就无条件 memcpy(lastMsg, ...)，于是
+             * 一次发送失败（通道未就绪 —— 头文件只说"发到浮窗"，不承诺成功）
+             * 会让这条消息**永远不再重发**：去重表认为它已经发过了。
+             *
+             * 后果不对称，所以要特别小心：浮窗是本项目
+             * **唯一**的操作员反馈通道（室外看不到 SDK 日志）。
+             * 一条普通的"半径设为 15 m"丢了无所谓，但
+             * "启动被拒：…" 丢了就等于没有反馈 ——
+             * 而通道刚就绪的那几百毫秒恰好是最容易失败的时刻。 */
+            if (rc == DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+                memcpy(lastMsg, s_msgBuf, sizeof(lastMsg) - 1);
+                lastMsg[sizeof(lastMsg) - 1] = '\0';
+            }
+            /* 失败时不动 lastMsg，下一拍自然会重试同一条。
+             * 不在这里 sleep 或重试 —— 本线程的周期是 500 ms，
+             * 由它充当退避就够了。 */
         }
         osal->TaskSleepMs(LZ_MSG_PERIOD_MS);
     }
@@ -338,21 +364,54 @@ bool LzWidget_IsOrbitRequested(void)
 
 double LzWidget_GetRadiusM(void)
 {
-    return lz_map_percent(s_radiusPercent, LZ_RADIUS_MIN_M, LZ_RADIUS_MAX_M);
+    return lz_map_percent(s_radiusPercent, LZ_PLAN_RADIUS_MIN_M, LZ_PLAN_RADIUS_MAX_M);
 }
 
 double LzWidget_GetAltitudeM(void)
 {
-    return lz_map_percent(s_heightPercent, LZ_ALTITUDE_MIN_M, LZ_ALTITUDE_MAX_M);
+    return lz_map_percent(s_heightPercent, LZ_PLAN_ALTITUDE_MIN_M, LZ_PLAN_ALTITUDE_MAX_M);
 }
 
+/**
+ * @brief 绕飞收尾：清本地意图 + 发一条结束消息
+ *
+ * ## ⚠️ 这里**做不到**把 Pilot 上的开关拨回去 —— 别再写成那样
+ *
+ * 曾经的实现是这样的（注释还写着"把开关程序化拨回 OFF"）：
+ *
+ *     (void)LzWidget_SetWidgetValue(DJI_WIDGET_TYPE_SWITCH, ..., OFF, NULL);
+ *
+ * 那是个**空头承诺**：`LzWidget_SetWidgetValue` 是**我们自己**注册给 PSDK 的
+ * 回调，被 Pilot 调用时才生效；直接调它只会改本地变量、再发一条浮窗消息。
+ * 它**不会**改变 Pilot 界面上的开关位置。
+ *
+ * 已核实 PSDK 没有反向推控件状态的接口：`dji_widget.h` 全部 9 个导出函数
+ * 里没有任何 setter（Init / Reg*UiConfig* / RegHandlerList /
+ * FloatingWindow_ShowMessage / FloatingWindow_GetChannelState /
+ * RegSpeakerHandler）；`dji_widget_manager.h` 的 `DjiWidgetManager_SetWidgetState`
+ * 目标是**机上挂载的负载**，不是本应用在 Pilot 上的 UI。
+ *
+ * ## 那实际会发生什么
+ *
+ * 操作员看到的是：**开关保持 ON**（持续可见），而浮窗飘过一行
+ * "绕飞结束：…"（会被下一条消息覆盖）。两条信息互相矛盾，
+ * 而持续可见的那条是**错的**。
+ *
+ * 所以这里改用**明确的持续措辞**：直接告诉操作员"开关仍在 ON 位，请手动拨回"。
+ * 与其假装能回弹，不如把这个事实说清楚 —— 后者操作员能处理，前者会误导。
+ *
+ * 注意 `s_orbitRequested = false` 仍然要置：它保证状态机不会因为
+ * 那个仍然 ON 的开关而**重新起飞**。也就是说开关的实际位置与本地意图
+ * 从这里开始就是不一致的，这正是必须在界面上说明的原因。
+ */
 void LzWidget_ReportOrbitFinished(const char *reason)
 {
     s_orbitRequested = false;
 
-    /* 把开关程序化拨回 OFF：不回弹的话，操作员会看到"开关 ON 但飞机停了"，
-     * 分不清是"已完成"还是"卡住了"。 */
-    (void)LzWidget_SetWidgetValue(DJI_WIDGET_TYPE_SWITCH, LZ_WIDGET_IDX_ORBIT_SWITCH,
-                                  DJI_WIDGET_SWITCH_STATE_OFF, NULL);
-    LzWidget_PostMessage("绕飞结束：%s", reason ? reason : "（未说明）");
+    /* 措辞里带上"请手动拨回"：
+     *   - 操作员不拨回，下次拨 ON 时 `s_orbitRequested` 本来就是 false，
+     *     回调会正常触发（值从 ON→OFF→ON，每次都有变化），功能不受影响；
+     *   - 但界面显示的"ON"与"已经结束"会长期矛盾，所以必须提醒。 */
+    LzWidget_PostMessage("绕飞结束：%s。⚠ 开关仍在 ON 位，请手动拨回",
+                         reason ? reason : "（未说明）");
 }

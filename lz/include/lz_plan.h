@@ -12,6 +12,31 @@
 
 #include "lz_target.h"
 
+/** @name 绕飞的安全包线
+ *
+ * 这组值是**硬约束**，`LzPlan_Validate` 按它拒绝超限的剖面。
+ *
+ * ⚠️ **唯一真值在这里**。控件层（`app/lz_widget.c` 的滑杆映射）必须引用
+ * 同一组常量，不得自备一份 —— 否则两处独立演进，会出现"控件允许 30 m
+ * 但校验拒绝 25 m"这种界面与校验打架的情况，而那种矛盾在起飞前
+ * 才暴露，操作员看到的是"拨了开关但飞机不动"。
+ *
+ * 取值的来历（不是技术推导，是现场约束，改动前先确认现场条件）：
+ *   - 半径上限 20 m —— 场地约束是"杆周围 20 m 内无建筑物"。
+ *     再大就出到这个范围之外了。
+ *   - 半径下限 5 m —— 杆高 15 m（`lz_pole_source.c` 的 heightM），
+ *     半径过小会让绕飞退化成围绕杆顶盘旋，且 8 点圆周的相邻弦长太短。
+ *   - 高度上限 120 m（**相对起飞点**）。注意不是绝对海拔：
+ *     KMZ 用 `executeHeightMode=relativeToStartPoint`。
+ *   - 高度下限 5 m。
+ */
+/** @{ */
+#define LZ_PLAN_RADIUS_MIN_M     5.0
+#define LZ_PLAN_RADIUS_MAX_M     20.0
+#define LZ_PLAN_ALTITUDE_MIN_M   5.0
+#define LZ_PLAN_ALTITUDE_MAX_M   120.0
+/** @} */
+
 /** 绕飞剖面：一次绕飞的全局参数 */
 typedef struct {
     double radiusM;         /*!< 环绕半径：飞机到杆的水平距离 m */

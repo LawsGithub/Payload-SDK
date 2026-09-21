@@ -193,6 +193,14 @@ LzStatus LzWpml_Build(const LzRoute *route,
     lz_str_addf(&t, "        <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>\n");
     lz_str_addf(&t, "        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>\n");
     lz_str_addf(&t, "        <wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>\n");
+    /* waypointHeadingPathMode 是**必需元素**（40.common-element.md 的
+     * `<wpml:waypointHeadingParam> & <wpml:globalWaypointHeadingParam>` 一节），
+     * 原实现漏了它。取值 followBadArc=沿最短路径旋转。
+     * 选它的理由：机头沿航线方向飞（waypointHeadingMode=followWayline），
+     * 绕飞中相邻航点的航向变化固定为一个步进角，三种取值里只有
+     * followBadArc 不假定转向方向 —— clockwise/counterClockwise 是给
+     * "指定目标航向、需要选一条路转过去"的场景用的。 */
+    lz_str_addf(&t, "        <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>\n");
     lz_str_addf(&t, "        <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>\n");
     lz_str_addf(&t, "      </wpml:globalWaypointHeadingParam>\n");
     lz_str_addf(&t, "      <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>\n");
@@ -224,6 +232,15 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&t, "            <wpml:actionId>0</wpml:actionId>\n");
         lz_str_addf(&t, "            <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>\n");
         lz_str_addf(&t, "            <wpml:actionActuatorFuncParam>\n");
+        /* ★ 绕飞核心：先声明 yaw 的绝对基准，再给绝对方位角
+         *
+         * gimbalHeadingYawBase 是 gimbalRotate 一节里的**必需元素**
+         * （40.common-element.md），声明 yaw 角"相对什么"。
+         * ️ 官方样例里也没有这个元素 —— 但官方样例的
+         * `gimbalYawRotateEnable` 是 **0**（它只用俯仰），所以缺它对样例无影响。
+         * **我们的 yaw 是使能的**，`absoluteAngle` 正是依赖"相对正北"这个基准，
+         * 声明基准的元素不能省。样例的"缺了也能飞"不能用来给我们开脱。 */
+        lz_str_addf(&t, "              <wpml:gimbalHeadingYawBase>north</wpml:gimbalHeadingYawBase>\n");
         lz_str_addf(&t, "              <wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>\n");
         lz_str_addf(&t, "              <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>\n");
         lz_str_addf(&t, "              <wpml:gimbalPitchRotateAngle>%.1f</wpml:gimbalPitchRotateAngle>\n", wp->gimbalPitchDeg);
@@ -242,6 +259,15 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&t, "      </Placemark>\n");
     }
 
+    /* payloadParam：template.kml 的 Folder 尾部元素。官方样例有它、我们没有。
+     * 规范（20.template-kml.md 的 `<wpml:payloadParam>` 一节）里它承载的是
+     * 负载对焦/测光/畸变等相机参数，而本项目不做拍照 —— 所以只写
+     * payloadPositionIndex（负载挂载位置），**不加 imageFormat** 等相机项。
+     * 与每个 action 里各写一遍 payloadPositionIndex 不重复：
+     * 那个是"动作作用于哪个负载"，这个是"整条航线默认作用于哪个负载"。 */
+    lz_str_addf(&t, "      <wpml:payloadParam>\n");
+    lz_str_addf(&t, "        <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>\n");
+    lz_str_addf(&t, "      </wpml:payloadParam>\n");
     lz_str_addf(&t, "    </Folder>\n  </Document>\n</kml>\n");
 
     /* ================= waylines.wpml ================= */
@@ -301,6 +327,9 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&w, "          <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>\n");
         lz_str_addf(&w, "          <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>\n");
         lz_str_addf(&w, "          <wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>\n");
+        /* waypointHeadingPathMode 是 waypointHeadingParam 的必需子元素，
+         * 见 template.kml 那处的说明（取值 followBadArc 的理由同）。 */
+        lz_str_addf(&w, "          <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>\n");
         lz_str_addf(&w, "          <wpml:waypointHeadingAngleEnable>0</wpml:waypointHeadingAngleEnable>\n");
         lz_str_addf(&w, "          <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>\n");
         lz_str_addf(&w, "        </wpml:waypointHeadingParam>\n");
@@ -321,6 +350,7 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&w, "            <wpml:actionId>0</wpml:actionId>\n");
         lz_str_addf(&w, "            <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>\n");
         lz_str_addf(&w, "            <wpml:actionActuatorFuncParam>\n");
+        lz_str_addf(&w, "              <wpml:gimbalHeadingYawBase>north</wpml:gimbalHeadingYawBase>\n");
         lz_str_addf(&w, "              <wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>\n");
         lz_str_addf(&w, "              <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>\n");
         lz_str_addf(&w, "              <wpml:gimbalPitchRotateAngle>%.1f</wpml:gimbalPitchRotateAngle>\n", wp->gimbalPitchDeg);

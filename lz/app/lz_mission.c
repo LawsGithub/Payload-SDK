@@ -43,6 +43,18 @@ static LzMissionState s_state = LZ_MISSION_STATE_IDLE;
 static volatile bool s_missionEnded = false;
 static char s_endReason[64];
 
+/* 停止被拒的告警只报一次的闸。
+ *
+ * 为什么需要：`LzMission_Tick()` 由主循环每 100 ms 调一次，而拨 OFF 后
+ * 开关会一直是 OFF —— 不加闸的话，STOP 每被拒一次就发一条浮窗，
+ * 每秒 10 条。那既刷屏，也可能把 SDK 的浮窗带宽（2 KB/s）吃光，
+ * 反而盖掉别的消息。
+ *
+ * 复位时机：只在"操作员重新拨 ON 又拨 OFF"后才复位。
+ * 不复位的话，第二次失败会被当成重复而静默 ——
+ * 而重复失败恰恰说明重试也没用，更需要报。 */
+static bool s_stopRejectReported = false;
+
 /* ------------------------------------------------------------------ */
 /* 航点状态回调（PSDK 工作线程）                                        */
 /* ------------------------------------------------------------------ */
@@ -220,9 +232,13 @@ void LzMission_Tick(void)
         if (lz_mission_start_orbit()) {
             s_state = LZ_MISSION_STATE_RUNNING;
             s_missionEnded = false;
+            s_stopRejectReported = false;   /* 新一轮作业，告警闸归零 */
         } else {
-            /* 启动失败：把开关拨回去，让界面反映真实状态。
-             * 不拨回的话操作员会以为飞机在飞。 */
+            /* 启动失败：清本地意图并发结束消息。
+             * ⚠️ 注意这**不会**把 Pilot 上的开关拨回去（PSDK 没有那个接口，
+             * 详见 lz_widget.h 的 LzWidget_ReportOrbitFinished 说明）——
+             * 实际是"开关保持 ON 而浮窗说启动失败"，所以消息里带上
+             * "请手动拨回"，不假装界面已经一致了。 */
             LzWidget_ReportOrbitFinished("启动失败");
         }
         break;
@@ -231,7 +247,34 @@ void LzMission_Tick(void)
     case LZ_MISSION_STATE_RUNNING: {
         /* 操作员中途拨 OFF → 立即停（见 lz_widget.h 的安全语义） */
         if (!LzWidget_IsOrbitRequested()) {
-            (void)LzBridge_StopMissionV3();
+            /* ⚠️ 这里**不能**丢弃返回值。
+             *
+             * 早先写成 `(void)LzBridge_StopMissionV3();` 然后无条件置 IDLE、
+             * 无条件报"绕飞结束：操作员停止" —— 于是 STOP 被拒时，
+             * 飞机还在杆旁边绕，而日志与界面都说已经停了。
+             * **静默的失败等于假装成功**，而在飞控语境里这直接关系到安全。
+             *
+             * 停止失败时**保持 RUNNING**：让状态与事实一致
+             * （任务确实还在跑），操作员再拨一次 OFF 就能重试。
+             * 若在这里置 IDLE，开关还在 ON 位而状态机认为空闲 ——
+             * 那个组合会让下一次 Tick 把它当成"新的绕飞请求"重新上传启动。 */
+            const LzStatus st = LzBridge_StopMissionV3();
+            if (st != LZ_OK) {
+                /* 只报一次：Tick 是 100 ms 一拍，而开关会一直保持 OFF，
+                 * 不加闸就会每秒刷 10 条浮窗。 */
+                if (!s_stopRejectReported) {
+                    s_stopRejectReported = true;
+                    /* 措辞要准确：此刻开关**已经在 OFF 位**，只拨 OFF 不会再
+                     * 触发回调（值没变化）。要重试必须走 OFF→ON→OFF，
+                     * 让控件值产生变化 —— 所以提示里要写清楚。 */
+                    LzWidget_PostMessage("停止指令被拒（%s）—— 任务可能仍在执行。"
+                                         "重试需把开关拨回 ON 再拨 OFF，"
+                                         "或直接用遥控器接管",
+                                         LzStatus_Str(st));
+                }
+                break;   /* 状态不动，留在 RUNNING */
+            }
+            s_stopRejectReported = false;
             s_state = LZ_MISSION_STATE_IDLE;
             LzWidget_ReportOrbitFinished("操作员停止");
             break;
