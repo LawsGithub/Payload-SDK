@@ -9,8 +9,18 @@
 #include "lz_plan.h"
 #include "lz_types.h"
 
-/** 起飞安全高度 m（相对起飞点） */
+/** 起飞安全高度 m（相对起飞点）
+ *
+ * 官方取值域（遥控器场景）：[1.2, 1500]。核实自 Cloud API 文档
+ * `60.api-reference/00.dji-wpml/30.waylines-wpml.md` 的 `wpml:takeOffSecurityHeight` 行。 */
 #define LZ_WPML_TAKEOFF_SECURITY_HEIGHT 20
+
+/** 返航高度的下限 m
+ *
+ * `wpml:globalRTHHeight` 是**必需元素**，官方说明是"飞行器返航时，
+ * 先爬升至该高度，再进行返航"。若它低于航线高度，返航就变成先下降再返航 ——
+ * 所以在 `LzWpml_Build` 里取 `max(航线高度, 本值)`，保证返航高度不会低于航线。 */
+#define LZ_WPML_RTH_HEIGHT_FLOOR_M 30
 
 /**
  * 机型 / 负载身份。

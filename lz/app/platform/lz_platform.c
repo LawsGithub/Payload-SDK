@@ -8,6 +8,7 @@
  */
 
 #include "lz_platform.h"
+#include "lz_sdk_log_watch.h"
 
 #include <dji_logger.h>
 #include <dji_platform.h>
@@ -41,14 +42,26 @@ static FILE *s_logIndexFile;
 /* 两个 console：一个打到 stdout，一个落文件                            */
 /* ------------------------------------------------------------------ */
 
+/* ️ 两个 console 都先把数据喂给日志抓取。
+ *
+ * 为什么两个都喂而不是只喂一个：不能保证"哪个 console 会拿到哪一段" ——
+ * 它们是各自独立的注册项。**重复喂是无害的**（`LzSdkLogWatch_Feed` 只保留
+ * 最近一次命中，同样的字节流喂两遍得到同样的状态），但漏喂会丢行。
+ * 宁可做两遍也不能漏。
+ *
+ * 为什么必须**先喂再输出**：`printf`/`fwrite` 可能阻塞（管道满、磁盘慢），
+ * 而我们要抓的那几行恰恰出现在"应用即将因为启动失败而做别的事"的时刻 ——
+ * 顺序反了就可能在那之前丢行。 */
 static T_DjiReturnCode LzPlatform_PrintConsole(const uint8_t *data, uint16_t dataLen)
 {
+    LzSdkLogWatch_Feed(data, dataLen);
     printf("%.*s", dataLen, data);
     return DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS;
 }
 
 static T_DjiReturnCode LzPlatform_LogWrite(const uint8_t *data, uint16_t dataLen)
 {
+    LzSdkLogWatch_Feed(data, dataLen);
     if (s_logFile == NULL) {
         return DJI_ERROR_SYSTEM_MODULE_CODE_UNKNOWN;
     }

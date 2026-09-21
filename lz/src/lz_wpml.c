@@ -17,6 +17,12 @@
  * 官方样例里 `gimbalYawRotateEnable` 是 **0**（它只需要俯仰）。
  * 绕飞要的正是 yaw —— 把它置 1、角度填绝对方位角，光轴就指向杆心。
  *
+ * ️ 但**官方样例不能作为"哪些元素必需"的权威**：实测它自身缺
+ * `wpml:globalRTHHeight`（官方标为必需元素），照样能飞。所以本文件的
+ * 必需元素清单以 Cloud API 的 wpml 规范为准，不以样例为准。依据：
+ * `~/projects/.psdk-apiref/docs` 之外的 Cloud-API-Doc 仓库，
+ * `docs/cn/60.api-reference/00.dji-wpml/{20.template-kml,30.waylines-wpml,40.common-element}.md`。
+ *
  * ## 两个文件的差别
  *
  * - `template.kml`：模板，带 `templateType/waylineCoordinateSysParam` 等
@@ -34,6 +40,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/**
+ * @brief 把方位角折算到 wpml 要求的 [-180, 180]
+ *
+ * `LzGeo_BearingDeg()` 给的是 [0, 360)。`gimbalYawRotateAngle` 的取值域
+ * 在官方文档里写的是 `[-180, 180]`（见 Cloud API 文档
+ * `00.dji-wpml/40.common-element.md` 的 gimbalRotate 一节），
+ * **[0, 360) 的值落在域外**。180.0 映射到 -180.0，
+ * 两者指同一方向（正南），但域内的那个才是合法的。
+ *
+ * 为什么放在这一层而不是 lz_core 的 LzGeo：`LzGeo_NormalizeDeg` 是几何量的
+ * 规范区间（[0,360) 左闭右开），wpml 的 [-180,180] 是**文件格式**的取值域。
+ * 混在一起会让测试里那条"极小负数加 360 舍入成 360.0"的边界断言失去意义。
+ */
+static double lz_yaw_to_signed(double deg)
+{
+    double d = LzGeo_NormalizeDeg(deg);
+    if (d > 180.0) {
+        d -= 360.0;
+    }
+    return d;
+}
 
 /* 单份 XML 的预估大小。
  * ⚠️ 这个值是**估计**，不够时会返回 LZ_ERR_RANGE（见 lz_str_addf 的说明）。
@@ -112,6 +140,14 @@ LzStatus LzWpml_Build(const LzRoute *route,
     const int payloadEnum = out->identity.payloadEnumValue;
     const int payloadSub  = out->identity.payloadSubEnumValue;
 
+    /* 返航高度：取航线高度与下限的较大者。飞机完成航线后按 finishAction=goHome
+     * 返航，会先爬升到 globalRTHHeight —— 若它低于航线高度，返航前半段是下降，
+     * 而此刻飞机就在杆的上方（圆心是杆，站点在半径 17.5 m 处）。 */
+    double rthHeight = profile->altitudeM;
+    if (rthHeight < (double)LZ_WPML_RTH_HEIGHT_FLOOR_M) {
+        rthHeight = (double)LZ_WPML_RTH_HEIGHT_FLOOR_M;
+    }
+
     /* ================= template.kml ================= */
     lz_str_addf(&t, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     lz_str_addf(&t, "<kml xmlns=\"http://www.opengis.net/kml/2.2\" xmlns:wpml=\"http://www.dji.com/wpmz/1.0.3\">\n");
@@ -125,6 +161,10 @@ LzStatus LzWpml_Build(const LzRoute *route,
                 LZ_WPML_TAKEOFF_SECURITY_HEIGHT);
     lz_str_addf(&t, "      <wpml:globalTransitionalSpeed>%.1f</wpml:globalTransitionalSpeed>\n",
                 profile->speedMs);
+    /* globalRTHHeight 是**必需元素**（官方文档 30.waylines-wpml.md:135 /
+     * 20.template-kml.md:164 均标"必需元素"），原实现漏了它。
+     * 取航线高度与下限的较大者：返航高度低于航线高度会变成"先下降再返航"。 */
+    lz_str_addf(&t, "      <wpml:globalRTHHeight>%.1f</wpml:globalRTHHeight>\n", rthHeight);
     lz_str_addf(&t, "      <wpml:droneInfo>\n");
     lz_str_addf(&t, "        <wpml:droneEnumValue>%d</wpml:droneEnumValue>\n", droneEnum);
     lz_str_addf(&t, "        <wpml:droneSubEnumValue>%d</wpml:droneSubEnumValue>\n", droneSub);
@@ -191,7 +231,8 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&t, "              <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>\n");
         /* ★ 绕飞核心：yaw 使能 + 绝对方位角 */
         lz_str_addf(&t, "              <wpml:gimbalYawRotateEnable>1</wpml:gimbalYawRotateEnable>\n");
-        lz_str_addf(&t, "              <wpml:gimbalYawRotateAngle>%.1f</wpml:gimbalYawRotateAngle>\n", wp->gimbalYawDeg);
+        lz_str_addf(&t, "              <wpml:gimbalYawRotateAngle>%.1f</wpml:gimbalYawRotateAngle>\n",
+                    lz_yaw_to_signed(wp->gimbalYawDeg));
         lz_str_addf(&t, "              <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>\n");
         lz_str_addf(&t, "              <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>\n");
         lz_str_addf(&t, "              <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>\n");
@@ -215,6 +256,7 @@ LzStatus LzWpml_Build(const LzRoute *route,
     lz_str_addf(&w, "      <wpml:takeOffSecurityHeight>%d</wpml:takeOffSecurityHeight>\n",
                 LZ_WPML_TAKEOFF_SECURITY_HEIGHT);
     lz_str_addf(&w, "      <wpml:globalTransitionalSpeed>%.1f</wpml:globalTransitionalSpeed>\n", profile->speedMs);
+    lz_str_addf(&w, "      <wpml:globalRTHHeight>%.1f</wpml:globalRTHHeight>\n", rthHeight);
     lz_str_addf(&w, "      <wpml:droneInfo>\n");
     lz_str_addf(&w, "        <wpml:droneEnumValue>%d</wpml:droneEnumValue>\n", droneEnum);
     lz_str_addf(&w, "        <wpml:droneSubEnumValue>%d</wpml:droneSubEnumValue>\n", droneSub);
@@ -285,7 +327,8 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&w, "              <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>\n");
         lz_str_addf(&w, "              <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>\n");
         lz_str_addf(&w, "              <wpml:gimbalYawRotateEnable>1</wpml:gimbalYawRotateEnable>\n");
-        lz_str_addf(&w, "              <wpml:gimbalYawRotateAngle>%.1f</wpml:gimbalYawRotateAngle>\n", wp->gimbalYawDeg);
+        lz_str_addf(&w, "              <wpml:gimbalYawRotateAngle>%.1f</wpml:gimbalYawRotateAngle>\n",
+                    lz_yaw_to_signed(wp->gimbalYawDeg));
         lz_str_addf(&w, "              <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>\n");
         lz_str_addf(&w, "              <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>\n");
         lz_str_addf(&w, "              <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>\n");

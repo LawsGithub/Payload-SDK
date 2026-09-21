@@ -16,6 +16,7 @@
 
 #include "lz_bridge_psdk.h"
 #include "lz_types.h"
+#include "platform/lz_sdk_log_watch.h"
 
 #include <dji_fc_subscription.h>
 #include <dji_logger.h>
@@ -484,9 +485,27 @@ LzStatus LzBridge_UploadKmzV3(const char *kmzPath, bool startImmediately)
         rc = DjiWaypointV3_Action(DJI_WAYPOINT_V3_ACTION_START);
         if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
             /* 这里是本项目最需要可观测性的一处：上传明明成功了，飞机却拒绝启动。
-             * PSDK 不给错误码（见头文件里的能力边界说明），只能靠自己把状态打出来。 */
-            USER_LOG_ERROR("启动航点任务被拒 rc=0x%08X（上传是成功的，问题在启动条件）",
-                           (unsigned)rc);
+             *
+             * ⚠️ 打印必须用 %llX 配 64 位 —— `T_DjiReturnCode` 是 uint64_t
+             * （dji_typedef.h:80），PSDK 的返回码把「模块号」放在高 32 位
+             * （DJI_ERROR_MODULE_INDEX_OFFSET = 32）。用 (unsigned) 截成 32 位
+             * 就把模块号整个丢掉了，只剩一个光秃秃的 raw code，
+             * 看起来像"小错误码"而实际含义完全不同。 */
+            USER_LOG_ERROR("启动航点任务被拒 rc=0x%08llX（上传是成功的，问题在启动条件）",
+                           (unsigned long long)rc);
+
+            /* 先看能不能从 SDK 自己的日志流里捞到飞机给的真实原因
+             * （如 error_code: 770 = 当前 RC 模式下无法启动）。捞不到不算错，
+             * 那只是少一条信息 —— 下面还有状态摘要兜底。 */
+            const char *real = LzSdkLogWatch_LastStartReject();
+            if (real != NULL) {
+                USER_LOG_ERROR("  ↑ 飞机给出的原因（摘自 SDK 日志）：%s", real);
+            }
+            const char *act = LzSdkLogWatch_LastActionError();
+            if (act != NULL) {
+                USER_LOG_ERROR("  ↑ SDK 把同一失败转成的返回值：%s", act);
+            }
+
             LzBridge_LogStartPreconditions();
             return LZ_ERR_START;
         }

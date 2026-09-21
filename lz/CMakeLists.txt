@@ -56,7 +56,7 @@ option(LZ_BUILD_TESTS "编译并注册 PC 侧回归测试" ON)
 
 if(LZ_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     enable_testing()
-    foreach(lz_test lz_test_geo lz_test_plan lz_test_bridge lz_test_kmz)
+    foreach(lz_test lz_test_geo lz_test_plan lz_test_bridge lz_test_kmz lz_test_wpml)
         add_executable(${lz_test} tests/${lz_test}.c)
         target_include_directories(${lz_test} PRIVATE tests)
         target_link_libraries(${lz_test} PRIVATE lz_core)
@@ -163,6 +163,7 @@ if(LZ_BUILD_PSDK_APP)
     set(LZ_PLATFORM_SRC
         app/platform/lz_platform.c
         app/platform/lz_user_info.c
+        app/platform/lz_sdk_log_watch.c
         ${LZ_M3_DIR}/hal/hal_usb_bulk.c
         ${LZ_COMMON_DIR}/osal/osal.c
         ${LZ_COMMON_DIR}/osal/osal_fs.c
