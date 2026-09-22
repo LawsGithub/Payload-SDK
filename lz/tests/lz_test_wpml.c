@@ -401,6 +401,43 @@ int main(void)
         LzRoute_Free(&route);
     }
 
+    LZ_CASE("结束动作必须是 gotoFirstWaypoint，不是 goHome");
+    {
+        /* 用户 2026-09-22 要求"结束后回到起点"。
+         *
+         * 规范里的"航线起始点"是**航线第一个航点**（圆周上那一点，
+         * 在杆旁边），不是起飞点 —— 见 lz_wpml.h 的 LZ_WPML_FINISH_ACTION。
+         *
+         * 两份文件都要写对：规范在两份里都标**必需元素**，
+         * 而飞机实际执行读的是 waylines.wpml。 */
+        LzTarget p = pole();
+        const LzGeo takeoff = p.geo;
+        LzOrbitProfile pr = profile_of(100.7);
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &takeoff, &pr, &route) == LZ_OK);
+
+        LzWpmlFiles f = build(&route, &p, &pr);
+        if (f.templateKml != NULL && f.waylinesWpml != NULL) {
+            LZ_CHECK(count_occurrences(f.templateKml,
+                       "<wpml:finishAction>gotoFirstWaypoint</wpml:finishAction>") == 1);
+            LZ_CHECK(count_occurrences(f.waylinesWpml,
+                       "<wpml:finishAction>gotoFirstWaypoint</wpml:finishAction>") == 1);
+
+            /* goHome 绝不能再出现 —— 它会让飞机返航而不是停在起点。
+             * 这条是本次改动的**唯一**防线：写错了 wpml 仍然合法、
+             * 照样能上传启动，只是飞完就跑了。 */
+            LZ_CHECK(strstr(f.templateKml, ">goHome<") == NULL);
+            LZ_CHECK(strstr(f.waylinesWpml, ">goHome<") == NULL);
+
+            /* 常量与落盘内容必须一致 —— 防止有人改了常量却漏改字符串 */
+            LZ_CHECK_NEAR((double)strlen(LZ_WPML_FINISH_ACTION), 17.0, 0.0);
+            LZ_CHECK(strcmp(LZ_WPML_FINISH_ACTION, "gotoFirstWaypoint") == 0);
+        }
+        LzWpml_Free(&f);
+        LzRoute_Free(&route);
+    }
+
     LZ_CASE("转弯模式：曲线段走 toPointAndPass…，且截距合规");
     {
         /* ★ 这条是"物理圆"需求的 wpml 契约 —— 用户 2026-09-22 要求

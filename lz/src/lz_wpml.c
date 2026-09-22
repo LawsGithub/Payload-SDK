@@ -189,9 +189,18 @@ LzStatus LzWpml_Build(const LzRoute *route,
     const int payloadEnum = out->identity.payloadEnumValue;
     const int payloadSub  = out->identity.payloadSubEnumValue;
 
-    /* 返航高度：取航线高度与下限的较大者。飞机完成航线后按 finishAction=goHome
-     * 返航，会先爬升到 globalRTHHeight —— 若它低于航线高度，返航前半段是下降，
-     * 而此刻飞机就在杆的上方（圆心是杆，站点在半径 17.5 m 处）。 */
+    /* 返航高度：取航线高度与下限的较大者。
+     *
+     * ⚠️ 这条推理的历史与现状要分清（2026-09-23 更新）：
+     *
+     * 原实现 `finishAction=goHome`，完成任务后爬升到 globalRTHHeight 再返航 ——
+     * 若它低于航线高度，返航前半段是下降，而此刻飞机就在杆的上方。
+     * 这是"取 max"的**原初理由**。
+     *
+     * 现在 `finishAction=gotoFirstWaypoint`（见 lz_wpml.h），**不再返航**，
+     * 所以这个理由在本流程里已不成立。**但取值不改、常量保留**：
+     * `globalRTHHeight` 是必需元素，且操作员手动按返航、或触发失控返航时，
+     * 它仍是飞机实际使用的返航高度 —— 该值低于航线高度那个隐患依然存在。 */
     double rthHeight = profile->altitudeM;
     if (rthHeight < (double)LZ_WPML_RTH_HEIGHT_FLOOR_M) {
         rthHeight = (double)LZ_WPML_RTH_HEIGHT_FLOOR_M;
@@ -210,7 +219,7 @@ LzStatus LzWpml_Build(const LzRoute *route,
     lz_str_addf(&t, "  <Document>\n");
     lz_str_addf(&t, "    <wpml:missionConfig>\n");
     lz_str_addf(&t, "      <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>\n");
-    lz_str_addf(&t, "      <wpml:finishAction>goHome</wpml:finishAction>\n");
+    lz_str_addf(&t, "      <wpml:finishAction>%s</wpml:finishAction>\n", LZ_WPML_FINISH_ACTION);
     lz_str_addf(&t, "      <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>\n");
     lz_str_addf(&t, "      <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>\n");
     lz_str_addf(&t, "      <wpml:takeOffSecurityHeight>%d</wpml:takeOffSecurityHeight>\n",
@@ -351,7 +360,7 @@ LzStatus LzWpml_Build(const LzRoute *route,
     lz_str_addf(&w, "  <Document>\n");
     lz_str_addf(&w, "    <wpml:missionConfig>\n");
     lz_str_addf(&w, "      <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>\n");
-    lz_str_addf(&w, "      <wpml:finishAction>goHome</wpml:finishAction>\n");
+    lz_str_addf(&w, "      <wpml:finishAction>%s</wpml:finishAction>\n", LZ_WPML_FINISH_ACTION);
     lz_str_addf(&w, "      <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>\n");
     lz_str_addf(&w, "      <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>\n");
     lz_str_addf(&w, "      <wpml:takeOffSecurityHeight>%d</wpml:takeOffSecurityHeight>\n",

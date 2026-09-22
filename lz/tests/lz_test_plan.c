@@ -344,6 +344,48 @@ int main(void)
         LzRoute_Free(&route);
     }
 
+    LZ_CASE("收尾行为的前置条件：飞完最后一点即已在起点上");
+    {
+        /* finishAction = gotoFirstWaypoint 的含义是"完成后飞向航线起始点"。
+         * 我们额外补了与首点**坐标重合**的收尾点，所以飞完最后一个点时
+         * 飞机**已经**在 p0 上了 —— 本动作几乎立即结束。
+         *
+         * 这两件事合起来才成立：wpml 侧保证指令对（lz_test_wpml 有专门用例），
+         * 这里保证指令**下有意义**。若哪天有人去掉收尾点，
+         * gotoFirstWaypoint 就变成"再飞一段回 p0"—— 语义变了，
+         * 而且那一段在航线之外、朝向不受控。本用例就是守这个。 */
+        LzTarget p = pole();
+        LzGeo to = p.geo;
+
+        for (int n = 3; n <= 16; n += 1) {
+            LzOrbitProfile pr = profile();
+            pr.waypointCount = n;
+            LzRoute route;
+            LzRoute_Init(&route);
+            LZ_CHECK(LzPlan_BuildOrbit(&p, &to, &pr, &route) == LZ_OK);
+
+            /* 点数：n 个方位 + 1 个重合收尾点 */
+            LZ_CHECK(route.count == (size_t)n + 1);
+
+            /* 末点即起点 —— 飞机到达"起始点"时任务已自然走完 */
+            const LzWaypoint *first = &route.points[0];
+            const LzWaypoint *last = &route.points[route.count - 1];
+            LZ_CHECK(LzGeo_DistanceM(&last->geo, &first->geo) < 0.01);
+            LZ_CHECK(last->geo.latitudeDeg == first->geo.latitudeDeg);
+            LZ_CHECK(last->geo.longitudeDeg == first->geo.longitudeDeg);
+            /* 末点是**真实航点**，不是占位 —— 高度/速度必须和别处一样有效 */
+            LZ_CHECK(last->relativeAltM > 0.0);
+            LZ_CHECK(last->speedMs > 0.0);
+            LZ_CHECK(isfinite(last->gimbalYawDeg));
+            LZ_CHECK(isfinite(last->gimbalPitchDeg));
+
+            /* 起始点必须在圆周上（不是误取成圆心或起飞点） */
+            LZ_CHECK_NEAR(LzGeo_DistanceM(&first->geo, &p.geo), pr.radiusM, 0.5);
+
+            LzRoute_Free(&route);
+        }
+    }
+
     LZ_CASE("提前转弯截距：由真实几何反算，满足规范两条约束");
     {
         /* 规范对 waypointTurnDampingDist 有两条硬约束：

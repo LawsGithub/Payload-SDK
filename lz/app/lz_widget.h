@@ -36,6 +36,10 @@
  * ⚠️ 但 STOP 之后飞机停在原地，**不会自动返航**。若操作员不接管，飞机就悬停在
  * 那里耗电。这是刻意的：把"接下来怎么办"的决定权交给人，而不是程序替他决定
  * （自动返航可能穿越操作员正想避开的区域）。
+ *
+ * ⚠️ **任务正常结束也一样不返航** —— `finishAction=gotoFirstWaypoint`，
+ * 飞机停在航线起始点（杆旁边）悬停。两条路径的收尾行为一致，
+ * 操作员无论怎样结束都需要手动接管。
  */
 
 #ifndef LZ_WIDGET_H
@@ -126,10 +130,28 @@ int LzWidget_GetWaypointCount(void);
 bool LzWidget_TakeRecordRequest(LzPoleRecordKind *kind);
 
 /**
- * @brief 报告绕飞已结束，把开关**程序化地**拨回 OFF
+ * @brief 报告绕飞已结束，并提醒操作员开关仍在 ON 位
  *
- * 用途：航点执行完毕或出错时调用，让界面上的开关与实际状态一致。
- * 若不回弹，操作员会看到"开关是 ON 但飞机已经停了"，容易误判。
+ * ## ⚠️ 它**做不到**把开关程序化拨回 OFF —— 别再照旧描述写
+ *
+ * 旧版本这句注释写的是"把开关**程序化地**拨回 OFF"，而实现里明确说明做不到：
+ * `LzWidget_SetWidgetValue` 是**我们自己**注册给 PSDK 的回调，被 Pilot 调用时
+ * 才生效 —— 直接调它只改本地变量，**不会**改变 Pilot 界面上的开关位置。
+ * PSDK 没有反向推控件状态的接口（`dji_widget.h` 9 个导出函数全是
+ * Init / Reg* / FloatingWindow*，无 setter；`dji_widget_manager.h` 的
+ * `SetWidgetState` 目标是机上挂载的负载，不是本应用的 UI）。
+ *
+ * 所以实际行为是：**开关保持 ON（持续可见），浮窗飘过一行"绕飞结束：…"**。
+ * 两条信息互相矛盾，而持续可见的那条是**错的** —— 因此实现改用
+ * "开关仍在 ON 位，请手动拨回"这种明确措辞。
+ *
+ * ## 收尾后飞机在哪
+ *
+ * `finishAction = gotoFirstWaypoint`（见 `lz_wpml.h`）—— 飞完最后一个航点
+ * （与首点重合）即退出航线模式，**停在航线起始点悬停，不返航、不降落**。
+ * 与拨 OFF 急停的行为一致：把"接下来怎么办"交给操作员。
+ *
+ * @param reason 结束原因，会写进浮窗消息
  */
 void LzWidget_ReportOrbitFinished(const char *reason);
 

@@ -55,7 +55,7 @@ waypoint_v3_test_file.kmz`，3856 字节）为例，解出来是
 
 ```xml
 <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>
-<wpml:finishAction>goHome</wpml:finishAction>
+<wpml:finishAction>gotoFirstWaypoint</wpml:finishAction>
 <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
 <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
 <wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>
