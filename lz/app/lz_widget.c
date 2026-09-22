@@ -3,7 +3,7 @@
  * @brief 控件模块实现。
  *
  * 骨架取自官方样例 `samples/sample_c/module_sample/widget/test_widget.c`，
- * 砍到只剩本项目需要的**五个**控件。**初始化四步的顺序不能变**：
+ * 砍到只剩本项目需要的**六个**控件。**初始化四步的顺序不能变**：
  *
  *   1. DjiWidget_Init()
  *   2. 注册 UI 配置（Linux 下用 ByDirPath；RTOS 下用 ByBinaryArray）
@@ -36,7 +36,7 @@
 /* ------------------------------------------------------------------ */
 /* 控件索引（必须与 app/widget_file 下的 widget_config.json 一致）        */
 /*                                                                     */
-/* 这 5 个索引必须与两份 json 的 widget_index 一一对应 —— PSDK 按索引     */
+/* 这 6 个索引必须与两份 json 的 widget_index 一一对应 —— PSDK 按索引     */
 /* 把界面控件分派给 handler，对不上的后果是"按了 A 按钮却执行了 B 的       */
 /* 动作"，而两边都不会报错。                                             */
 /* ------------------------------------------------------------------ */
@@ -45,7 +45,8 @@
 #define LZ_WIDGET_IDX_HEIGHT_SCALE 2
 #define LZ_WIDGET_IDX_RECORD_AIRCRAFT 3
 #define LZ_WIDGET_IDX_RECORD_LASER    4
-#define LZ_WIDGET_COUNT               5
+#define LZ_WIDGET_IDX_WAYPOINT_BOX    5
+#define LZ_WIDGET_COUNT               6
 
 /* 范围条是 0–100 的百分比，这里映射到实际物理量。
  *
@@ -82,6 +83,18 @@ static LzPoleRecordKind s_recordKind = LZ_POLE_RECORD_AIRCRAFT;
  * 这两个值**不是**"设计目标值"，只是出厂默认，操作员可拨。 */
 static int32_t s_radiusPercent = 50;
 static int32_t s_heightPercent = 66;
+/* 航点数：**绝对个数**，不是百分比。
+ *
+ * 为什么不像半径/高度那样用 scale 滑杆：滑杆只有 0–100 的整数档，
+ * 而航点数是很有界的量（3–64），用输入框能让操作员直接填 16、24，
+ * 而不必心算"要拨到第几档"。
+ *
+ * ⚠️ 它是**共享状态**，由 PSDK 回调线程写、主循环读，两个方向都要过
+ * 夹取闸门 —— 回调可能收到越界值（界面配置或手输），主循环也可能在
+ * 回调尚未触发时读到这个初值。写入时夹取保证状态永远合法，
+ * 读取时再夹一次是**防御**（与 ``LzPole_Record*`` 的"判据给邻域"同源思路：
+ * 不假设上游一定守规矩）。 */
+static int32_t s_waypointInput = 8;
 static T_DjiTaskHandle s_msgTask = NULL;
 static volatile bool s_msgTaskRun = false;
 static char s_msgBuf[LZ_MSG_MAX_LEN];
@@ -122,8 +135,9 @@ static T_DjiReturnCode LzWidget_SetWidgetValue(E_DjiWidgetType widgetType, uint3
         }
         if (value == DJI_WIDGET_SWITCH_STATE_ON) {
             s_orbitRequested = true;
-            LzWidget_PostMessage("收到绕飞请求：半径 %.1f m，高度 %.1f m",
-                                 LzWidget_GetRadiusM(), LzWidget_GetAltitudeM());
+            LzWidget_PostMessage("收到绕飞请求：半径 %.1f m，高度 %.1f m，%d 个航点",
+                                 LzWidget_GetRadiusM(), LzWidget_GetAltitudeM(),
+                                 LzWidget_GetWaypointCount());
         } else {
             s_orbitRequested = false;
             LzWidget_PostMessage("收到停止请求");
@@ -139,6 +153,31 @@ static T_DjiReturnCode LzWidget_SetWidgetValue(E_DjiWidgetType widgetType, uint3
         s_heightPercent = value;
         LzWidget_PostMessage("高度设为 %.1f m", LzWidget_GetAltitudeM());
         break;
+
+    /* ---- 航点数输入框 ----
+     *
+     * ⚠️ 输入框的 value 是操作员**任意敲的整数**，可能远超合理范围
+     * （甚至为负）。所以这里必须夹取，且夹取后要**回一条消息**告诉操作员
+     * 实际生效值 —— 否则他填了 100、界面显示 100、而飞机按 64 飞，
+     * 这个差异要等到航线画出来才发现。
+     *
+     * 为什么不在回调里直接拒绝非法值：控件是"设置"语义，不是"提交"语义，
+     * 拒绝会让输入框停在那个非法值上不动。夹取 + 告知符合操作员预期。 */
+    case LZ_WIDGET_IDX_WAYPOINT_BOX: {
+        if (widgetType != DJI_WIDGET_TYPE_INT_INPUT_BOX) {
+            return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
+        }
+        const int clamped = LzPlan_ClampWaypointCount((int)value);
+        s_waypointInput = clamped;
+        if (clamped != (int)value) {
+            LzWidget_PostMessage("航点数 %d 超出 %d–%d，已按 %d 使用",
+                                 (int)value, LZ_PLAN_WAYPOINT_MIN,
+                                 LZ_PLAN_WAYPOINT_MAX, clamped);
+        } else {
+            LzWidget_PostMessage("航点数设为 %d", clamped);
+        }
+        break;
+    }
 
     /* ---- 两个"记录绕飞圆心"按钮 ----
      *
@@ -200,6 +239,14 @@ static T_DjiReturnCode LzWidget_GetWidgetValue(E_DjiWidgetType widgetType, uint3
     case LZ_WIDGET_IDX_HEIGHT_SCALE:
         *value = s_heightPercent;
         break;
+    /* 打开界面时要把当前值推给 Pilot —— 不实现的话它会显示默认值，
+     * 与主循环实际用的值不一致。 */
+    case LZ_WIDGET_IDX_WAYPOINT_BOX:
+        if (widgetType != DJI_WIDGET_TYPE_INT_INPUT_BOX) {
+            return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
+        }
+        *value = s_waypointInput;
+        break;
     /* 按钮没有"当前值"可读 —— 它是瞬时动作，不是状态。
      * 回 `RELEASE_UP` 让界面显示为未按下，与"按一下就弹回"的物理直觉一致。 */
     case LZ_WIDGET_IDX_RECORD_AIRCRAFT:
@@ -225,6 +272,10 @@ static const T_DjiWidgetHandlerListItem s_widgetHandlerList[LZ_WIDGET_COUNT] = {
      * "按了 A 按钮却执行了 B 的动作"，而两边都不会报错。 */
     {LZ_WIDGET_IDX_RECORD_AIRCRAFT, DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
     {LZ_WIDGET_IDX_RECORD_LASER,    DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
+    /* 航点数输入框。类型是 int_input_box —— 与 json 里的
+     * "widget_type": "int_input_box" 必须一致，否则 PSDK 分派时会因
+     * 类型不匹配拒绝（handler 里我们对 widgetType 做了校验）。 */
+    {LZ_WIDGET_IDX_WAYPOINT_BOX,    DJI_WIDGET_TYPE_INT_INPUT_BOX, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
 };
 
 /* ------------------------------------------------------------------ */
@@ -396,8 +447,9 @@ T_DjiReturnCode LzWidget_Init(void)
         return rc;
     }
 
-    LzWidget_PostMessage("就绪：半径 %.1f m，高度 %.1f m，等待操作员拨开关",
-                         LzWidget_GetRadiusM(), LzWidget_GetAltitudeM());
+    LzWidget_PostMessage("就绪：半径 %.1f m，高度 %.1f m，%d 个航点，等待操作员拨开关",
+                         LzWidget_GetRadiusM(), LzWidget_GetAltitudeM(),
+                         LzWidget_GetWaypointCount());
     return DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS;
 }
 
@@ -431,6 +483,14 @@ double LzWidget_GetRadiusM(void)
 double LzWidget_GetAltitudeM(void)
 {
     return lz_map_percent(s_heightPercent, LZ_PLAN_ALTITUDE_MIN_M, LZ_PLAN_ALTITUDE_MAX_M);
+}
+
+int LzWidget_GetWaypointCount(void)
+{
+    /* 读时再夹一次：s_waypointInput 由回调线程写，主循环可能读到回调
+     * 尚未执行时的初值，也可能读到将来某次改动引入的越界值。
+     * 夹取是纯函数、开销可忽略，不做"上游一定守规矩"的假设。 */
+    return LzPlan_ClampWaypointCount((int)s_waypointInput);
 }
 
 /**

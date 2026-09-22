@@ -37,6 +37,41 @@
 #define LZ_PLAN_ALTITUDE_MAX_M   120.0
 /** @} */
 
+/** @name 航点数的允许区间
+ *
+ * 操作员可在 Pilot 2 的「航点数」输入框里直接填，控件层用
+ * `LzPlan_ClampWaypointCount()` 夹到这个区间，`LzPlan_Validate` 用同一组
+ * 常量复核 —— **两处必须同源**，理由与上面那组包线相同。
+ *
+ * 取值的来历：
+ *   - 下限 3 —— **几何必然**，两个点连不成圆（原本就写死的判据，搬到这里）。
+ *   - 上限 64 —— **现场判断，不是规范限制**。KMZ 协议本身能收 200 个
+ *     （DJI Fly 文档"新增航点数量最多 200 个"），但本项目的转弯模式是
+ *     `toPointAndStopWithDiscontinuityCurvature`（**到点停**），
+ *     n 个点就是 n 次起停。5 m 半径（下限）配 64 点时相邻弦长只剩 0.49 m，
+ *     飞机会一直在"停—起步"之间抖；再往上没有实际收益。
+ *     若将来改走曲线过点（`toPointAndPassWithContinuityCurvature`），
+ *     这个上限应当重新评估。
+ */
+/** @{ */
+#define LZ_PLAN_WAYPOINT_MIN 3
+#define LZ_PLAN_WAYPOINT_MAX 64
+/** @} */
+
+/**
+ * @brief 把操作员填的航点数夹到合法区间
+ *
+ * ## 为什么是零依赖的独立函数，而不是在控件回调里写两句 if
+ *
+ * 与 `LzPole_JudgeLaserReading()` 同一个理由：控件层（`app/lz_widget.c`）
+ * 依赖 PSDK，在桌面上**编译不了也测不了** —— 夹取逻辑写在那里就等于没有测试。
+ * 抽到这里之后 `tests/lz_test_plan.c` 能直接断言边界行为。
+ *
+ * 夹取而不拒绝：操作员输入框里敲了 100，正确的反应是"按 64 飞并告诉操作员"，
+ * 而不是"拨开关没反应"。真正的拒绝留给 `LzPlan_Validate`（起飞前最后一道关）。
+ */
+int LzPlan_ClampWaypointCount(int count);
+
 /** 绕飞剖面：一次绕飞的全局参数 */
 typedef struct {
     double radiusM;         /*!< 环绕半径：飞机到杆的水平距离 m */

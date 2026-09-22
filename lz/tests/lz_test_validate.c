@@ -232,6 +232,74 @@ int main(void)
         /* 都是正数（高度是相对起飞点，为负意味着在地下） */
         LZ_CHECK(LZ_PLAN_RADIUS_MIN_M > 0.0);
         LZ_CHECK(LZ_PLAN_ALTITUDE_MIN_M > 0.0);
+
+        /* 航点数的区间同样要自洽。
+         * 下限 3 是**几何必然**（两点连不成圆），不是可调参数 ——
+         * 所以还额外断言它没被误改大：改到 4 以上会让"正三角形绕飞"
+         * 这种合理需求被拒。 */
+        LZ_CHECK(LZ_PLAN_WAYPOINT_MIN < LZ_PLAN_WAYPOINT_MAX);
+        LZ_CHECK(LZ_PLAN_WAYPOINT_MIN == 3);
+
+        /* 上限内至少要容得下默认值 8 —— 上限改小到 8 以下，
+         * 应用一启动就会用越界剖面。这是"常量改坏了"的典型形态。 */
+        LZ_CHECK(LZ_PLAN_WAYPOINT_MAX >= 8);
+    }
+
+    /* ---------- 航点数：下限是几何、上限是包线 ---------- */
+
+    LZ_CASE("航点数：区间内通过");
+    {
+        const int inside[] = {3, 4, 8, 12, 16, 32, 64};
+        for (size_t i = 0; i < sizeof(inside) / sizeof(inside[0]); ++i) {
+            LzOrbitProfile pr = base_profile();
+            pr.waypointCount = inside[i];
+            LZ_CHECK(validate_with(pr) == LZ_OK);
+        }
+    }
+
+    LZ_CASE("航点数：低于下限是参数非法（两点构不成圆）");
+    {
+        const int below[] = {2, 1, 0, -1};
+        for (size_t i = 0; i < sizeof(below) / sizeof(below[0]); ++i) {
+            LzOrbitProfile pr = base_profile();
+            pr.waypointCount = below[i];
+            /* PARAM 而非 UNSAFE：这不是"现场条件不允许"，是"这个数不成立"。
+             * 与半径的 0/负数同属一层。 */
+            LZ_CHECK(validate_with(pr) == LZ_ERR_PARAM);
+        }
+    }
+
+    LZ_CASE("航点数：超出上限判为不安全，而不是参数非法");
+    {
+        LzOrbitProfile pr = base_profile();
+        pr.waypointCount = LZ_PLAN_WAYPOINT_MAX + 1;
+        /* 与半径/高度的越界同属**操作员可修正**的输入 ——
+         * 输入框里敲大了就改小，不是去查代码。 */
+        LZ_CHECK(validate_with(pr) == LZ_ERR_UNSAFE);
+
+        pr.waypointCount = 200;    /* DJI 协议上限，但超出本项目包线 */
+        LZ_CHECK(validate_with(pr) == LZ_ERR_UNSAFE);
+    }
+
+    LZ_CASE("航点数：恰好等于上/下限应通过（闭区间）");
+    {
+        LzOrbitProfile pr = base_profile();
+        pr.waypointCount = LZ_PLAN_WAYPOINT_MIN;
+        LZ_CHECK(validate_with(pr) == LZ_OK);
+        pr.waypointCount = LZ_PLAN_WAYPOINT_MAX;
+        LZ_CHECK(validate_with(pr) == LZ_OK);
+    }
+
+    LZ_CASE("航点数：夹取之后的值必须能通过校验（两道闸门同源）");
+    {
+        /* 这条守的是**控件与校验不打架**：
+         * 夹取用 LZ_PLAN_WAYPOINT_*，校验也用同一组常量。
+         * 若哪天有人在控件层另写一套边界，这条会红。 */
+        for (int raw = -5; raw <= 120; ++raw) {
+            LzOrbitProfile pr = base_profile();
+            pr.waypointCount = LzPlan_ClampWaypointCount(raw);
+            LZ_CHECK(validate_with(pr) == LZ_OK);
+        }
     }
 
     /* ---------- 已有的规则不能被新规则盖掉 ---------- */

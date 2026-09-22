@@ -44,6 +44,36 @@ int main(void)
 {
     /* ---------------- 这部分现在就该全绿 ---------------- */
 
+    LZ_CASE("航点数夹取：边界与越界");
+    {
+        /* 夹取是**操作员输入的第一道过滤**（Pilot 输入框能敲任意整数）。
+         * 它必须：区间内原样通过、越界夹到端点、非法小值抬到下限。
+         * 注意 MIN 侧的行为与 MAX 侧同为"夹取" —— 0 和负数不是"拒绝"，
+         * 而是抬到 3，因为两个点构不成圆这件事在夹取层表现为"下限"。 */
+        LZ_CHECK(LzPlan_ClampWaypointCount(LZ_PLAN_WAYPOINT_MIN) == LZ_PLAN_WAYPOINT_MIN);
+        LZ_CHECK(LzPlan_ClampWaypointCount(LZ_PLAN_WAYPOINT_MAX) == LZ_PLAN_WAYPOINT_MAX);
+        LZ_CHECK(LzPlan_ClampWaypointCount(8) == 8);
+        LZ_CHECK(LzPlan_ClampWaypointCount(16) == 16);
+        LZ_CHECK(LzPlan_ClampWaypointCount(24) == 24);
+
+        LZ_CHECK(LzPlan_ClampWaypointCount(LZ_PLAN_WAYPOINT_MAX + 1) == LZ_PLAN_WAYPOINT_MAX);
+        LZ_CHECK(LzPlan_ClampWaypointCount(200) == LZ_PLAN_WAYPOINT_MAX);
+        LZ_CHECK(LzPlan_ClampWaypointCount(100000) == LZ_PLAN_WAYPOINT_MAX);
+
+        /* 输入框里敲 0 / 负数 / 1 / 2 —— 都抬到 MIN */
+        LZ_CHECK(LzPlan_ClampWaypointCount(2) == LZ_PLAN_WAYPOINT_MIN);
+        LZ_CHECK(LzPlan_ClampWaypointCount(1) == LZ_PLAN_WAYPOINT_MIN);
+        LZ_CHECK(LzPlan_ClampWaypointCount(0) == LZ_PLAN_WAYPOINT_MIN);
+        LZ_CHECK(LzPlan_ClampWaypointCount(-1) == LZ_PLAN_WAYPOINT_MIN);
+        LZ_CHECK(LzPlan_ClampWaypointCount(-9999) == LZ_PLAN_WAYPOINT_MIN);
+
+        /* 夹取必须是**幂等**的 —— 否则"读时再夹一次"那道防御会变成抖动源 */
+        for (int v = -100; v <= 300; v += 7) {
+            const int once = LzPlan_ClampWaypointCount(v);
+            LZ_CHECK(LzPlan_ClampWaypointCount(once) == once);
+        }
+    }
+
     LZ_CASE("空入参必须被拒绝");
     {
         LzTarget p = pole();

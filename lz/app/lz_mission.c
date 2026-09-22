@@ -168,7 +168,10 @@ static bool lz_mission_start_orbit(void)
         .radiusM = LzWidget_GetRadiusM(),
         .altitudeM = LzWidget_GetAltitudeM(),
         .speedMs = 3.0,
-        .waypointCount = 8,
+        /* 航点数由操作员在 Pilot 2 的输入框里填，这里只取当前值。
+         * 取值合法性由 `LzPlan_ClampWaypointCount` 保证（getter 内已夹），
+         * 包线复核由下面的 `LzPlan_Validate` 做。 */
+        .waypointCount = LzWidget_GetWaypointCount(),
         .startBearingDeg = 0.0,
         .clockwise = true,
         .gimbalPitchDeg = -15.0,

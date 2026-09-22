@@ -92,6 +92,17 @@ static LzStatus lz_route_push(LzRoute *route, const LzWaypoint *wp)
  * 需要额外补一个与首点重合的收尾点（见 README 的说明）。
  * =========================================================================== */
 
+int LzPlan_ClampWaypointCount(int count)
+{
+    if (count < LZ_PLAN_WAYPOINT_MIN) {
+        return LZ_PLAN_WAYPOINT_MIN;
+    }
+    if (count > LZ_PLAN_WAYPOINT_MAX) {
+        return LZ_PLAN_WAYPOINT_MAX;
+    }
+    return count;
+}
+
 LzStatus LzPlan_BuildOrbit(const LzTarget *target,
                            const LzGeo *takeoff,
                            const LzOrbitProfile *profile,
@@ -104,8 +115,8 @@ LzStatus LzPlan_BuildOrbit(const LzTarget *target,
     if (!LzTarget_IsUsable(target, 0.0)) {
         return LZ_ERR_NO_TARGET;
     }
-    /* 少于 3 个点构不成圆 */
-    if (profile->waypointCount < 3) {
+    /* 少于 3 个点构不成圆 —— 几何必然，不是可调的包线 */
+    if (profile->waypointCount < LZ_PLAN_WAYPOINT_MIN) {
         return LZ_ERR_PARAM;
     }
     if (!(profile->radiusM > 0.0) || !isfinite(profile->radiusM) ||
@@ -156,8 +167,18 @@ LzStatus LzPlan_Validate(const LzRoute *route, const LzOrbitProfile *profile)
     if (route->count == 0) {
         return LZ_ERR_NO_TARGET;
     }
-    if (profile->radiusM <= 0.0 || profile->waypointCount < 3) {
+    if (profile->radiusM <= 0.0) {
         return LZ_ERR_PARAM;
+    }
+    /* 航点数：下限是几何必然，上限是安全包线 —— 两者错误码不同。
+     *   < MIN → PARAM：两个点构不成圆，是编程错误
+     *   > MAX → UNSAFE：数值合法但超出可用范围，是**操作员可修正**的输入
+     * 与半径/高度的判法保持一致。 */
+    if (profile->waypointCount < LZ_PLAN_WAYPOINT_MIN) {
+        return LZ_ERR_PARAM;
+    }
+    if (profile->waypointCount > LZ_PLAN_WAYPOINT_MAX) {
+        return LZ_ERR_UNSAFE;
     }
     if (!isfinite(profile->radiusM) || !isfinite(profile->altitudeM)) {
         return LZ_ERR_PARAM;

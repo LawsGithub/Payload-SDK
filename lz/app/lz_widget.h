@@ -8,13 +8,21 @@
  * M4T + 妙算3 的基础功能全支持 —— **没有"是否需要申请高级权限"那层不确定性**，
  * 比航点那条路好走。
  *
- * ## 三个控件（对应 widget_config.json 的 index）
+ * ## 六个控件（对应 widget_config.json 的 index）
  *
- * | index | 类型   | 名称   | 作用 |
+ * | index | 类型          | 名称     | 作用 |
  * |---|---|---|---|
- * | 0 | switch | 绕飞   | **0 = 停止（急停），1 = 上传航线并开始** |
- * | 1 | scale  | 半径m  | 0–100 百分比 → 映射到 [半径下限, 上限] |
- * | 2 | scale  | 高度m  | 同上，映射到高度范围 |
+ * | 0 | switch        | 绕飞     | **0 = 停止（急停），1 = 上传航线并开始** |
+ * | 1 | scale         | 半径m    | 0–100 百分比 → 映射到 [半径下限, 上限] |
+ * | 2 | scale         | 高度m    | 同上，映射到高度范围 |
+ * | 3 | button        | 记录飞机位 | 把当前位置记为绕飞圆心 |
+ * | 4 | button        | 记录激光点 | 激光测距点记为绕飞圆心 |
+ * | 5 | int_input_box | 航点数   | **直接填个数**，夹到 [MIN, MAX] |
+ *
+ * ⚠️ 航点数用输入框而不是滑杆：滑杆只有 0–100 的整数档，而航点数是有界的
+ * 小整数（3–64），输入框能让操作员直接填 16、24，不必心算档位。
+ * 代价是**输入框可以填任意整数**，所以取值必须过
+ * `LzPlan_ClampWaypointCount()` 夹取 —— 见 `LzWidget_GetWaypointCount()`。
  *
  * ## 安全语义（本项目的约定）
  *
@@ -71,6 +79,18 @@ bool LzWidget_IsOrbitRequested(void);
 /** @brief 取当前控件上的半径/高度设定（已从百分比映射为实际值） */
 double LzWidget_GetRadiusM(void);
 double LzWidget_GetAltitudeM(void);
+
+/**
+ * @brief 取操作员填的航点数，**已夹到 [LZ_PLAN_WAYPOINT_MIN, MAX]**
+ *
+ * 返回 int 而不是 double —— 航点数是计数量，不是连续量，
+ * 与半径/高度那两个"百分比映射出的物理量"性质不同。
+ *
+ * ⚠️ 本函数保证返回值合法，但**调用方仍需把剖面的 waypointCount 交给
+ * `LzPlan_Validate`** —— 夹取是"替操作员改成一个能用的值",
+ * 校验是"起飞前最后一道关",两者职责不同。
+ */
+int LzWidget_GetWaypointCount(void);
 
 /**
  * @brief 取走"操作员按了记录按钮"的请求（取走即清，只返回一次 true）

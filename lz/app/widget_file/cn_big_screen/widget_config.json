@@ -74,6 +74,12 @@
                     "is_enable": true,
                     "mapping_config_display_order": 4
                 }
+            },
+            {
+                "widget_index": 5,
+                "widget_type": "int_input_box",
+                "widget_name": "航点数",
+                "int_input_box_hint": "个"
             }
         ]
     }
