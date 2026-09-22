@@ -111,15 +111,47 @@ int main(void)
         LZ_CHECK(strstr(line, "src=aircraft") != NULL);
     }
 
-    LZ_CASE("零解必须被拒，且不破坏既有记录");
+    LZ_CASE("零解**邻域**必须被拒 —— 不只是精确的 (0,0)");
     {
+        /* 这条是设备实测逼出来的：2026-09-22 在 M4T 室内无 GPS 时，
+         * 融合位置给的是 `lon=0.0000004, lat=0.0000003`，**不是** (0,0)。
+         * 早先写 `== 0.0` 的判据放行了它，于是"记录圆心"成功返回了一个
+         * 几内亚湾附近的坐标 —— 界面显示成功，圆画在半个地球之外。 */
+        const LzGeo residual = {
+            .latitudeDeg = 0.0000003,
+            .longitudeDeg = 0.0000004,
+            .altitudeM = 60.8,
+        };
+        LZ_CHECK(LzPole_RecordAircraft(&residual) == LZ_ERR_NO_TARGET);
+
+        /* 负的残差也要拦（fabs 而不是与 0 比） */
+        const LzGeo negResidual = {
+            .latitudeDeg = -0.0000007,
+            .longitudeDeg = -0.0000002,
+            .altitudeM = 60.0,
+        };
+        LZ_CHECK(LzPole_RecordAircraft(&negResidual) == LZ_ERR_NO_TARGET);
+
+        /* 边界附近：阈值内拒、阈值外放行。用阈值本身做判据，
+         * 而不是硬编码数字 —— 阈值改了这条测试仍然自洽。 */
+        LzGeo edgeIn = { .latitudeDeg = 0.0, .longitudeDeg = LZ_GEO_NULL_SOLUTION_DEG * 0.9, .altitudeM = 0.0 };
+        LZ_CHECK(LzPole_RecordAircraft(&edgeIn) == LZ_ERR_NO_TARGET);
+    }
+
+    LZ_CASE("精确 (0,0) 也必须被拒，且不破坏既有记录");
+    {
+        /* 先确保有一条好记录，再试零解 —— 断言"失败不影响已有记录" */
+        const LzGeo good = { .latitudeDeg = 30.5, .longitudeDeg = 114.3, .altitudeM = 30.0 };
+        LZ_CHECK(LzPole_RecordAircraft(&good) == LZ_OK);
+
         const LzGeo zero = { .latitudeDeg = 0.0, .longitudeDeg = 0.0, .altitudeM = 0.0 };
         LZ_CHECK(LzPole_RecordAircraft(&zero) == LZ_ERR_NO_TARGET);
 
         /* 关键：失败不能把上一次的好记录抹掉 ——
          * 否则操作员在室内误按一次，到室外就发现"记录没了"。 */
         LZ_CHECK(LzPole_GetRecorded(&g) == LZ_OK);
-        LZ_CHECK_NEAR(g.latitudeDeg, 28.1788480, 1e-7);
+        LZ_CHECK_NEAR(g.latitudeDeg, 30.5, 1e-7);
+        LZ_CHECK_NEAR(g.longitudeDeg, 114.3, 1e-7);
     }
 
     LZ_CASE("非法坐标必须被拒");
@@ -175,6 +207,12 @@ int main(void)
         write_file("lon=999.0 lat=999.0 alt=0.0 src=aircraft\n");  /* 越界但可解析 */
         LZ_CHECK(LzPole_LoadRecorded() != LZ_OK);
         LZ_CHECK(LzPole_Acquire(&t) == LZ_ERR_NOT_READY);
+
+        /* 盘上存着零解也要拒 —— 旧版本可能写进去过，或文件被手改 */
+        remove(LZ_TEST_POLE_FILE);
+        write_file("lon=0.0000004 lat=0.0000003 alt=60.8 src=aircraft\n");
+        LZ_CHECK(LzPole_LoadRecorded() != LZ_OK);
+        LZ_CHECK(LzPole_Acquire(&t) == LZ_ERR_NOT_READY);
     }
 
     LZ_CASE("空文件也要当作未记录");
@@ -187,8 +225,16 @@ int main(void)
 
     LZ_CASE("激光记录在未启用编译时应报 UNSUPPORTED，而不是含糊的失败");
     {
-        /* 默认构建不带 -DLZ_POLE_SOURCE_LASER。操作员按了按钮必须能知道
-         * "这个包没带激光功能"，而不是收到一个看不出所以然的 IO 错误。 */
+        /* ⚠️ 这条测的是**本测试目标**的编译配置，不是主应用的。
+         *
+         * `lz_test_pole` 直接编 `app/lz_pole_source.c` 而**没有**传
+         * `-DLZ_POLE_SOURCE_LASER`（它只链接 lz_types，没有 PSDK 的
+         * camera_manager 头文件），所以走 `#else` 分支。
+         * 主应用那边 `LZ_POLE_SOURCE_LASER` 默认是 **ON**（见 CMakeLists）。
+         *
+         * 测这条的价值：断言"没编进去时给出的是**明确的 UNSUPPORTED**，
+         * 不是一个看不出所以然的 IO 错误" —— 操作员按了按钮要知道
+         * 该怎么办。 */
         LZ_CHECK(LzPole_RecordLaser() == LZ_ERR_UNSUPPORTED);
     }
 

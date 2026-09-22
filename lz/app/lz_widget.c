@@ -68,6 +68,15 @@
 /* 状态                                                                */
 /* ------------------------------------------------------------------ */
 static bool s_orbitRequested = false;
+
+/* 记录请求的待办标志。回调里**只置它**，真正的记录动作由主循环做 ——
+ * 见 `LzWidget_TakeRecordRequest()` 上方那段关于"为什么会闪退"的说明。
+ *
+ * 为什么不做成"一个标志 + 一个 kind"两个变量：那两者之间会有不一致窗口
+ * （标志说有事、kind 还是上一次的）。用一个 bool + 一个 kind，
+ * 并约定"只有 bool 为真时 kind 才有效"，读取在同一个函数里原子完成。 */
+static volatile bool s_recordPending = false;
+static LzPoleRecordKind s_recordKind = LZ_POLE_RECORD_AIRCRAFT;
 /* 默认档位。换算见下方 LzWidget_GetRadiusM/GetAltitudeM ——
  * 区间收窄到 5–20 m / 5–120 m 后，50% → 12.5 m、66% → 约 80.9 m。
  * 这两个值**不是**"设计目标值"，只是出厂默认，操作员可拨。 */
@@ -133,10 +142,15 @@ static T_DjiReturnCode LzWidget_SetWidgetValue(E_DjiWidgetType widgetType, uint3
 
     /* ---- 两个"记录绕飞圆心"按钮 ----
      *
+     * ⚠️ 这里**只置标志**，真正的记录动作由主循环 `LzMission_Tick()` 做。
+     * 不这么做会闪退 —— 原因见 `LzWidget_TakeRecordRequest()` 的注释：
+     * 激光那条路要调一个阻塞 1.2 秒的相机接口，在 PSDK 回调线程里调它
+     * 会把 SDK 的链路线程卡死（实测 2026-09-22，日志里
+     * `semaphore wait timeout` + `send msg to queue error` 刷屏后进程死掉）。
+     *
      * ⚠️ button 的 `value` 是 `E_DjiWidgetButtonState`：**按下与松开各触发一次**
-     * 回调（`PRESS_DOWN=1` / `RELEASE_UP=0`）。只在按下时记录 ——
-     * 不判的话一次点击会被记两遍（虽然结果相同，但日志会出现两条"已记录"，
-     * 让操作员以为按了两次）。 */
+     * 回调（`PRESS_DOWN=1` / `RELEASE_UP=0`）。只在按下时置标志 ——
+     * 不判的话一次点击会记录两遍。 */
     case LZ_WIDGET_IDX_RECORD_AIRCRAFT:
     case LZ_WIDGET_IDX_RECORD_LASER: {
         if (widgetType != DJI_WIDGET_TYPE_BUTTON) {
@@ -145,47 +159,12 @@ static T_DjiReturnCode LzWidget_SetWidgetValue(E_DjiWidgetType widgetType, uint3
         if (value != DJI_WIDGET_BUTTON_STATE_PRESS_DOWN) {
             break;   /* 忽略松开的半次 */
         }
-
-        LzStatus st;
-        if (index == LZ_WIDGET_IDX_RECORD_AIRCRAFT) {
-            /* 飞机位置由桥接层给（它负责 rad→度 的换算与零解拦截）。
-             * 单位换错会让记录的杆位跑到几内亚湾，而坐标看上去完全合法。 */
-            LzGeo cur;
-            st = LzBridge_GetCurrentPosition(&cur);
-            if (st == LZ_OK) {
-                st = LzPole_RecordAircraft(&cur);
-            }
-            if (st == LZ_OK) {
-                LzWidget_PostMessage("✓ 已记录飞机位为圆心：%.7f, %.7f",
-                                     cur.latitudeDeg, cur.longitudeDeg);
-            } else if (st == LZ_ERR_NOT_READY) {
-                LzWidget_PostMessage("✗ 记录失败：还没有飞机定位数据，请稍候再按");
-            } else if (st == LZ_ERR_NO_TARGET) {
-                LzWidget_PostMessage("✗ 记录失败：当前没有定位（等 GPS 锁定后再按）");
-            } else {
-                LzWidget_PostMessage("✗ 记录失败：%s", LzStatus_Str(st));
-            }
-        } else {
-            st = LzPole_RecordLaser();
-            if (st == LZ_OK) {
-                LzGeo g;
-                if (LzPole_GetRecorded(&g) == LZ_OK) {
-                    LzWidget_PostMessage("✓ 已记录激光点为圆心：%.7f, %.7f",
-                                         g.latitudeDeg, g.longitudeDeg);
-                } else {
-                    LzWidget_PostMessage("✓ 已记录激光点");
-                }
-            } else if (st == LZ_ERR_UNSUPPORTED) {
-                /* 措辞面向**操作员**，不是开发者 —— 现场不需要知道
-                 * 什么编译开关。只说"这个包没有这功能，用另一个按钮"，
-                 * 操作员立刻知道该怎么办。 */
-                LzWidget_PostMessage("✗ 本包未启用激光记录，请改用「记录飞机位」");
-            } else if (st == LZ_ERR_NO_TARGET) {
-                LzWidget_PostMessage("✗ 记录失败：激光无回波，请对准目标再按");
-            } else {
-                LzWidget_PostMessage("✗ 记录失败：%s", LzStatus_Str(st));
-            }
-        }
+        s_recordPending = true;
+        /* 飞机位与激光点的差别只有"取数方式"这一处，记录结果的处理完全相同，
+         * 所以标志里带上来源、由主循环统一处理。 */
+        s_recordKind = (index == LZ_WIDGET_IDX_RECORD_AIRCRAFT)
+                           ? LZ_POLE_RECORD_AIRCRAFT
+                           : LZ_POLE_RECORD_LASER;
         break;
     }
 
@@ -486,6 +465,22 @@ double LzWidget_GetAltitudeM(void)
  * 那个仍然 ON 的开关而**重新起飞**。也就是说开关的实际位置与本地意图
  * 从这里开始就是不一致的，这正是必须在界面上说明的原因。
  */
+bool LzWidget_TakeRecordRequest(LzPoleRecordKind *kind)
+{
+    /* 先读 kind 再清标志 —— 顺序反了会在标志已清、kind 还没读的窗口里
+     * 读到新按下一次的 kind（虽然两个按钮的 kind 值不同，但"这一次按的是
+     * 哪个"就会错）。本函数只在主循环线程调用，而标志只由回调线程置位，
+     * 这里的顺序保证读到的是同一个请求。 */
+    if (!s_recordPending) {
+        return false;
+    }
+    if (kind != NULL) {
+        *kind = s_recordKind;
+    }
+    s_recordPending = false;
+    return true;
+}
+
 void LzWidget_ReportOrbitFinished(const char *reason)
 {
     s_orbitRequested = false;

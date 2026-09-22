@@ -24,6 +24,16 @@ const char *LzStatus_Str(LzStatus status)
     return "未知状态";
 }
 
+bool LzGeo_IsNullSolution(const LzGeo *geo)
+{
+    if (geo == NULL) {
+        return true;   /* 没有坐标也算"拿不到有效定位"，语义一致 */
+    }
+    /* 用 fabs 而不是与 0 比 —— 残差可能是负的 */
+    return fabs(geo->latitudeDeg) < LZ_GEO_NULL_SOLUTION_DEG &&
+           fabs(geo->longitudeDeg) < LZ_GEO_NULL_SOLUTION_DEG;
+}
+
 bool LzGeo_IsValid(const LzGeo *geo)
 {
     if (geo == NULL) {

@@ -106,7 +106,9 @@ LzStatus LzPole_LoadRecorded(void)
      * 而没清 `s_haveRecord`，于是出现"日志说当作未记录、紧接着
      * `LzPole_Acquire()` 却成功返回上一次的记录" —— 说法与行为相反。
      * 这是被 `lz_test_pole` 的"文件被改坏"用例抓出来的。 */
-    if (n != 4 || !LzGeo_IsValid(&g)) {
+    /* 零解也要拒 —— 旧版本可能已经把零解写进过文件，
+     * 或者文件被手改成 0,0。读回来等于"有一个看起来有效的圆心"。 */
+    if (n != 4 || !LzGeo_IsValid(&g) || LzGeo_IsNullSolution(&g)) {
         USER_LOG_ERROR("杆位记录文件格式不对（读到 %d 个字段），当作未记录处理", n);
         s_haveRecord = false;
         memset(&s_recorded, 0, sizeof(s_recorded));
@@ -148,20 +150,20 @@ LzStatus LzPole_RecordAircraft(const LzGeo *curPos)
     if (curPos == NULL) {
         return LZ_ERR_PARAM;
     }
-    /* 融合位置在无定位时给的是约 (0,0) 的零解 —— 那个坐标"合法"
-     * （在经纬度范围内），但毫无意义。判据用 `LzGeo_IsValid` 拦不住它，
-     * 所以额外要求它离原点有实质距离。
-     *
-     * 这个坑我们已经踩过一次：激光在 distance=0 时给出的也是机身位置那样的
-     * "精确的错误值"（见下方激光分支的注释）。**零解不是垃圾值，
-     * 是一个可预测的退化情形，必须显式拒绝。** */
     if (!LzGeo_IsValid(curPos)) {
         USER_LOG_WARN("无法记录：飞机位置非法（%.7f, %.7f）",
                       curPos->latitudeDeg, curPos->longitudeDeg);
         return LZ_ERR_NO_TARGET;
     }
-    if (curPos->latitudeDeg == 0.0 && curPos->longitudeDeg == 0.0) {
-        USER_LOG_WARN("无法记录：飞机位置是 (0,0) 零解 —— 说明当前没有定位");
+    /* 零解判据走 `LzGeo_IsNullSolution` —— 关键点是**给邻域而不是比 0**。
+     *
+     * 实测（2026-09-22，M4T 室内无 GPS）融合位置给的是
+     * `lon=0.0000004, lat=0.0000003`，不是精确的 `(0,0)`：
+     * 早先写 `== 0.0` 的判据**放行了它**，于是"记录圆心"成功返回了一个
+     * 几内亚湾附近的坐标。判据与现实的差距只有一层浮点皮。 */
+    if (LzGeo_IsNullSolution(curPos)) {
+        USER_LOG_WARN("无法记录：飞机位置在零解邻域内（%.7f, %.7f）—— 当前没有定位",
+                      curPos->latitudeDeg, curPos->longitudeDeg);
         return LZ_ERR_NO_TARGET;
     }
 

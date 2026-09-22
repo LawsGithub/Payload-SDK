@@ -588,11 +588,12 @@ LzStatus LzBridge_GetCurrentPosition(LzGeo *out)
         .altitudeM = s_fused.altitude,
     };
 
-    /* 零解（无定位时融合位置给约 (0,0)）在这里就拦掉，不留给调用方 ——
-     * 它在经纬度范围内"合法"，但毫无意义。
-     * 这与激光在 distance=0 时退化成机身位置是同一类：**精确的错误值**。 */
-    if (g.latitudeDeg == 0.0 && g.longitudeDeg == 0.0) {
-        USER_LOG_WARN("融合位置是 (0,0) 零解 —— 当前没有定位");
+    /* 零解在这里就拦掉，不留给调用方。判据走 `LzGeo_IsNullSolution`
+     * （给邻域，不比 0）—— 实测无定位时给的是 `0.0000003, 0.0000004`，
+     * 早先 `== 0.0` 的写法放行了它。详见 lz_types.h 里的说明。 */
+    if (LzGeo_IsNullSolution(&g)) {
+        USER_LOG_WARN("融合位置在零解邻域内（%.7f, %.7f）—— 当前没有定位",
+                      g.latitudeDeg, g.longitudeDeg);
         return LZ_ERR_NO_TARGET;
     }
     if (!LzGeo_IsValid(&g)) {

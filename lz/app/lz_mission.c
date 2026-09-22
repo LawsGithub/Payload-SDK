@@ -228,11 +228,90 @@ static bool lz_mission_start_orbit(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 记录绕飞圆心（由主循环代操作员执行）                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief 处理操作员的"记录圆心"请求
+ *
+ * ## 为什么这段逻辑在主循环里，而不在控件回调里
+ *
+ * 控件回调跑在 **PSDK 的工作线程**上，不能做阻塞操作。而"记录激光点"要调
+ * `DjiCameraManager_GetLaserRangingInfo()` —— 同步阻塞，最多 1.2 秒。
+ * 在回调里调它会把 SDK 的链路线程卡死，实测（2026-09-22）导致进程闪退，
+ * 日志里 `semaphore wait timeout` + `send msg to queue error` 刷屏后死掉。
+ *
+ * 所以回调只置标志，这里（我们自己的线程）才真正干活 ——
+ * 与"上传 KMZ 不在回调里做"是同一个模式。
+ *
+ * ## 两种记录的差别只在一处
+ *
+ * | 来源 | 取数 | 是否阻塞 |
+ * |---|---|---|
+ * | 飞机位 | `LzBridge_GetCurrentPosition()` 读订阅缓存 | 否 |
+ * | 激光点 | `LzPole_RecordLaser()` 调相机接口 | **是** |
+ *
+ * 记录成功/失败后的回执、落盘、状态更新完全相同，所以合并在这里。
+ */
+static void lz_mission_handle_record(void)
+{
+    LzPoleRecordKind kind;
+    if (!LzWidget_TakeRecordRequest(&kind)) {
+        return;   /* 操作员没按 */
+    }
+
+    LzStatus st;
+    LzGeo recorded;
+
+    if (kind == LZ_POLE_RECORD_AIRCRAFT) {
+        LzGeo cur;
+        st = LzBridge_GetCurrentPosition(&cur);
+        if (st == LZ_OK) {
+            st = LzPole_RecordAircraft(&cur);
+        }
+        if (st == LZ_OK) {
+            LzWidget_PostMessage("✓ 已记录飞机位为圆心：%.7f, %.7f",
+                                 cur.latitudeDeg, cur.longitudeDeg);
+        } else if (st == LZ_ERR_NOT_READY) {
+            LzWidget_PostMessage("✗ 记录失败：还没有飞机定位数据，请稍候再按");
+        } else if (st == LZ_ERR_NO_TARGET) {
+            LzWidget_PostMessage("✗ 记录失败：当前没有定位（等 GPS 锁定后再按）");
+        } else {
+            LzWidget_PostMessage("✗ 记录失败：%s", LzStatus_Str(st));
+        }
+        return;
+    }
+
+    /* ---- 激光点 ---- */
+    st = LzPole_RecordLaser();
+    if (st == LZ_OK && LzPole_GetRecorded(&recorded) == LZ_OK) {
+        LzWidget_PostMessage("✓ 已记录激光点为圆心：%.7f, %.7f",
+                             recorded.latitudeDeg, recorded.longitudeDeg);
+    } else if (st == LZ_OK) {
+        LzWidget_PostMessage("✓ 已记录激光点");
+    } else if (st == LZ_ERR_UNSUPPORTED) {
+        /* 措辞面向**操作员**，不是开发者 —— 现场不需要知道什么编译开关 */
+        LzWidget_PostMessage("✗ 本包未启用激光记录，请改用「记录飞机位」");
+    } else if (st == LZ_ERR_NO_TARGET) {
+        LzWidget_PostMessage("✗ 记录失败：激光无回波，请对准目标再按");
+    } else if (st == LZ_ERR_IO) {
+        LzWidget_PostMessage("✗ 记录失败：读激光数据出错，详见日志");
+    } else {
+        LzWidget_PostMessage("✗ 记录失败：%s", LzStatus_Str(st));
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* 状态机                                                              */
 /* ------------------------------------------------------------------ */
 
 void LzMission_Tick(void)
 {
+    /* 记录请求**优先于**作业状态机处理：它与绕飞是否在跑无关
+     * （操作员可以在任何时候记录圆心），而且它可能耗时 1.2 秒 ——
+     * 放在状态机之前，避免被绕飞的状态转移耽误。 */
+    lz_mission_handle_record();
+
     switch (s_state) {
     case LZ_MISSION_STATE_IDLE: {
         if (!LzWidget_IsOrbitRequested()) {

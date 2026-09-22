@@ -37,6 +37,9 @@
 
 #include "dji_typedef.h"
 
+/* LzPoleRecordKind —— 记录请求的来源（飞机位 / 激光点） */
+#include "lz_pole_source.h"
+
 /**
  * @brief 初始化控件模块（配置 + handler 注册），并创建状态推送线程
  *
@@ -68,6 +71,39 @@ bool LzWidget_IsOrbitRequested(void);
 /** @brief 取当前控件上的半径/高度设定（已从百分比映射为实际值） */
 double LzWidget_GetRadiusM(void);
 double LzWidget_GetAltitudeM(void);
+
+/**
+ * @brief 取走"操作员按了记录按钮"的请求（取走即清，只返回一次 true）
+ *
+ * ## 为什么记录动作要经过这个函数，而不是在回调里直接做
+ *
+ * ⚠️ **控件回调跑在 PSDK 的工作线程上，不能做耗时/阻塞操作。**
+ *
+ * 本项目为此踩过一次闪退（2026-09-22 实测）：`LzPole_RecordLaser()` 内部调
+ * `DjiCameraManager_GetLaserRangingInfo()`，那是个**同步阻塞调用**
+ * （要过 cmd 通道等相机回包，官方注明"Max execution time slightly larger
+ * than 1200ms"）。在回调线程里调它会把 SDK 的链路线程卡住：
+ *
+ *     dji_msgq.c:227    semaphore wait timeout
+ *     dji_linker.c:309  send msg to queue error
+ *
+ * 刷屏之后进程死掉 —— 日志里连 `LzPole_RecordLaser()` 的第一条日志
+ * 都没打出来。**这也解释了为什么"记录飞机位"没事**：它只读订阅回调写好的
+ * 静态缓存，不碰任何阻塞接口。
+ *
+ * ## 模式：回调只置标志，主循环干活
+ *
+ *     回调（PSDK 线程）        主循环 LzMission_Tick（我们的线程）
+ *     ────────────────        ──────────────────────────────
+ *     置 pending 标志    →    调阻塞接口、记录、落盘、回执
+ *
+ * 与绕飞开关的 `LzWidget_IsOrbitRequested()` 是同一个模式 ——
+ * 只是激光那条路我一开始没照做。
+ *
+ * @param kind [out] 操作员按的是哪个按钮
+ * @return true 表示取到了一次请求（此时 `kind` 有效）
+ */
+bool LzWidget_TakeRecordRequest(LzPoleRecordKind *kind);
 
 /**
  * @brief 报告绕飞已结束，把开关**程序化地**拨回 OFF
