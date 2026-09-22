@@ -50,6 +50,14 @@ static const char *lz_test_case = "(未命名)";
  * 不能用 LZ_CHECK_NEAR 比较方位角：角量是**圆周量**，0° 与 359.999999°
  * 只差 1e-6 度，但绝对差是 360 —— 在 0/360 接缝附近，绝对差判据必然误报。
  * 先取圆周差（折算到 (-180,180]）再比绝对值，才是角量的正确定义。
+ *
+ * ⚠️ **每个断言宏都必须同时递增 `lz_test_checks` 与 `lz_test_failures`。**
+ *
+ * 本宏曾经漏了 `lz_test_failures++`（只有 checks 在涨）—— 后果不是"少报几个数"，
+ * 而是**该用例的失败不计入退出码**：`LZ_TEST_SUMMARY()` 靠 failures 判成败，
+ * 于是 ctest 报绿。2026-09-23 反向验证时撞上：真实 116 条断言失败，
+ * 汇总只报 87 条、且其中 29 条（全是本宏的）被算作通过。
+ * 加断言宏时先看这三行的对称性。
  */
 #define LZ_CHECK_ANGLE_NEAR(a, b, tol)                                         \
     do {                                                                       \
@@ -58,6 +66,7 @@ static const char *lz_test_case = "(未命名)";
         if (lz_d <= -180.0) { lz_d += 360.0; }                                 \
         lz_test_checks++;                                                      \
         if (!(fabs(lz_d) <= (tol))) {                                          \
+            lz_test_failures++;                                                \
             fprintf(stderr, "[FAIL ] %s @ %s:%d: %s(%.9f) != %s(%.9f)，圆周差 %.6f°\n", \
                     lz_test_case, __FILE__, __LINE__, #a, (double)(a), #b,     \
                     (double)(b), lz_d);                                        \
