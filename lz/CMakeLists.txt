@@ -64,6 +64,26 @@ if(LZ_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
         set_tests_properties(${lz_test} PROPERTIES
             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
     endforeach()
+
+    # ---- 探杆位记录：单独一条，因为它要编 app/ 下的源文件 ----
+    #
+    # 上面 6 个只链接 lz_core（纯算法）。这个要编 `app/lz_pole_source.c`，
+    # 它 include 了 `dji_logger.h` —— 用 tests/stub/ 里的**替身**头文件
+    # 把日志宏换成 printf，就能上桌面。
+    #
+    # 替身只替换日志宏，被测的 lz_pole_source.c 原封不动编译。
+    # 详见 tests/stub/dji_logger.h 与 tests/lz_test_pole.c 的文件头注释。
+    add_executable(lz_test_pole
+        tests/lz_test_pole.c
+        app/lz_pole_source.c
+        src/lz_types.c
+    )
+    # stub 放在前面：`#include <dji_logger.h>` 会优先命中替身
+    target_include_directories(lz_test_pole PRIVATE tests/stub tests include app)
+    target_link_libraries(lz_test_pole PRIVATE m)
+    add_test(NAME lz_test_pole COMMAND lz_test_pole)
+    set_tests_properties(lz_test_pole PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -115,7 +135,19 @@ target_link_libraries(lz_vision PUBLIC lz_core m)
 option(LZ_BUILD_PSDK_APP "编译 PSDK 机载应用（需要 PSDK 静态库）" OFF)
 set(LZ_TARGET_ARCH "aarch64" CACHE STRING "PSDK 目标架构：aarch64 | x86_64")
 
-option(LZ_POLE_SOURCE_LASER "绕飞圆心取自激光测距（需 GPS 锁定且激光打中杆）" OFF)
+# 激光记录按钮是否可用。
+#
+# ⚠️ 2026-09-22 起默认 **ON** —— 依据是用户要求"两个按钮都要能用"，
+# 且激光测距在 M4T 位置 1 上已实测可用（见 CLAUDE.md「激光测距」一节）。
+#
+# 打开它的代价仅两处（都在 main.c 里条件编译）：
+#   1. 启动时多调一次 DjiCameraManager_Init()
+#   2. 退出时多调一次 DjiCameraManager_DeInit()
+# 相机模块**不**改变启动路径的成败 —— 初始化失败只让激光按钮不可用。
+#
+# 关掉它（-DLZ_POLE_SOURCE_LASER=OFF）的场景：包体要最小、
+# 或现场确认不用激光（那只剩"记录飞机位"一条路）。
+option(LZ_POLE_SOURCE_LASER "启用 PSDK 相机模块，使「记录激光点」按钮可用" ON)
 
 if(LZ_BUILD_PSDK_APP)
     if(NOT PSDK_ROOT)

@@ -553,3 +553,53 @@ LzStatus LzBridge_StopMissionV3(void)
     }
     return LZ_ERR_IO;
 }
+
+/* ===========================================================================
+ * 飞机当前位置 —— 供"记录飞机位"按钮使用
+ *
+ * ⚠️ 数据来自订阅回调写进 s_fused 的缓存，**不是** getter。
+ * `DjiFcSubscription_GetLatestValueOfTopic` 在本组合上必崩
+ * （见本文件顶部那段说明与头文件里的警告）。
+ *
+ * ⚠️ 单位：`TOPIC_POSITION_FUSED` 的经纬度是 **rad**
+ * （`dji_fc_subscription.h:1015-1016` 原文 `unit: rad`），
+ * 这里换成度再交给调用方。换算只在这一处做。
+ * =========================================================================== */
+
+bool LzBridge_HasCurrentPosition(void)
+{
+    return s_gotFused;
+}
+
+LzStatus LzBridge_GetCurrentPosition(LzGeo *out)
+{
+    if (out == NULL) {
+        return LZ_ERR_PARAM;
+    }
+    if (!s_gotFused) {
+        /* 与"读失败"区分开：这里只是还没有数据到过。
+         * 订阅成功但飞机没上报时就是这样 —— 属于**正常状态**。 */
+        return LZ_ERR_NOT_READY;
+    }
+
+    LzGeo g = {
+        .latitudeDeg = s_fused.latitude * 180.0 / M_PI,
+        .longitudeDeg = s_fused.longitude * 180.0 / M_PI,
+        .altitudeM = s_fused.altitude,
+    };
+
+    /* 零解（无定位时融合位置给约 (0,0)）在这里就拦掉，不留给调用方 ——
+     * 它在经纬度范围内"合法"，但毫无意义。
+     * 这与激光在 distance=0 时退化成机身位置是同一类：**精确的错误值**。 */
+    if (g.latitudeDeg == 0.0 && g.longitudeDeg == 0.0) {
+        USER_LOG_WARN("融合位置是 (0,0) 零解 —— 当前没有定位");
+        return LZ_ERR_NO_TARGET;
+    }
+    if (!LzGeo_IsValid(&g)) {
+        USER_LOG_WARN("融合位置非法（%.7f, %.7f）", g.latitudeDeg, g.longitudeDeg);
+        return LZ_ERR_NO_TARGET;
+    }
+
+    *out = g;
+    return LZ_OK;
+}

@@ -151,7 +151,16 @@ static bool lz_mission_start_orbit(void)
     LzTarget pole;
     LzStatus st = LzPole_Acquire(&pole);
     if (st != LZ_OK) {
-        LzWidget_PostMessage("取杆位失败（%s）：%s", LzPole_SourceName(), LzStatus_Str(st));
+        /* 未记录杆位是本项目**唯一**一种"操作员还没做前置动作"的失败，
+         * 所以单独给一条能照着做的提示 —— 光说"前置条件未就绪"操作员
+         * 不知道下一步该按哪里。其余失败仍走通用文案。 */
+        if (st == LZ_ERR_NOT_READY) {
+            LzWidget_PostMessage("尚未记录绕飞圆心 —— 请先在 PSDK 控件里按"
+                                 "「记录飞机位」或「记录激光点」，再拨开关");
+        } else {
+            LzWidget_PostMessage("取圆心失败（%s）：%s",
+                                 LzPole_SourceName(), LzStatus_Str(st));
+        }
         return false;
     }
 

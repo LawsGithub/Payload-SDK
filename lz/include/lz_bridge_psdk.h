@@ -172,6 +172,35 @@ const char *LzBridge_StartDiagSummary(void);
 /** @brief 航点任务的启停（转发 DjiWaypointV3_Action，避免调用方直接依赖 PSDK） */
 LzStatus LzBridge_StopMissionV3(void);
 
+/**
+ * @brief 取飞机当前位置（供"记录飞机位"按钮用）
+ *
+ * @param out [out] 单位是**度**的 WGS84 坐标
+ * @return `LZ_OK`；`LZ_ERR_NOT_READY` = 还没收到过融合位置数据
+ *
+ * ## 为什么必须走这个函数，而不是让调用方自己去读话题
+ *
+ * 两个理由，都是踩过的坑：
+ *
+ * 1. **`DjiFcSubscription_GetLatestValueOfTopic` 在本组合上必崩**
+ *    （SIGSEGV，栈在 `DjiDataSubscriptionDds_v3_GetLastValueOfTopic` 内部）。
+ *    数据靠订阅回调写进静态缓存，这里读的就是那个缓存。
+ * 2. **`TOPIC_POSITION_FUSED` 的经纬度单位是 `rad`，不是度**
+ *    （头文件 `dji_fc_subscription.h:1015-1016` 原文 `unit: rad`）。
+ *    换算收在这一处，避免每个调用点各自记得乘 `180/π` ——
+ *    忘了乘的后果是"记录的杆位跑到几内亚湾"，而坐标看上去完全合法，
+ *    直到飞机飞过去才发现。
+ */
+LzStatus LzBridge_GetCurrentPosition(LzGeo *out);
+
+/**
+ * @brief 飞机当前位置是否已就绪（收到过数据）
+ *
+ * 单独一个查询而不是让调用方看 `LzBridge_GetCurrentPosition` 的返回码：
+ * 按钮的**回执文案**要能区分"没定位"与"读失败"，而返回码只有一种。
+ */
+bool LzBridge_HasCurrentPosition(void);
+
 #ifdef __cplusplus
 }
 #endif

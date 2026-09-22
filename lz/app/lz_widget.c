@@ -3,7 +3,7 @@
  * @brief 控件模块实现。
  *
  * 骨架取自官方样例 `samples/sample_c/module_sample/widget/test_widget.c`，
- * 砍到只剩本项目需要的三个控件。**初始化四步的顺序不能变**：
+ * 砍到只剩本项目需要的**五个**控件。**初始化四步的顺序不能变**：
  *
  *   1. DjiWidget_Init()
  *   2. 注册 UI 配置（Linux 下用 ByDirPath；RTOS 下用 ByBinaryArray）
@@ -17,6 +17,10 @@
  * 包含 lz_plan.h 而不是 lz_plan.c：常量定义在头文件里，零依赖，
  * 不破坏 lz_app 与 lz_core 的分层（方向本来就是 lz_app → lz_core）。 */
 #include "lz_plan.h"
+/* 两个记录按钮要用：LzBridge_GetCurrentPosition（飞机位置，含 rad→度换算）
+ * 与 LzPole_RecordAircraft / LzPole_RecordLaser。 */
+#include "lz_bridge_psdk.h"
+#include "lz_pole_source.h"
 
 #include <dji_logger.h>
 #include <dji_platform.h>
@@ -31,11 +35,17 @@
 
 /* ------------------------------------------------------------------ */
 /* 控件索引（必须与 app/widget_file 下的 widget_config.json 一致）        */
+/*                                                                     */
+/* 这 5 个索引必须与两份 json 的 widget_index 一一对应 —— PSDK 按索引     */
+/* 把界面控件分派给 handler，对不上的后果是"按了 A 按钮却执行了 B 的       */
+/* 动作"，而两边都不会报错。                                             */
 /* ------------------------------------------------------------------ */
 #define LZ_WIDGET_IDX_ORBIT_SWITCH 0
 #define LZ_WIDGET_IDX_RADIUS_SCALE 1
 #define LZ_WIDGET_IDX_HEIGHT_SCALE 2
-#define LZ_WIDGET_COUNT            3
+#define LZ_WIDGET_IDX_RECORD_AIRCRAFT 3
+#define LZ_WIDGET_IDX_RECORD_LASER    4
+#define LZ_WIDGET_COUNT               5
 
 /* 范围条是 0–100 的百分比，这里映射到实际物理量。
  *
@@ -121,6 +131,64 @@ static T_DjiReturnCode LzWidget_SetWidgetValue(E_DjiWidgetType widgetType, uint3
         LzWidget_PostMessage("高度设为 %.1f m", LzWidget_GetAltitudeM());
         break;
 
+    /* ---- 两个"记录绕飞圆心"按钮 ----
+     *
+     * ⚠️ button 的 `value` 是 `E_DjiWidgetButtonState`：**按下与松开各触发一次**
+     * 回调（`PRESS_DOWN=1` / `RELEASE_UP=0`）。只在按下时记录 ——
+     * 不判的话一次点击会被记两遍（虽然结果相同，但日志会出现两条"已记录"，
+     * 让操作员以为按了两次）。 */
+    case LZ_WIDGET_IDX_RECORD_AIRCRAFT:
+    case LZ_WIDGET_IDX_RECORD_LASER: {
+        if (widgetType != DJI_WIDGET_TYPE_BUTTON) {
+            return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
+        }
+        if (value != DJI_WIDGET_BUTTON_STATE_PRESS_DOWN) {
+            break;   /* 忽略松开的半次 */
+        }
+
+        LzStatus st;
+        if (index == LZ_WIDGET_IDX_RECORD_AIRCRAFT) {
+            /* 飞机位置由桥接层给（它负责 rad→度 的换算与零解拦截）。
+             * 单位换错会让记录的杆位跑到几内亚湾，而坐标看上去完全合法。 */
+            LzGeo cur;
+            st = LzBridge_GetCurrentPosition(&cur);
+            if (st == LZ_OK) {
+                st = LzPole_RecordAircraft(&cur);
+            }
+            if (st == LZ_OK) {
+                LzWidget_PostMessage("✓ 已记录飞机位为圆心：%.7f, %.7f",
+                                     cur.latitudeDeg, cur.longitudeDeg);
+            } else if (st == LZ_ERR_NOT_READY) {
+                LzWidget_PostMessage("✗ 记录失败：还没有飞机定位数据，请稍候再按");
+            } else if (st == LZ_ERR_NO_TARGET) {
+                LzWidget_PostMessage("✗ 记录失败：当前没有定位（等 GPS 锁定后再按）");
+            } else {
+                LzWidget_PostMessage("✗ 记录失败：%s", LzStatus_Str(st));
+            }
+        } else {
+            st = LzPole_RecordLaser();
+            if (st == LZ_OK) {
+                LzGeo g;
+                if (LzPole_GetRecorded(&g) == LZ_OK) {
+                    LzWidget_PostMessage("✓ 已记录激光点为圆心：%.7f, %.7f",
+                                         g.latitudeDeg, g.longitudeDeg);
+                } else {
+                    LzWidget_PostMessage("✓ 已记录激光点");
+                }
+            } else if (st == LZ_ERR_UNSUPPORTED) {
+                /* 措辞面向**操作员**，不是开发者 —— 现场不需要知道
+                 * 什么编译开关。只说"这个包没有这功能，用另一个按钮"，
+                 * 操作员立刻知道该怎么办。 */
+                LzWidget_PostMessage("✗ 本包未启用激光记录，请改用「记录飞机位」");
+            } else if (st == LZ_ERR_NO_TARGET) {
+                LzWidget_PostMessage("✗ 记录失败：激光无回波，请对准目标再按");
+            } else {
+                LzWidget_PostMessage("✗ 记录失败：%s", LzStatus_Str(st));
+            }
+        }
+        break;
+    }
+
     default:
         return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
     }
@@ -153,6 +221,15 @@ static T_DjiReturnCode LzWidget_GetWidgetValue(E_DjiWidgetType widgetType, uint3
     case LZ_WIDGET_IDX_HEIGHT_SCALE:
         *value = s_heightPercent;
         break;
+    /* 按钮没有"当前值"可读 —— 它是瞬时动作，不是状态。
+     * 回 `RELEASE_UP` 让界面显示为未按下，与"按一下就弹回"的物理直觉一致。 */
+    case LZ_WIDGET_IDX_RECORD_AIRCRAFT:
+    case LZ_WIDGET_IDX_RECORD_LASER:
+        if (widgetType != DJI_WIDGET_TYPE_BUTTON) {
+            return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
+        }
+        *value = DJI_WIDGET_BUTTON_STATE_RELEASE_UP;
+        break;
     default:
         return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
     }
@@ -164,6 +241,11 @@ static const T_DjiWidgetHandlerListItem s_widgetHandlerList[LZ_WIDGET_COUNT] = {
     {LZ_WIDGET_IDX_ORBIT_SWITCH, DJI_WIDGET_TYPE_SWITCH, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
     {LZ_WIDGET_IDX_RADIUS_SCALE, DJI_WIDGET_TYPE_SCALE,  LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
     {LZ_WIDGET_IDX_HEIGHT_SCALE, DJI_WIDGET_TYPE_SCALE,  LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
+    /* 两个记录按钮。**索引必须与两份 widget_config.json 里的 widget_index 对上** ——
+     * PSDK 按索引把界面控件分派给这里的 handler，对不上的后果是
+     * "按了 A 按钮却执行了 B 的动作"，而两边都不会报错。 */
+    {LZ_WIDGET_IDX_RECORD_AIRCRAFT, DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
+    {LZ_WIDGET_IDX_RECORD_LASER,    DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
 };
 
 /* ------------------------------------------------------------------ */

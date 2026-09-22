@@ -26,11 +26,15 @@
 #include <dji_core.h>
 #include <dji_logger.h>
 #include <dji_platform.h>
+#ifdef LZ_POLE_SOURCE_LASER
+#include <dji_camera_manager.h>
+#endif
 
 #include <stdio.h>
 #include <unistd.h>
 
 #include "lz_mission.h"
+#include "lz_pole_source.h"
 #include "lz_widget.h"
 #include "platform/lz_platform.h"
 #include "platform/lz_user_info.h"
@@ -86,6 +90,21 @@ int main(int argc, char **argv)
     (void)DjiCore_SetFirmwareVersion(fw);
 
     /* ---- 3. 功能模块 --------------------------------------------- */
+#ifdef LZ_POLE_SOURCE_LASER
+    /* 相机管理模块 —— "记录激光点"按钮的前提。
+     *
+     * ⚠️ **不初始化它，`DjiCameraManager_GetLaserRangingInfo()` 就不会工作**
+     * （官方头文件原话："user should call this function before using camera
+     * manager features"）。而探针 `lz_rangefinder_probe.c` 里调了它、主应用
+     * 原先没有 —— 这就是"探针能读到激光、主应用读不到"的原因。
+     *
+     * 失败**不阻断启动**（仓库级硬规则：fail-closed 的边界在「作业开始」）。
+     * 失败时激光按钮会报"读取激光失败"，其余功能不受影响。 */
+    if (DjiCameraManager_Init() != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+        printf("[lz] 相机模块初始化失败 —— 激光记录不可用（其余功能正常）\n");
+    }
+#endif
+
     /* 控件：操作员的入口。必须先于 ApplicationStart，否则 Pilot 拉不到控件。 */
     if (LzWidget_Init() != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
         printf("[lz] 控件模块初始化失败\n");
@@ -96,6 +115,18 @@ int main(int argc, char **argv)
     if (LzMission_Init() != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
         printf("[lz] 任务模块初始化失败\n");
     }
+
+    /* 读回上次记录的绕飞圆心。
+     *
+     * ⚠️ **失败不阻断启动** —— 首次运行本来就没有记录文件，那是正常状态
+     * （返回 LZ_ERR_NOT_READY）。这与仓库级 CLAUDE.md 的硬规则一致：
+     * fail-closed 的边界划在「作业开始」，不是「进程启动」。
+     * 未记录时操作员拨开关会被拒，并在浮窗里看到"请先记录圆心"。
+     *
+     * 放在这里（ApplicationStart 之前、控件 Init 之后）的理由：
+     * 只是文件读取，不依赖 SDK 调度器；早读进来，操作员一开界面就能
+     * 从浮窗知道当前有没有记录。 */
+    (void)LzPole_LoadRecorded();
 
     /* ---- 4. ApplicationStart ------------------------------------- */
     if (DjiCore_ApplicationStart() != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
@@ -128,6 +159,9 @@ int main(int argc, char **argv)
     /* ---- 6. 清理（当前循环不退出，留着以备将来加退出信号）---------- */
     LzMission_DeInit();
     LzWidget_Stop();
+#ifdef LZ_POLE_SOURCE_LASER
+    (void)DjiCameraManager_DeInit();
+#endif
     DjiCore_DeInit();
     LzPlatform_Deinit();
     printf("[lz] 退出\n");

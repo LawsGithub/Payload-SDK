@@ -45,6 +45,7 @@ typedef enum {
     LZ_ERR_UNSUPPORTED, /*!< 当前机型/相机不支持该能力 */
     LZ_ERR_UPLOAD,      /*!< 文件已生成但**上传被拒**（数据、校验、连接问题） */
     LZ_ERR_START,       /*!< 上传成功但**任务启动被拒**（飞行状态、RC 档位、GPS…） */
+    LZ_ERR_NOT_READY,   /*!< 前置条件未就绪：操作员还没做某件事（如未记录杆位） */
 } LzStatus;
 
 /** @brief 返回值的可读名字，用于日志 */

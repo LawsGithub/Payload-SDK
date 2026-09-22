@@ -48,6 +48,32 @@
                     "mapping_config_display_order": 2,
                     "button_value_step_length": 5
                 }
+            },
+            {
+                "widget_index": 3,
+                "widget_type": "button",
+                "widget_name": "Record Aircraft",
+                "icon_file_set": {
+                    "icon_file_name_selected": "icon_record_aircraft.png",
+                    "icon_file_name_unselected": "icon_record_aircraft.png"
+                },
+                "customize_rc_buttons_config": {
+                    "is_enable": true,
+                    "mapping_config_display_order": 3
+                }
+            },
+            {
+                "widget_index": 4,
+                "widget_type": "button",
+                "widget_name": "Record Laser",
+                "icon_file_set": {
+                    "icon_file_name_selected": "icon_record_laser.png",
+                    "icon_file_name_unselected": "icon_record_laser.png"
+                },
+                "customize_rc_buttons_config": {
+                    "is_enable": true,
+                    "mapping_config_display_order": 4
+                }
             }
         ]
     }
