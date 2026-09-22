@@ -173,17 +173,100 @@ LzStatus LzPole_RecordAircraft(const LzGeo *curPos)
     return LZ_OK;
 }
 
+/* ------------------------------------------------------------------ */
+/* 激光读数的判定 —— 纯逻辑，**不依赖 PSDK**                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief 判定一次激光读数能不能当圆心
+ *
+ * ## 为什么这段单独抽出来、且放在 `#ifdef LZ_POLE_SOURCE_LASER` 之前
+ *
+ * 判定是**纯逻辑**（几个数值比较），取数才依赖相机接口。分开之后：
+ *
+ *   - 判定部分可以上桌面测试（`lz_test_pole` 会编到这个函数）
+ *   - 取数部分只能在设备上验
+ *
+ * ⚠️ 这个拆分是被一次**空转的测试**逼出来的：原先的测试只断言
+ * `LzGeo_IsNullSolution()` 本身对零解有效，却没有断言
+ * `LzPole_RecordLaser()` 真的调用它 —— 反向验证时把闸门删掉，
+ * 测试**照样全绿**。原因是未定义 `LZ_POLE_SOURCE_LASER` 时
+ * 整个激光实现分支不参与编译，测试根本看不见它。
+ *
+ * **断言"判据对"不等于断言"接线对"。**
+ *
+ * ## 三道闸各自独立，不能互相担保
+ *
+ * 实测（2026-09-22，M4T 室内无 GPS）出现过 `distance=2.0m`（有效！）
+ * 而坐标是零解的情况 —— 激光的经纬度 = 机身位置 + 云台朝向 + 距离
+ * **解算**出来的，机身位置是零解时解算结果自然是零解。
+ *
+ * @param latDeg/lonDeg/altM  激光给出的坐标（**度**，不是 rad）
+ * @param distanceM           激光距离（**米**，调用方已从 0.1m 换算）
+ * @return `LZ_OK` = 可用；`LZ_ERR_NO_TARGET` = 不可用（三种成因，日志里区分）
+ */
+LzStatus LzPole_JudgeLaserReading(double latDeg, double lonDeg, double altM,
+                                  double distanceM)
+{
+    /* 闸门 1：必须有距离。
+     * 距离为 0 时坐标会退化成机身自身的位置 —— 不是垃圾值，
+     * 是个精确可预测的退化情形（实测模拟器上给出飞机初始位置）。 */
+    if (!(distanceM > 0.0)) {
+        USER_LOG_WARN("激光测不到距离（distance=%.1f m）—— 请对准目标再按", distanceM);
+        return LZ_ERR_NO_TARGET;
+    }
+
+    const LzGeo g = { .latitudeDeg = latDeg, .longitudeDeg = lonDeg, .altitudeM = altM };
+
+    /* 闸门 2：坐标必须合法 */
+    if (!LzGeo_IsValid(&g)) {
+        USER_LOG_WARN("激光给出的坐标非法（%.7f, %.7f，距离 %.1f m）",
+                      latDeg, lonDeg, distanceM);
+        return LZ_ERR_NO_TARGET;
+    }
+
+    /* 闸门 3：坐标不能是零解 —— 见本函数上方关于"三闸独立"的说明 */
+    if (LzGeo_IsNullSolution(&g)) {
+        USER_LOG_WARN("激光坐标是零解（%.7f, %.7f，距离 %.1f m）—— "
+                      "瞄准点要靠飞机自身定位解算，当前飞机没有定位",
+                      latDeg, lonDeg, distanceM);
+        return LZ_ERR_NO_TARGET;
+    }
+
+    return LZ_OK;
+}
+
 #ifdef LZ_POLE_SOURCE_LASER
 
 /* `[V]` 实测：M4T 的激光测距在位置 1（E1，自带云台相机那一路） */
 #define LZ_LASER_MOUNT_POSITION DJI_MOUNT_POSITION_PAYLOAD_PORT_NO1
 
-/* exception 取值 —— **官方文档未公开**，以下由实测对照反推 `[?]`：
- *   1 = 无回波/测不到（此时 distance=0，lat/lon 也是 0）
- *   3 = 正常读数
- *   2 = 过渡态，含义不明
- * 只认 3 为有效。若日后发现有效读数也出现别的值，回来放宽这里。 */
-#define LZ_LASER_EXC_OK 3
+/* ## 为什么判据是 `distance` 而不是白名单枚举 `exception`
+ *
+ * `exception` 的取值**官方从未公开**（头文件与中英文档都只有"异常标志"四字），
+ * 只能靠实测对照反推。实测见过的值：
+ *
+ * | exc | 伴随的 distance | 结论 |
+ * |---|---|---|
+ * | 0 | **4.5 ~ 14.2 m（有实数、且在变）** | **2026-09-22 新观察到** |
+ * | 1 | 0（恒为 0） | 无回波 |
+ * | 2 | 0 | 过渡态，含义不明 |
+ * | 3 | 有实数 | 早先认为的"正常读数" |
+ *
+ * ⚠️ 早先的实现只认 `3`，于是 **`exception=0` 且距离有效时被误判成"无回波"**
+ * —— 操作员看到"激光无回波"，而实际测距工作正常、只是我们的闸门关着。
+ * 那次现场排查浪费了一轮，因为**文案把病因指反了**。
+ *
+ * ⇒ 判据改成**只看 `distance`**：
+ *
+ *   `distance` 是三个字段里唯一**可自证**的量 —— 它由激光独立测量，
+ *   不参与坐标解算，无回波时恒为 0。而 `exception` 是飞机给的语义标签，
+ *   语义未定义、取值还在增加，**不能当白名单用**。
+ *
+ * 这条经验值得推广：**当一个字段的取值域没有权威来源时，不要用枚举白名单，
+ * 改用有物理意义、能自证的量。** 白名单会随着新观测不断打补丁，
+ * 而漏掉的那一个恰恰会在最需要它的时候出现。
+ */
 
 LzStatus LzPole_RecordLaser(void)
 {
@@ -197,37 +280,26 @@ LzStatus LzPole_RecordLaser(void)
         return LZ_ERR_IO;
     }
 
-    /* ⚠️ 必须判 exception —— 否则会把「无回波时的 0,0」当成真坐标 */
-    if (info.exception != LZ_LASER_EXC_OK) {
-        USER_LOG_WARN("激光无有效回波（exception=%u，distance=%.1fm），拒绝记录",
-                      (unsigned)info.exception, info.distance / 10.0);
-        return LZ_ERR_NO_TARGET;
+    /* 判定逻辑在 `LzPole_JudgeLaserReading()` 里 —— 它是纯逻辑、零依赖，
+     * 所以那条路能在桌面上被测到。这里只负责取数与落盘。
+     * 拆分的理由见该函数的注释（一次"空转的测试"逼出来的）。 */
+    const double distanceM = info.distance / 10.0;   /* 结构体注释：unit 0.1m */
+    const double altM = info.altitude / 10.0;
+
+    const LzStatus st = LzPole_JudgeLaserReading(info.latitude, info.longitude,
+                                                altM, distanceM);
+    if (st != LZ_OK) {
+        return st;
     }
 
-    /* ⚠️ 还要判 distance。激光给出的经纬度是「机身位置 + 云台朝向 + 距离」
-     * 解算出的瞄准点；**距离为 0 时这个算式退化成机身自身的位置** ——
-     * 不是垃圾值，而是一个精确可预测的退化情形（实测模拟器上给出的是
-     * 飞机初始位置 113.1700000, 28.2666000）。
-     * `distance` 是三个字段里唯一可自证的量（无回波恒为 0），所以把它当入口条件。 */
-    if (info.distance <= 0) {
-        USER_LOG_WARN("激光距离为 0（exception=%u）—— 瞄准点会退化成机身位置，"
-                      "拒绝记录", (unsigned)info.exception);
-        return LZ_ERR_NO_TARGET;
-    }
-
-    LzGeo g = {
+    const LzGeo g = {
         .latitudeDeg = info.latitude,
         .longitudeDeg = info.longitude,
-        .altitudeM = info.altitude / 10.0,   /* 结构体注释：unit 0.1m */
+        .altitudeM = altM,
     };
-    if (!LzGeo_IsValid(&g)) {
-        USER_LOG_WARN("激光给出的坐标非法（%.7f, %.7f）", g.latitudeDeg, g.longitudeDeg);
-        return LZ_ERR_NO_TARGET;
-    }
-
     lz_record_common(&g, LZ_POLE_RECORD_LASER);
-    USER_LOG_INFO("★ 已记录激光瞄准点为绕飞圆心：%.7f, %.7f（距离 %.1f m）",
-                  g.latitudeDeg, g.longitudeDeg, info.distance / 10.0);
+    USER_LOG_INFO("★ 已记录激光瞄准点为绕飞圆心：%.7f, %.7f（距离 %.1f m，exception=%u）",
+                  g.latitudeDeg, g.longitudeDeg, distanceM, (unsigned)info.exception);
     return LZ_OK;
 }
 

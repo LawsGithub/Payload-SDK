@@ -293,7 +293,24 @@ static void lz_mission_handle_record(void)
         /* 措辞面向**操作员**，不是开发者 —— 现场不需要知道什么编译开关 */
         LzWidget_PostMessage("✗ 本包未启用激光记录，请改用「记录飞机位」");
     } else if (st == LZ_ERR_NO_TARGET) {
-        LzWidget_PostMessage("✗ 记录失败：激光无回波，请对准目标再按");
+        /* ⚠️ 这里**不能**只说"无回波" —— `LZ_ERR_NO_TARGET` 覆盖三种成因：
+         *   ① 测不到距离（真·无回波）
+         *   ② 坐标非法
+         *   ③ **坐标是零解**（飞机自身没定位，瞄准点解算退化）
+         *
+         * 早先只写"激光无回波"，而实测出现过「距离 4.5~14.2 m 明明有效、
+         * 飞机没定位导致坐标是零解」的情况 —— 文案把病因指反了，
+         * 操作员去调瞄准，实际该做的是等 GPS。
+         *
+         * 三者里对操作员**可操作**的区分是：要不要等定位。
+         * 用飞机当前位置是否有定位来判断该说哪句。 */
+        LzGeo cur;
+        if (LzBridge_GetCurrentPosition(&cur) == LZ_OK) {
+            LzWidget_PostMessage("✗ 记录失败：激光没测到距离，请对准目标再按");
+        } else {
+            LzWidget_PostMessage("✗ 记录失败：飞机自身没有定位，"
+                                 "激光点算不出来 —— 请到室外等 GPS 锁定");
+        }
     } else if (st == LZ_ERR_IO) {
         LzWidget_PostMessage("✗ 记录失败：读激光数据出错，详见日志");
     } else {

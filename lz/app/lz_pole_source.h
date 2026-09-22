@@ -25,7 +25,9 @@
  * - **记录飞机位** —— 存飞机当前所在位置（`TOPIC_POSITION_FUSED`）。
  *   含义是"我就在圆心正上方"。室内有 GPS fix 也能用。
  * - **记录激光点** —— 存激光瞄准点。含义是"我瞄的就是杆"。
- *   精度高（直出经纬度），但**必须打中实物**，无回波时拒绝记录。
+ *   精度高（直出经纬度），但两个前提：**必须打中实物**（有距离），
+ *   且**飞机自身要有定位**（瞄准点要靠机身位置解算 ——
+ *   飞机没定位时激光给的是零解，哪怕距离读数是有效的）。
  *
  * 两者都写进同一个槽位 —— 因为圆心只有一个，后来的记录覆盖先前的。
  * 记录成功会落盘（`data/pole.txt`），掉电/重启后仍在。
@@ -74,11 +76,35 @@ LzStatus LzPole_RecordAircraft(const LzGeo *curPos);
 /**
  * @brief 记录激光瞄准点为圆心
  *
+ * 判据是 **`distance`**，不是 `exception` 白名单 —— 后者取值官方未公开、
+ * 实测还在增加（0/1/2/3 都见过），而距离是可自证的量。详见 .c 里的说明。
+ *
  * @return `LZ_OK` = 已记录并落盘；
  *         `LZ_ERR_UNSUPPORTED` = 未以 `-DLZ_POLE_SOURCE_LASER` 编译；
- *         `LZ_ERR_NO_TARGET` = 激光无回波或距离为 0（瞄准点会退化成机身位置）
+ *         `LZ_ERR_NO_TARGET` = 以下三者之一：
+ *             - 测不到距离（`distance == 0`，无回波）
+ *             - 坐标非法（超出经纬度范围）
+ *             - **坐标是零解**（飞机自身没有定位，瞄准点解算退化）
  */
 LzStatus LzPole_RecordLaser(void);
+
+/**
+ * @brief 判定一次激光读数能不能当圆心（**纯逻辑，零依赖**）
+ *
+ * 三道闸各自独立、不能互相担保：
+ *   ① 必须有距离（`distance == 0` 时坐标会退化成机身位置）
+ *   ② 坐标必须合法（经纬度范围内）
+ *   ③ **坐标不能是零解**（瞄准点靠机身位置解算，飞机没定位时解算退化）
+ *
+ * ⚠️ 实测（2026-09-22）出现过 `distance=2.0m` 有效而坐标是零解的情况 ——
+ * **"有距离"推不出"坐标有效"**。
+ *
+ * @param latDeg/lonDeg/altM 激光给出的坐标（**度**）
+ * @param distanceM          激光距离（**米**）
+ * @return `LZ_OK` / `LZ_ERR_NO_TARGET`
+ */
+LzStatus LzPole_JudgeLaserReading(double latDeg, double lonDeg, double altM,
+                                  double distanceM);
 
 /**
  * @brief 从磁盘读回上次记录的圆心（进程启动时调一次）

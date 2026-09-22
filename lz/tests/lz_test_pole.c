@@ -223,6 +223,44 @@ int main(void)
         LZ_CHECK(LzPole_Acquire(&t) == LZ_ERR_NOT_READY);
     }
 
+    LZ_CASE("激光判定闸门 ①：必须有距离");
+    {
+        /* 距离为 0 时坐标会退化成机身位置 —— 必须拒 */
+        LZ_CHECK(LzPole_JudgeLaserReading(28.1788480, 112.9210020, 60.0, 0.0) == LZ_ERR_NO_TARGET);
+        /* 负距离是不可能的输入，也要拒 */
+        LZ_CHECK(LzPole_JudgeLaserReading(28.1788480, 112.9210020, 60.0, -1.0) == LZ_ERR_NO_TARGET);
+
+        /* 有距离 + 真实坐标 → 通过 */
+        LZ_CHECK(LzPole_JudgeLaserReading(28.1788480, 112.9210020, 60.0, 14.2) == LZ_OK);
+    }
+
+    LZ_CASE("激光判定闸门 ②：坐标必须合法");
+    {
+        LZ_CHECK(LzPole_JudgeLaserReading(999.0, 112.0, 60.0, 5.0) == LZ_ERR_NO_TARGET);
+        LZ_CHECK(LzPole_JudgeLaserReading(28.0, 999.0, 60.0, 5.0) == LZ_ERR_NO_TARGET);
+        LZ_CHECK(LzPole_JudgeLaserReading(0.0 / 0.0, 112.0, 60.0, 5.0) == LZ_ERR_NO_TARGET);
+    }
+
+    LZ_CASE("激光判定闸门 ③：坐标不能是零解（**即使距离有效**）");
+    {
+        /* 这条是设备实测逼出来的核心用例（2026-09-22，M4T 室内无 GPS）：
+         * `distance=2.0m` **有效**，而 `lat/lon = 0.0, 0.0`。
+         *
+         * 激光的经纬度 = 机身位置 + 云台朝向 + 距离 **解算**出来的 ——
+         * 飞机自身没定位时，机身位置是零解，解算结果自然是零解。
+         * **"有距离"推不出"坐标有效"**，所以闸门 ① 过了也要过 ③。 */
+        LZ_CHECK(LzPole_JudgeLaserReading(0.0, 0.0, 2.0, 2.0) == LZ_ERR_NO_TARGET);
+
+        /* 残差（不是精确 0）也要拦 —— 与融合位置那个坑同形 */
+        LZ_CHECK(LzPole_JudgeLaserReading(0.0000001, -0.0000002, 2.0, 2.0) == LZ_ERR_NO_TARGET);
+
+        /* 阈值内拒 */
+        LZ_CHECK(LzPole_JudgeLaserReading(0.4, 0.4, 2.0, 2.0) == LZ_ERR_NO_TARGET);
+
+        /* 越过阈值就放行 —— 否则激光永远记不下来 */
+        LZ_CHECK(LzPole_JudgeLaserReading(0.6, 112.0, 2.0, 2.0) == LZ_OK);
+    }
+
     LZ_CASE("激光记录在未启用编译时应报 UNSUPPORTED，而不是含糊的失败");
     {
         /* ⚠️ 这条测的是**本测试目标**的编译配置，不是主应用的。
