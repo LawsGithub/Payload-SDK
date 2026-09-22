@@ -93,7 +93,7 @@ x86 侧只能验证**编译与链接**（设备没有 `/dev/usb-ffs/bulk*`，跑
 
 改动这个结构体等于改动两层的接口，**要同时改两侧**。
 
-## 绕飞：已定路线 —— Waypoint V3（自建 KMZ）+ 逐点 gimbalRotate 绝对 yaw
+## 绕飞：已定路线 —— Waypoint V3（自建 KMZ）+ towardPOI 机头对准杆心
 
 **机型是 M4T + 妙算3，这直接推翻了最初的选择。** 官方文档原文（`[V]` 2026-09-18）：
 
@@ -107,23 +107,52 @@ M4T 属 M4 系列（`DJI_AIRCRAFT_TYPE_M4T = 99`），即"后续机型"一档。
 **所以 V2 排除（它只给 M300/M350），改用 V3。** 佐证：官方 V2 样例源码写着
 `"Waypoint V2 sample only support M300 RTK"`，而 **V3 样例没有任何机型门禁** `[V]`。
 
-### 关键发现：wpml 的云台动作支持 yaw 绝对角度 `[V]`
+### 绕飞怎么让相机盯着杆：靠**机头**，不是靠云台 `[V]`（2026-09-22 定案）
 
-解包官方样例 KMZ，`gimbalRotate` 的参数里有：
+原方案是逐点写 `gimbalRotate` + `gimbalYawRotateEnable=1` + 绝对方位角，
+同时机头 `followWayline`（沿航线）。**这个组合在 M4T 上非法**，
+试飞时飞机报「一些航点角度过大无法转向」。
 
-```xml
-<wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>
-<wpml:gimbalYawRotateEnable>0</wpml:gimbalYawRotateEnable>   ← 官方样例是 0
-<wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>
-```
+两条独立证据：
 
-官方样例把 yaw 关掉了（它只要俯仰），**但字段存在**。绕飞把 yaw 置 1、
-角度填绝对方位角，就是"光轴指向杆心"。
+1. 规范里 **三处**（`gimbalRotate` / `orientedShoot` / `rotateYaw`）都标：
 
-> **教训**：我上一轮判定"KMZ 对第三方负载没意义"是**错的** —— 当时只看了
-> `takePhoto`/`fileSuffix` 那些相机参数，没注意 `gimbalRotate` 是**独立动作**。
-> 判断一个能力缺失前，要把容器里所有动作类型列一遍
-> （`grep -o 'wpml:[a-zA-Z]*' | sort -u`）。
+   > `wpml:gimbalYawRotateAngle` 与 `wpml:aircraftHeading` 需保持一致
+   > 机型：M3E/M3T，M3D/M3TD，**M4D/M4TD，M4E/M4T**
+
+   出处：Cloud-API-Doc `00.dji-wpml/40.common-element.md`。
+
+2. M4T 规格页（enterprise.dji.com/zh-tw/matrice-4-series/specs）：
+
+   > Controllable Rotation Range — **Pan: Not controllable**
+   > Yaw Axis — Manual operation is uncontrollable;
+   >            **The MSDK interface program is controllable.**
+   > 机械软限位 Pan: **-60° ~ +60°**
+
+   即：M4T 的云台 yaw **不能独立于机头偏转**，只有 MSDK 程序能在
+   机械限位内驱动那一小段。而我们要求光轴转 45°、机头不跟 —— 做不到。
+
+**所以改走 `towardPOI`**：`waypointHeadingMode=towardPOI` +
+`waypointPoiPoint` 填杆的经纬度。飞机**侧飞**绕圈，机头（因而光轴）
+始终指向圆心。这正是 DJI Pilot 2 里「兴趣点环绕」的做法，用户 2026-09-22
+确认要的就是这个效果。
+
+配套改动：
+
+- `gimbalYawRotateAngle` 仍写，但数值 = 该点看向杆心的方位角，
+  与飞机自己算的 `aircraftHeading` **天然一致** —— 满足上面那条规范。
+  它不再代表"云台独立偏转"。
+- `waypointHeadingPathMode` 从 `followBadArc` 改为**跟随绕行方向**
+  （clockwise / counterClockwise）：机头要主动去追杆，必须明确告诉它朝哪边转。
+- `waypointPoiPoint` 从占位符 `0.000000,0.000000,0.000000` 改为**真实杆位**。
+  老写法让机头朝几内亚湾转 —— 等于乱转。
+- `pole` 从"不参与生成"变成兴趣点坐标来源，因此 `LzWpml_Build` 现在
+  **拒绝 NULL / 非法 / 零解**的杆位。
+
+> **教训（方法论）**：判"某个 wpml 能力可用"时，不能只看字段存在 ——
+> 还要看「支持机型」列里的**附加约束**。`gimbalYawRotateAngle` 字段确实
+> 存在、官方样例也写了，但 M4T 那一档注明了它必须与 `aircraftHeading` 一致。
+> **字段存在 ≠ 能按你的意思用。**
 
 ### 实现（已完成，2026-09-19）
 
@@ -187,10 +216,9 @@ curl -sL $B/20.template-kml.md $B/30.waylines-wpml.md $B/40.common-element.md
 **只 grep "必需元素" 会把 M3D 专属元素也加进来。** 这条方法论写进了
 `tests/lz_test_wpml.c`（"不应写入 M3D 专属的绕行元素"用例）。
 
-**当前 KMZ 缺的元素里，只有 `gimbalHeadingYawBase` 是真正可疑的** ——
-官方样例也缺它，但样例的 `gimbalYawRotateEnable` 是 **0**（只用俯仰），
-而我们使能 yaw，`absoluteAngle` 正依赖"相对正北"这个声明。
-**样例能飞不能用来给我们开脱：两者处境不同。**
+`gimbalHeadingYawBase` 已补上（`north`），且 yaw 的**语义**已在
+2026-09-22 改掉 —— 见上文「绕飞怎么让相机盯着杆」。现在它不再是
+"云台独立偏转"，而是与机头目标角一致的从属值。
 
 ## 上机已确认与仍待确认
 
@@ -211,7 +239,10 @@ curl -sL $B/20.template-kml.md $B/30.waylines-wpml.md $B/40.common-element.md
       —— 这是**唯一还没跑完的环节**。所有中间环节都验过了，
       但"记录圆心 → 拨开关 → 飞机真的绕圈"这一整条链从未走通
 - [ ] `droneEnumValue=99` / `payloadEnumValue=89`（M4T）是否被飞机接受
-- [ ] 逐点 `gimbalYawRotateAngle` 实测能否驱动云台指向杆心
+- [ ] **towardPOI 在 M4T 上实测能否生效** —— 2026-09-22 改为机头对准杆心后
+      的**首次上机**，是这一改动唯一的验证途径。观察点：飞机是否侧飞、
+      机头是否始终对着杆
+- [ ] 云台 yaw 是否真如规范所说"与 aircraftHeading 一致"（不再独立偏转）
 - [ ] **POI（`DjiInterestPoint_*`）在 M4T 上是否可用** —— 文档说"及后续机型"
       也覆盖 M4T；若可用且能接受半径不可控，它比自建 KMZ 省事得多
 - [ ] 运动规划是否需要额外申请 PSDK 高级权限？矩阵里个别功能有此标注，未确认

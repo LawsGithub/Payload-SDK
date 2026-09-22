@@ -58,7 +58,8 @@ static LzStatus lz_route_push(LzRoute *route, const LzWaypoint *wp)
  *
  *   stationBearing   从**杆**出发指向站点的方位角 —— 决定站点在圆的哪一点
  *   dir              绕行方向对 bearing 的符号
- *   gimbalYawDeg     从**站点**出发指向杆心的方位角 —— 决定光轴朝哪
+ *   gimbalYawDeg     从**站点**出发指向杆心的方位角 —— 决定机头/云台朝哪
+ *                    （M4T 上机头承担这个偏转，见 lz_wpml.c 文件头）
  *
  * stationBearing 与 gimbalYawDeg 相差 180°，但**不要用 +180 去算后者**：
  * 直接用 LzGeo_BearingDeg(站点, 杆心) 反算。两者数学上等价，但反算少一处
@@ -129,7 +130,8 @@ LzStatus LzPlan_BuildOrbit(const LzTarget *target,
 
         wp.relativeAltM = profile->altitudeM;
         wp.speedMs = profile->speedMs;
-        /* 光轴指向杆心 —— 绕飞的全部意义就在这一行 */
+        /* 看向杆心的方位角 —— 绕飞的全部意义就在这一行。
+         * 它同时是云台 yaw 与机头目标角（M4T 的 towardPOI 要求两者一致）。 */
         wp.gimbalYawDeg = LzGeo_BearingDeg(&wp.geo, &target->geo);
         wp.gimbalPitchDeg = profile->gimbalPitchDeg;
 

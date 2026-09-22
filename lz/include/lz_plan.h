@@ -53,7 +53,14 @@ typedef struct {
     LzGeo geo;              /*!< WGS84 位置（高度字段不含相对高，相对高见下） */
     double relativeAltM;    /*!< 相对起飞点高度 m */
     double speedMs;         /*!< 到达该点的速度 m/s */
-    double gimbalYawDeg;    /*!< 该点云台偏航（绝对方位角，指向杆心） */
+    double gimbalYawDeg;    /*!< 该点看向杆心的绝对方位角 [0,360)
+                                 *
+                                 * 同时是两个东西的取值：
+                                 *  - wpml 的 `gimbalYawRotateAngle`（云台 yaw）
+                                 *  - 机头的目标偏航角 —— M4T 上 `towardPOI`
+                                 *    让机头指向杆心，其目标角正是这个值。
+                                 *    规范要求两者一致，所以用同一个数。
+                                 * 详见 lz_wpml.c 文件头。 */
     double gimbalPitchDeg;  /*!< 该点云台俯仰 */
 } LzWaypoint;
 
@@ -70,7 +77,9 @@ void LzRoute_Free(LzRoute *route);
 /**
  * @brief 为**一根杆**生成绕飞航线（实现在 lz_plan.c，含方向约定的推导）
  *
- * 每个航点的云台偏航应指向杆心 —— 这是绕飞的核心：飞机在动，光轴要一直盯着杆。
+ * 每个航点都带着「看向杆心」的方位角 —— 这是绕飞的核心：飞机在动，
+ * 相机要一直盯着杆。M4T 上由**机头**承担这个偏转（`towardPOI`），
+ * 因为它的云台 yaw 不能独立于机头转动（见 lz_wpml.c 文件头）。
  *
  * @param target   目标杆
  * @param takeoff  起飞点 WGS84（提供经度/纬度基准；高度用 relativeAltM 表达）

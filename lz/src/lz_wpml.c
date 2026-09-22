@@ -6,16 +6,41 @@
  * 官方样例：samples/sample_c/module_sample/waypoint_v3/waypoint_file/
  *           waypoint_v3_test_file.kmz
  *
- * ## 绕飞的关键：gimbalRotate + absoluteAngle + Yaw
+ * ## 绕飞的关键：towardPOI（机头对准杆心）
  *
- * `[V]` 解包实测，wpml 的云台动作参数长这样：
+ * 每个航点的 `waypointHeadingMode` 置 `towardPOI`、`waypointPoiPoint`
+ * 填杆的经纬度，飞机就**侧飞**绕圈：机头（因而光轴）始终指向圆心。
+ *
+ * ## ⚠️ 为什么不用 gimbalRotate 的 absoluteAngle yaw —— 在 M4T 上做不到
+ *
+ * 曾经的实现是逐点写：
  *
  *     <wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>
  *     <wpml:gimbalYawRotateEnable>1</wpml:gimbalYawRotateEnable>
  *     <wpml:gimbalYawRotateAngle>-45</wpml:gimbalYawRotateAngle>
  *
- * 官方样例里 `gimbalYawRotateEnable` 是 **0**（它只需要俯仰）。
- * 绕飞要的正是 yaw —— 把它置 1、角度填绝对方位角，光轴就指向杆心。
+ * 同时 `waypointHeadingMode=followWayline`（机头沿航线）。**这个组合在 M4T
+ * 上非法**，理由是两条独立证据：
+ *
+ * 1. 规范说云台 yaw 必须跟着机头（`40.common-element.md` 的
+ *    gimbalRotate / orientedShoot / rotateYaw 三处都标）：
+ *
+ *        wpml:gimbalYawRotateAngle 与 wpml:aircraftHeading 需保持一致
+ *        适用机型：M3E/M3T，M3D/M3TD，M4D/M4TD，**M4E/M4T**
+ *
+ * 2. M4T 规格页（enterprise.dji.com/zh-tw/matrice-4-series/specs）：
+ *
+ *        Controllable Rotation Range — Pan: Not controllable
+ *        Yaw Axis — Manual operation is uncontrollable;
+ *                   The MSDK interface program is controllable.
+ *        机械软限位 Pan: -60° ~ +60°
+ *
+ * 合起来即：M4T 的云台 yaw **不能独立于机头偏转**（只有 MSDK 程序能驱动
+ * 机械限位内的那一小段）。而我们要求光轴转 45°、机头不跟 —— 做不到。
+ * 飞机给的回应就是"角度过大无法转向"。
+ *
+ * ⇒ 让机头承担这个偏转让，云台只做俯仰。这就是 `towardPOI` 的语义，
+ *   也正是 DJI Pilot 2 里「兴趣点环绕」的做法。
  *
  * ️ 但**官方样例不能作为"哪些元素必需"的权威**：实测它自身缺
  * `wpml:globalRTHHeight`（官方标为必需元素），照样能飞。所以本文件的
@@ -114,9 +139,15 @@ LzStatus LzWpml_Build(const LzRoute *route,
     if (route == NULL || profile == NULL || out == NULL) {
         return LZ_ERR_PARAM;
     }
-    /* pole 目前不参与 XML 生成（云台角已由 lz_plan 算好）；
-     * 保留参数是为了将来若要在文件里写入兴趣点坐标时不必改签名 */
-    (void)pole;
+    /* pole 参与 XML 生成：它的经纬度就是 waypointPoiPoint（兴趣点）。
+     * 曾经这里是 `(void)pole;` —— 那时云台角已由 lz_plan 算好、坐标无用；
+     * 改成 towardPOI 后，飞机需要**自己**知道圆心在哪，所以必须写进去。 */
+    /* 兴趣点坐标必须是真定位。零解（无定位时的浮点残差）能过
+     * LzGeo_IsValid 却毫无意义 —— 机头会朝几内亚湾转，绕飞彻底失效。 */
+    if (pole == NULL || !LzGeo_IsValid(&pole->geo) ||
+        LzGeo_IsNullSolution(&pole->geo)) {
+        return LZ_ERR_NO_TARGET;
+    }
     if (route->count == 0) {
         return LZ_ERR_NO_TARGET;
     }
@@ -190,17 +221,21 @@ LzStatus LzWpml_Build(const LzRoute *route,
      * 而不是全局固定值 —— 绕飞必须逐点不同 */
     lz_str_addf(&t, "      <wpml:gimbalPitchMode>usePointSetting</wpml:gimbalPitchMode>\n");
     lz_str_addf(&t, "      <wpml:globalWaypointHeadingParam>\n");
-    lz_str_addf(&t, "        <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>\n");
+    lz_str_addf(&t, "        <wpml:waypointHeadingMode>towardPOI</wpml:waypointHeadingMode>\n");
     lz_str_addf(&t, "        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>\n");
-    lz_str_addf(&t, "        <wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>\n");
+    /* ★ 绕飞核心：机头始终朝向杆心。高度置 0 —— 规范明说
+     * "目前不支持Z方向朝向兴趣点，高度可设置为0"，写航点高度会被忽略。 */
+    lz_str_addf(&t, "        <wpml:waypointPoiPoint>%.7f,%.7f,0.000000</wpml:waypointPoiPoint>\n",
+                pole->geo.latitudeDeg, pole->geo.longitudeDeg);
     /* waypointHeadingPathMode 是**必需元素**（40.common-element.md 的
-     * `<wpml:waypointHeadingParam> & <wpml:globalWaypointHeadingParam>` 一节），
-     * 原实现漏了它。取值 followBadArc=沿最短路径旋转。
-     * 选它的理由：机头沿航线方向飞（waypointHeadingMode=followWayline），
-     * 绕飞中相邻航点的航向变化固定为一个步进角，三种取值里只有
-     * followBadArc 不假定转向方向 —— clockwise/counterClockwise 是给
-     * "指定目标航向、需要选一条路转过去"的场景用的。 */
-    lz_str_addf(&t, "        <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>\n");
+     * `<wpml:waypointHeadingParam> & <wpml:globalWaypointHeadingParam>` 一节）。
+     * 取值跟绕行方向走：机头要主动去追杆，必须明确告诉它朝哪边转 ——
+     * 顺时针绕飞时机头也该顺时针转。
+     * （曾经取 followBadArc，那时机头沿航线、转向是被动的。
+     *   clockwise/counterClockwise 正是给"指定目标航向、需要选一条路转过去"
+     *   的场景用的，现在正是这个场景。） */
+    lz_str_addf(&t, "        <wpml:waypointHeadingPathMode>%s</wpml:waypointHeadingPathMode>\n",
+                profile->clockwise ? "clockwise" : "counterClockwise");
     lz_str_addf(&t, "        <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>\n");
     lz_str_addf(&t, "      </wpml:globalWaypointHeadingParam>\n");
     lz_str_addf(&t, "      <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>\n");
@@ -246,7 +281,16 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&t, "              <wpml:gimbalPitchRotateAngle>%.1f</wpml:gimbalPitchRotateAngle>\n", wp->gimbalPitchDeg);
         lz_str_addf(&t, "              <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>\n");
         lz_str_addf(&t, "              <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>\n");
-        /* ★ 绕飞核心：yaw 使能 + 绝对方位角 */
+        /* 云台 yaw：数值与机头目标角一致（规范对 M4T 的硬要求）。
+         *
+         * 机头由 waypointHeadingMode=towardPOI 指向杆心，其目标偏航角就是
+         * 「该点看向杆心」的方位角 —— 与 wp->gimbalYawDeg 是同一个角。
+         * 所以这里写的值与飞机自己算出的 aircraftHeading 天然一致，
+         * 满足规范的 "gimbalYawRotateAngle 与 aircraftHeading 需保持一致"。
+         *
+         * ⚠️ 这不是"云台独立偏转"：光轴对准杆**靠的是机头**，云台只是
+         * 跟着（M4T 的 pan 轴本身不可独立控制，见文件头的说明）。
+         * 曾经的实现让云台转 45° 而机头不转 —— 那个组合在 M4T 上非法。 */
         lz_str_addf(&t, "              <wpml:gimbalYawRotateEnable>1</wpml:gimbalYawRotateEnable>\n");
         lz_str_addf(&t, "              <wpml:gimbalYawRotateAngle>%.1f</wpml:gimbalYawRotateAngle>\n",
                     lz_yaw_to_signed(wp->gimbalYawDeg));
@@ -324,12 +368,17 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&w, "        <wpml:executeHeight>%.1f</wpml:executeHeight>\n", wp->relativeAltM);
         lz_str_addf(&w, "        <wpml:waypointSpeed>%.1f</wpml:waypointSpeed>\n", wp->speedMs);
         lz_str_addf(&w, "        <wpml:waypointHeadingParam>\n");
-        lz_str_addf(&w, "          <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>\n");
+        /* 逐点也写 towardPOI（飞机实际读的是这份）。
+         * 每点写同一份兴趣点在协议上冗余，但 waylines.wpml 才是可执行航线，
+         * 不依赖"全局值会不会被继承"这种未经验证的假设。 */
+        lz_str_addf(&w, "          <wpml:waypointHeadingMode>towardPOI</wpml:waypointHeadingMode>\n");
         lz_str_addf(&w, "          <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>\n");
-        lz_str_addf(&w, "          <wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>\n");
+        lz_str_addf(&w, "          <wpml:waypointPoiPoint>%.7f,%.7f,0.000000</wpml:waypointPoiPoint>\n",
+                    pole->geo.latitudeDeg, pole->geo.longitudeDeg);
         /* waypointHeadingPathMode 是 waypointHeadingParam 的必需子元素，
-         * 见 template.kml 那处的说明（取值 followBadArc 的理由同）。 */
-        lz_str_addf(&w, "          <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>\n");
+         * 取值跟绕行方向走 —— 理由见 template.kml 那处。 */
+        lz_str_addf(&w, "          <wpml:waypointHeadingPathMode>%s</wpml:waypointHeadingPathMode>\n",
+                    profile->clockwise ? "clockwise" : "counterClockwise");
         lz_str_addf(&w, "          <wpml:waypointHeadingAngleEnable>0</wpml:waypointHeadingAngleEnable>\n");
         lz_str_addf(&w, "          <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>\n");
         lz_str_addf(&w, "        </wpml:waypointHeadingParam>\n");
@@ -356,6 +405,7 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&w, "              <wpml:gimbalPitchRotateAngle>%.1f</wpml:gimbalPitchRotateAngle>\n", wp->gimbalPitchDeg);
         lz_str_addf(&w, "              <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>\n");
         lz_str_addf(&w, "              <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>\n");
+        /* 数值须与机头目标角一致 —— 理由见 template.kml 那处。 */
         lz_str_addf(&w, "              <wpml:gimbalYawRotateEnable>1</wpml:gimbalYawRotateEnable>\n");
         lz_str_addf(&w, "              <wpml:gimbalYawRotateAngle>%.1f</wpml:gimbalYawRotateAngle>\n",
                     lz_yaw_to_signed(wp->gimbalYawDeg));

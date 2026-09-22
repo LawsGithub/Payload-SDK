@@ -69,6 +69,33 @@ static int collect_yaw_angles(const char *text, double *out, int cap)
     return n;
 }
 
+/** 收集 <wpml:waypointPoiPoint> 的 "纬度,经度" 前缀，返回个数。
+ *  点在 XML 里写的是 "纬度,经度,高度"，第三段固定 0，比较时只看前两段。 */
+static int collect_poi(const char *text, double *lat, double *lon, int cap)
+{
+    static const char *kTag = "<wpml:waypointPoiPoint>";
+    int n = 0;
+    const char *p = text;
+    while (n < cap && (p = strstr(p, kTag)) != NULL) {
+        p += strlen(kTag);
+        char *end = NULL;
+        const double a = strtod(p, &end);
+        if (end == p || *end != ',') {
+            break;
+        }
+        p = end + 1;
+        const double b = strtod(p, &end);
+        if (end == p) {
+            break;
+        }
+        lat[n] = a;
+        lon[n] = b;
+        n++;
+        p = end;
+    }
+    return n;
+}
+
 static LzTarget pole(void)
 {
     LzTarget t = {
@@ -268,9 +295,10 @@ int main(void)
         LzWpmlFiles f = build(&route, &p, &pr);
         if (f.templateKml != NULL && f.waylinesWpml != NULL) {
             /* globalWaypointHeadingParam 里写一份（我们逐点 useGlobalHeadingParam=1），
-             * waylines 里每个航点各写一份。 */
-            LZ_CHECK(count_occurrences(f.templateKml, "<wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>") == 1);
-            LZ_CHECK(count_occurrences(f.waylinesWpml, "<wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>") == (int)route.count);
+             * waylines 里每个航点各写一份。
+             * 取值跟绕行方向走 —— 顺时针绕飞就必须是 clockwise。 */
+            LZ_CHECK(count_occurrences(f.templateKml, "<wpml:waypointHeadingPathMode>clockwise</wpml:waypointHeadingPathMode>") == 1);
+            LZ_CHECK(count_occurrences(f.waylinesWpml, "<wpml:waypointHeadingPathMode>clockwise</wpml:waypointHeadingPathMode>") == (int)route.count);
 
             /* payloadParam 容器：template.kml 的 Folder 尾部，官方样例有、我们原先没有。
              * 只在 template 里写一次（它是航线级的默认负载位置）。 */
@@ -283,6 +311,91 @@ int main(void)
             LZ_CHECK(pp != NULL && fold != NULL && pp < fold);
         }
         LzWpml_Free(&f);
+        LzRoute_Free(&route);
+    }
+
+    LZ_CASE("机头必须朝向兴趣点（towardPOI），且兴趣点就是杆心");
+    {
+        LzTarget p = pole();
+        const LzGeo takeoff = p.geo;
+        LzOrbitProfile pr = profile_of(100.7);
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &takeoff, &pr, &route) == LZ_OK);
+
+        LzWpmlFiles f = build(&route, &p, &pr);
+        if (f.templateKml != NULL && f.waylinesWpml != NULL) {
+            /* ★ 绕飞的全部意义：机头一直盯着杆。
+             *
+             * 为什么是机头而不是云台 —— M4T 的云台 yaw 不能独立于机头偏转，
+             * 规范在 gimbalRotate / orientedShoot / rotateYaw 三处都标了
+             * "gimbalYawRotateAngle 与 aircraftHeading 需保持一致"，机型列
+             * 明确包含 M4E/M4T。所以让机头承担这个偏转让。
+             *
+             * 这条断言守的是**那条被证伪的老路不能悄悄回来**：
+             * 曾经写的是 followWayline（机头沿航线）+ 云台绝对 yaw 转 45°，
+             * 飞机回的就是"角度过大无法转向"。 */
+            LZ_CHECK(count_occurrences(f.templateKml, "<wpml:waypointHeadingMode>towardPOI</wpml:waypointHeadingMode>") == 1);
+            LZ_CHECK(count_occurrences(f.waylinesWpml, "<wpml:waypointHeadingMode>towardPOI</wpml:waypointHeadingMode>") == (int)route.count);
+            LZ_CHECK(strstr(f.templateKml, "<wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>") == NULL);
+            LZ_CHECK(strstr(f.waylinesWpml, "<wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>") == NULL);
+
+            /* 兴趣点坐标必须是**杆的经纬度**，不是占位符 0,0,0。
+             * 老实现写的是 0.000000,0.000000,0.000000 —— 那个点在几内亚湾，
+             * 机头会朝那儿转（也就是乱转）。 */
+            double lat[64], lon[64];
+            const int nt = collect_poi(f.templateKml, lat, lon, 64);
+            const int nw = collect_poi(f.waylinesWpml, lat + 0, lon + 0, 0);  /* 只数 template */
+            (void)nw;
+            LZ_CHECK(nt == 1);
+            LZ_CHECK_NEAR(lat[0], p.geo.latitudeDeg, 1e-6);
+            LZ_CHECK_NEAR(lon[0], p.geo.longitudeDeg, 1e-6);
+
+            /* 逐点也要写（飞机实际读 waylines.wpml） */
+            double wlat[64], wlon[64];
+            const int n = collect_poi(f.waylinesWpml, wlat, wlon, 64);
+            LZ_CHECK(n == (int)route.count);
+            for (int i = 0; i < n; ++i) {
+                LZ_CHECK_NEAR(wlat[i], p.geo.latitudeDeg, 1e-6);
+                LZ_CHECK_NEAR(wlon[i], p.geo.longitudeDeg, 1e-6);
+            }
+
+            /* 占位符 "0.000000,0.000000,0.000000" 绝不能再出现。
+             * ⚠️ 只比较整串：高度那一栏按规范本来就该写 0，所以
+             * "结尾是 ,0.000000" 这种 pattern 会误伤合法输出。 */
+            LZ_CHECK(strstr(f.templateKml, "<wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>") == NULL);
+            LZ_CHECK(strstr(f.waylinesWpml, "<wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>") == NULL);
+        }
+        LzWpml_Free(&f);
+        LzRoute_Free(&route);
+    }
+
+    LZ_CASE("应拒绝非法杆位（兴趣点坐标不可信）");
+    {
+        LzTarget p = pole();
+        const LzGeo takeoff = p.geo;
+        LzOrbitProfile pr = profile_of(100.7);
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &takeoff, &pr, &route) == LZ_OK);
+
+        LzWpmlFiles f;
+        f.identity = LzWpml_DefaultIdentity();
+        /* pole 从"不参与生成"变成"兴趣点坐标来源"之后，它就不能再是 NULL。
+         * 曾经这里 (void)pole; —— 传 NULL 也照样生成，因为坐标没用到。 */
+        LZ_CHECK(LzWpml_Build(&route, NULL, &pr, &f) == LZ_ERR_NO_TARGET);
+
+        LzTarget bad = p;
+        bad.geo.latitudeDeg = NAN;
+        LZ_CHECK(LzWpml_Build(&route, &bad, &pr, &f) == LZ_ERR_NO_TARGET);
+
+        /* 零解（没有真实定位）也不能当兴趣点 —— 否则机头会朝几内亚湾转。
+         * 判据来自 lz_types.h 的 LZ_GEO_NULL_SOLUTION_DEG。 */
+        LzTarget nullSol = p;
+        nullSol.geo.latitudeDeg = 0.0000003;
+        nullSol.geo.longitudeDeg = 0.0000004;
+        LZ_CHECK(LzWpml_Build(&route, &nullSol, &pr, &f) == LZ_ERR_NO_TARGET);
+
         LzRoute_Free(&route);
     }
 

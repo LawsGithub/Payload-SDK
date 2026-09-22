@@ -128,9 +128,15 @@ LzStatus LzBridge_FillWaypointV2(const LzRoute *route,
         /* 直线段飞行；航点间不做曲线过渡，绕飞是规则多边形，曲线过渡
          * 反而会让实际轨迹偏离算好的圆 */
         pt->waypointType = DJI_WAYPOINT_V2_FLIGHT_PATH_MODE_GO_TO_POINT_IN_STRAIGHT_AND_STOP;
-        /* 机头朝向：绕飞时机头沿切线最自然，这里用"沿航线"。
-         * 云台 yaw 是绝对方位角，与机头朝向无关，所以机头怎么转
-         * 都不影响光轴指向 —— 这也是选 absYawModeRef=1 的好处。 */
+        /* 机头朝向：应指向杆心 —— 与 V3 路径保持一致。
+         *
+         * ⚠️ 这条 V2 路径**在 M4T 上不可用**（Waypoint 2.0 只支持
+         * M300/M350），保留它是为换机型时能直接用。但**注释里的结论
+         * 不能留错**：原注释写"云台 yaw 与机头朝向无关，机头怎么转
+         * 都不影响光轴"，那条断言在 M4T 上已被证伪 —— 规范要求
+         * gimbalYawRotateAngle 与 aircraftHeading 一致（M4 系列在列）。
+         * 换到 M300/M350 时（那两个机型云台 yaw 可独立），
+         * HEADING_MODE_AUTO + absYawModeRef=1 才是成立的组合。 */
         pt->headingMode = DJI_WAYPOINT_V2_HEADING_MODE_AUTO;
         /* T_DjiWaypointV2Config **只有** useLocalCruiseVel / useLocalMaxVel
          * 两个开关，没有配套的 local* 数值字段（核实：

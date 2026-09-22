@@ -176,7 +176,7 @@ int main(void)
         LzRoute_Free(&route);
     }
 
-    LZ_CASE("云台偏航必须指向杆心");
+    LZ_CASE("看向杆心的方位角必须指向杆心");
     {
         LzTarget p = pole();
         LzGeo to = p.geo;
