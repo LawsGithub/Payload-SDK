@@ -193,7 +193,9 @@ int main(void)
         LzRoute_Init(&route);
 
         LZ_CHECK(LzPlan_BuildOrbit(&p, &to, &pr, &route) == LZ_OK);
-        LZ_CHECK(route.count == (size_t)pr.waypointCount);
+        /* route.count = waypointCount + 1 —— 末尾那个是与首点重合的收尾点。
+         * `waypointCount` 的语义是"圆周上均分几个方位"，不是"几个点"。 */
+        LZ_CHECK(route.count == (size_t)pr.waypointCount + 1);
 
         for (size_t i = 0; i < route.count; ++i) {
             /* 到杆心的水平距离 —— 用 LzGeo_DistanceM（它算的是球面距离，
@@ -228,8 +230,9 @@ int main(void)
     LZ_CASE("相邻航点间距是弦长，不是弧长");
     {
         /* 这条守的是 wpml 里 distance/duration 的计算前提：
-         * 飞机飞的是相邻点之间的直线，所以总长是 (n-1) 段**弦**之和，
-         * 而不是整圈周长 2πr。两者差了 17%，写错了 Pilot 显示的里程就是错的。 */
+         * 飞机走的是相邻点之间的**直线**，所以总长是 n 段**弦**之和，
+         * 而不是整圈周长 2πr。闭合之后段数正好是 n（含收尾段），
+         * 但每段仍是弦 —— 写错的话 Pilot 显示的里程就是错的。 */
         LzTarget p = pole();
         LzGeo to = p.geo;
         LzOrbitProfile pr = profile();
@@ -240,14 +243,151 @@ int main(void)
         const double stepRad = 2.0 * M_PI / pr.waypointCount;
         const double chord = 2.0 * pr.radiusM * sin(stepRad / 2.0);
 
-        for (size_t i = 1; i < route.count; ++i) {
+        /* 除收尾段（末点→首点，长度应为 ~0）外，其余每段都等于弦长 */
+        for (size_t i = 1; i + 1 < route.count; ++i) {
             LZ_CHECK_NEAR(LzGeo_DistanceM(&route.points[i - 1].geo,
                                           &route.points[i].geo), chord, 0.01);
         }
-        /* 也顺带确认它确实不是整圈周长 */
-        LZ_CHECK(fabs(chord - 2.0 * M_PI * pr.radiusM / (pr.waypointCount - 1)) > 1.0);
+        /* 收尾段：末点与首点重合 —— 它不是一个"航段"，是同一个位置的重复点 */
+        const double closing =
+            LzGeo_DistanceM(&route.points[route.count - 1].geo,
+                            &route.points[0].geo);
+        LZ_CHECK(closing < 0.01);
+
+        /* 总长应是 n 段弦，明显小于整圈周长（差 2πr - n·chord ≈ 7.6% @ n=8） */
+        double total = 0.0;
+        for (size_t i = 1; i < route.count; ++i) {
+            total += LzGeo_DistanceM(&route.points[i - 1].geo,
+                                     &route.points[i].geo);
+        }
+        LZ_CHECK_NEAR(total, chord * (double)pr.waypointCount, 0.05);
+        LZ_CHECK(total < 2.0 * M_PI * pr.radiusM);
 
         LzRoute_Free(&route);
+    }
+
+    LZ_CASE("严格闭合：末点与首点坐标完全相同");
+    {
+        /* 用户 2026-09-22 明确要求"补一个与首点重合的收尾点"。
+         *
+         * 为什么收尾点必须是**独立的一个航点**：航线逐点执行，飞完最后
+         * 一个"真实的"方位点就按 finishAction=goHome 走了 ——
+         * 回起点那段弧不在航线里。补上它才真的闭合整圈。
+         *
+         * 顺带守一个容易忽略的语义：towardPOI 下，一个航点的朝向作用于
+         * "飞向**下一个**航段"。收尾点让倒数第二个点的朝向有了归宿，
+         * 否则最后半段机头会停在更早给的方向上、**收尾处朝错方向**。 */
+        LzTarget p = pole();
+        LzGeo to = p.geo;
+
+        for (int dir = 0; dir < 2; ++dir) {
+            for (int n = 3; n <= 16; ++n) {
+                LzOrbitProfile pr = profile();
+                pr.waypointCount = n;
+                pr.clockwise = (dir == 0);
+                LzRoute route;
+                LzRoute_Init(&route);
+                LZ_CHECK(LzPlan_BuildOrbit(&p, &to, &pr, &route) == LZ_OK);
+
+                LZ_CHECK(route.count == (size_t)n + 1);
+                const LzWaypoint *first = &route.points[0];
+                const LzWaypoint *last = &route.points[route.count - 1];
+
+                /* 经纬度必须**完全**相同 —— 收尾点由同一个
+                 * LzGeo_Destination 公式生成，浮点结果应逐位一致 */
+                LZ_CHECK(last->geo.latitudeDeg == first->geo.latitudeDeg);
+                LZ_CHECK(last->geo.longitudeDeg == first->geo.longitudeDeg);
+                /* 高度、速度、朝向也必须一致，否则闭合处会有一次跳变 */
+                LZ_CHECK_NEAR(last->relativeAltM, first->relativeAltM, 1e-9);
+                LZ_CHECK_NEAR(last->speedMs, first->speedMs, 1e-9);
+                LZ_CHECK_ANGLE_NEAR(last->gimbalYawDeg, first->gimbalYawDeg, 1e-9);
+                LZ_CHECK_NEAR(last->gimbalPitchDeg, first->gimbalPitchDeg, 1e-9);
+
+                /* 所有点（含首尾）都必须在圆上 */
+                for (size_t i = 0; i < route.count; ++i) {
+                    LZ_CHECK_NEAR(LzGeo_DistanceM(&route.points[i].geo, &p.geo),
+                                  pr.radiusM, 0.5);
+                }
+                LzRoute_Free(&route);
+            }
+        }
+    }
+
+    LZ_CASE("相邻方位角均匀，末点绕行整圈后回到起点方位");
+    {
+        LzTarget p = pole();
+        LzGeo to = p.geo;
+        LzOrbitProfile pr = profile();
+        pr.waypointCount = 8;
+        pr.clockwise = true;
+        pr.startBearingDeg = 0.0;
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &to, &pr, &route) == LZ_OK);
+
+        /* 首点应在 startBearing 上、末点应回到同一方位（相差整 360°） */
+        const double firstB = LzGeo_BearingDeg(&p.geo, &route.points[0].geo);
+        const double lastB  = LzGeo_BearingDeg(&p.geo,
+                                               &route.points[route.count - 1].geo);
+        LZ_CHECK_ANGLE_NEAR(firstB, pr.startBearingDeg, 0.5);
+        LZ_CHECK_ANGLE_NEAR(lastB, pr.startBearingDeg, 0.5);
+
+        /* 相邻方位角差应恒为 360/n（含最后一段） */
+        for (size_t i = 1; i < route.count; ++i) {
+            const double b0 = LzGeo_BearingDeg(&p.geo, &route.points[i - 1].geo);
+            const double b1 = LzGeo_BearingDeg(&p.geo, &route.points[i].geo);
+            double delta = b1 - b0;
+            while (delta < 0.0)    { delta += 360.0; }
+            while (delta >= 360.0) { delta -= 360.0; }
+            LZ_CHECK_NEAR(delta, 360.0 / pr.waypointCount, 0.5);
+        }
+        LzRoute_Free(&route);
+    }
+
+    LZ_CASE("提前转弯截距：由真实几何反算，满足规范两条约束");
+    {
+        /* 规范对 waypointTurnDampingDist 有两条硬约束：
+         *   1. 取值域 (0, 航段最大长度]
+         *   2. 段长必须 > 2×截距
+         * 这两条都是相对于**航段长度**的。截距由 route 反算，
+         * 因此任何半径/点数组合下都必须自动满足。 */
+        LzTarget p = pole();
+        LzGeo to = p.geo;
+
+        for (double r = LZ_PLAN_RADIUS_MIN_M; r <= LZ_PLAN_RADIUS_MAX_M; r += 2.5) {
+            for (int n = 3; n <= 64; n += 7) {
+                LzOrbitProfile pr = profile();
+                pr.radiusM = r;
+                pr.waypointCount = n;
+                LzRoute route;
+                LzRoute_Init(&route);
+                LZ_CHECK(LzPlan_BuildOrbit(&p, &to, &pr, &route) == LZ_OK);
+
+                const double d = LzPlan_SuggestDampingM(&route);
+                LZ_CHECK(d > 0.0);
+
+                /* 逐段检查两条约束。跳过收尾段（长度 ~0，不是真航段）。 */
+                double shortest = 1e9, longest = 0.0;
+                for (size_t i = 1; i + 1 < route.count; ++i) {
+                    const double seg = LzGeo_DistanceM(&route.points[i - 1].geo,
+                                                       &route.points[i].geo);
+                    if (seg < shortest) { shortest = seg; }
+                    if (seg > longest)  { longest  = seg; }
+                }
+                /* 约束 1：截距 <= 最长段 */
+                LZ_CHECK(d <= longest);
+                /* 约束 2：最短段 > 2×截距（严格不等式） */
+                LZ_CHECK(2.0 * d < shortest);
+                LzRoute_Free(&route);
+            }
+        }
+
+        /* 退化输入返回 0，而不是 NaN 或负数 */
+        LZ_CHECK(LzPlan_SuggestDampingM(NULL) == 0.0);
+        LzRoute empty;
+        LzRoute_Init(&empty);
+        LZ_CHECK(LzPlan_SuggestDampingM(&empty) == 0.0);
+        LzRoute_Free(&empty);
     }
 
     LZ_CASE("顺逆时针的航点顺序应互为逆序");

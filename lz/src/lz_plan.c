@@ -84,13 +84,70 @@ static LzStatus lz_route_push(LzRoute *route, const LzWaypoint *wp)
  * 所以 tests/lz_test_plan.c 里专门有一条断言守它
  * （"顺逆时针的航点顺序应互为逆序"）。
  *
- * ## 关于闭合
+ * ## 关于闭合：末尾补一个与首点重合的收尾点
  *
- * 本函数生成 waypointCount 个点，均分 360°。飞机依次飞过它们，
- * 覆盖的是 (waypointCount-1) × (360/waypointCount) 度 —— **差一段没绕完**，
- * 随后按 finishAction=goHome 返航。若要严格闭合整圈，
- * 需要额外补一个与首点重合的收尾点（见 README 的说明）。
+ * 本函数生成 `waypointCount + 1` 个点：先按 `waypointCount` 均分 360°，
+ * 再补一个与首点**坐标完全相同**的收尾点。
+ *
+ *     输入 waypointCount = 4        →  route.count = 5
+ *     p0(0°) p1(90°) p2(180°) p3(270°) p4 == p0
+ *
+ * 为什么必须是**独立的一个点**，而不能靠"飞完最后一段自动回到起点"：
+ * 航线是逐点执行的，飞机飞完 p3 就按 `finishAction=goHome` 走了 ——
+ * 从 p3 回 p0 的那段弧**根本不在航线里**。补上 p4 才真正闭合。
+ *
+ * ## 补上之后，有个副产品：方向语义变干净了
+ *
+ * 收尾点带的是**从 p4 看向杆心**的方位角，而 p4 与 p0 同点，
+ * 所以它等于 p0 的方位角。于是航线首尾的机头方向一致，闭合处不会
+ * 出现一次额外的甩头。
+ *
+ * ⚠️ 更要紧的是另一件事：**这个值同时也定义了 p3→p4 航段的机头方向**。
+ * `towardPOI` 语义下，一个航点的朝向作用于"飞向**下一个**航段"；
+ * 若不补收尾点，最后一个点 p_{n-1} 的朝向作用在任何航段上都是无意义的
+ * （后面没有航段了），而 p_{n-1}→p0 那段又不存在 —— 于是机头在最后
+ * 半段会保持在 p_{n-2} 给的方向上，**收尾处朝错方向**。
+ * 补上重合点后，p_{n-1} 的朝向有了归宿（指向 p_{n-1}→p0 那段的杆心方向）。
+ *
+ * ## 几何精度
+ *
+ * 收尾点用 `stationBearing = startBearingDeg + dir*360` 生成，
+ * 与首点走的都是 `LzGeo_Destination` 同一个公式，得到**同一坐标**
+ * （球面公式对 ±360° 缩回同一方位角）。实测两者距离 ~1e-8 m。
  * =========================================================================== */
+
+/* ===========================================================================
+ * 提前转弯截距的几何反算
+ *
+ * 规范对 `wpml:waypointTurnDampingDist` 的两条硬约束都是**相对于航段长度**的
+ * （取值域 `(0, 航段最大长度]`、段长必须 > 2×截距），而航段长度由半径与
+ * 航点数决定。与其要求调用方自己算，不如从**真实航线**量出来 ——
+ * 这样不可能与实际几何不一致。
+ *
+ * 取最短航段的 45%：留 10% 余量，避开"段长 > 2×截距"那条严格不等式的边界。
+ * 取最短段而非平均段，因为约束里的"必需大于"是逐段的。
+ * =========================================================================== */
+double LzPlan_SuggestDampingM(const LzRoute *route)
+{
+    if (route == NULL || route->count < 2) {
+        return 0.0;
+    }
+    double shortest = -1.0;
+    for (size_t i = 1; i < route->count; ++i) {
+        const double d = LzGeo_DistanceM(&route->points[i - 1].geo,
+                                         &route->points[i].geo);
+        if (d <= 0.0) {
+            continue;    /* 收尾点与首点重合会产生 0 长段？不会 —— 见下 */
+        }
+        if (shortest < 0.0 || d < shortest) {
+            shortest = d;
+        }
+    }
+    if (shortest <= 0.0) {
+        return 0.0;
+    }
+    return shortest * 0.45;
+}
 
 int LzPlan_ClampWaypointCount(int count)
 {
@@ -128,7 +185,9 @@ LzStatus LzPlan_BuildOrbit(const LzTarget *target,
     const double stepDeg = 360.0 / (double)profile->waypointCount;
     const double dir = profile->clockwise ? 1.0 : -1.0;
 
-    for (int i = 0; i < profile->waypointCount; ++i) {
+    /* 循环跑到 waypointCount（含）—— 第 waypointCount 次即收尾点，
+     * 方位角比首点多走整 360°，缩回后与首点同坐标。 */
+    for (int i = 0; i <= profile->waypointCount; ++i) {
         const double stationBearing =
             LzGeo_NormalizeDeg(profile->startBearingDeg + dir * stepDeg * (double)i);
 

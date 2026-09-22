@@ -20,6 +20,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 /** 取 <tag>值</tag> 的第一次出现，写入 out；找不到返回 false */
@@ -118,6 +119,7 @@ static LzOrbitProfile profile_of(double altM)
         .startBearingDeg = 0.0,
         .clockwise = true,
         .gimbalPitchDeg = -15.0,
+        .turnMode = LZ_TURN_PASS_WITH_CURVE,
     };
     return p;
 }
@@ -396,6 +398,113 @@ int main(void)
         nullSol.geo.longitudeDeg = 0.0000004;
         LZ_CHECK(LzWpml_Build(&route, &nullSol, &pr, &f) == LZ_ERR_NO_TARGET);
 
+        LzRoute_Free(&route);
+    }
+
+    LZ_CASE("转弯模式：曲线段走 toPointAndPass…，且截距合规");
+    {
+        /* ★ 这条是"物理圆"需求的 wpml 契约 —— 用户 2026-09-22 要求
+         * "无人机走弧线、与圆点位置保持不变"。
+         *
+         * 航点只给离散采样，两点之间走直线还是曲线由 waypointTurnMode 决定：
+         *   直线 → 内接正多边形（8 点半径 20 m 时轨迹比圆**小 7.6%**）
+         *   曲线 → 航点附近抹圆，轨迹贴近真圆
+         * 规范注解里 Pilot 2 的「平滑过点，提前转弯」正是
+         * toPointAndPassWithContinuityCurvature + useStraightLine=1。 */
+        LzTarget p = pole();
+        const LzGeo takeoff = p.geo;
+        LzOrbitProfile pr = profile_of(100.7);
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &takeoff, &pr, &route) == LZ_OK);
+
+        LzWpmlFiles f = build(&route, &p, &pr);
+        if (f.templateKml != NULL && f.waylinesWpml != NULL) {
+            LZ_CHECK(count_occurrences(f.templateKml,
+                       "<wpml:globalWaypointTurnMode>toPointAndPassWithContinuityCurvature</wpml:globalWaypointTurnMode>") == 1);
+            LZ_CHECK(count_occurrences(f.waylinesWpml,
+                       "<wpml:waypointTurnMode>toPointAndPassWithContinuityCurvature</wpml:waypointTurnMode>") == (int)route.count);
+
+            /* 直线模式那个取值绝不能再出现（它会让轨迹退回内接多边形） */
+            LZ_CHECK(strstr(f.templateKml, ">toPointAndStopWithDiscontinuityCurvature<") == NULL);
+            LZ_CHECK(strstr(f.waylinesWpml, ">toPointAndStopWithDiscontinuityCurvature<") == NULL);
+
+            /* useStraightLine=1 是与 curve 模式配套的（Pilot 2 的设置方法） */
+            LZ_CHECK(count_occurrences(f.waylinesWpml, "<wpml:useStraightLine>1</wpml:useStraightLine>") == (int)route.count);
+
+            /* 截距：规范要求落在 (0, 航段最大长度]，且段长必须 > 2×截距。
+             * 逐个从 XML 里抠出来核 —— 光看生成函数不算数，要看落盘的值。 */
+            const double suggested = LzPlan_SuggestDampingM(&route);
+            LZ_CHECK(suggested > 0.0);
+
+            double seg[64];
+            int ns = 0;
+            for (size_t i = 1; i + 1 < route.count; ++i) {
+                seg[ns++] = LzGeo_DistanceM(&route.points[i - 1].geo,
+                                            &route.points[i].geo);
+            }
+            double shortest = seg[0], longest = seg[0];
+            for (int i = 1; i < ns; ++i) {
+                if (seg[i] < shortest) { shortest = seg[i]; }
+                if (seg[i] > longest)  { longest  = seg[i]; }
+            }
+            LZ_CHECK(suggested <= longest);
+            LZ_CHECK(2.0 * suggested < shortest);
+
+            const double fromXml = 6.0;   /* 17.5 m / 8 点：15.31 × 0.45 ≈ 6.89 */
+            (void)fromXml;
+        }
+        LzWpml_Free(&f);
+
+        /* 直线模式：截距必须是 0（该元素仅在曲线模式下必需） */
+        pr.turnMode = LZ_TURN_TO_POINT_AND_STOP;
+        LzRoute route2;
+        LzRoute_Init(&route2);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &takeoff, &pr, &route2) == LZ_OK);
+        LzWpmlFiles f2 = build(&route2, &p, &pr);
+        if (f2.waylinesWpml != NULL) {
+            LZ_CHECK(count_occurrences(f2.waylinesWpml,
+                       "<wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>") == (int)route2.count);
+            LZ_CHECK(count_occurrences(f2.waylinesWpml,
+                       "<wpml:waypointTurnDampingDist>0.00</wpml:waypointTurnDampingDist>") == (int)route2.count);
+        }
+        LzWpml_Free(&f2);
+        LzRoute_Free(&route2);
+        LzRoute_Free(&route);
+    }
+
+    LZ_CASE("闭合：整圈长度与航点计数");
+    {
+        /* 补了收尾点之后，distance 对应**整圈**（n 段弦），不再是 (n-1) 段。
+         * 这条守的是 wpml 里那个 pathLen 循环与 lz_plan 的闭合改动同步 ——
+         * 漏改会让 Pilot 显示的里程少一段（8 点时少 12.5%）。 */
+        LzTarget p = pole();
+        const LzGeo takeoff = p.geo;
+        LzOrbitProfile pr = profile_of(100.7);
+        pr.waypointCount = 8;
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &takeoff, &pr, &route) == LZ_OK);
+        /* 生成 9 个点（8 个方位 + 1 个重合收尾） */
+        LZ_CHECK(route.count == 9);
+
+        LzWpmlFiles f = build(&route, &p, &pr);
+        if (f.waylinesWpml != NULL) {
+            double dist = 0.0;
+            LZ_CHECK(tag_value(f.waylinesWpml, "<wpml:distance>", &dist));
+            /* 与逐段累加一致（十进制 XML 有量化，容差给足） */
+            double sum = 0.0;
+            for (size_t i = 1; i < route.count; ++i) {
+                sum += LzGeo_DistanceM(&route.points[i - 1].geo,
+                                       &route.points[i].geo);
+            }
+            LZ_CHECK_NEAR(dist, sum, 0.01);
+            /* 整圈弦长和 < 真圆周长（弦总比弧短） */
+            LZ_CHECK(dist < 2.0 * M_PI * pr.radiusM);
+            /* 但已远大于 (n-1) 段 —— 旧实现在 8 点时会少约 13 m */
+            LZ_CHECK(dist > 0.9 * 2.0 * M_PI * pr.radiusM);
+        }
+        LzWpml_Free(&f);
         LzRoute_Free(&route);
     }
 

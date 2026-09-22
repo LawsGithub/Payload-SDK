@@ -88,6 +88,24 @@ static double lz_yaw_to_signed(double deg)
     return d;
 }
 
+/**
+ * @brief 把 LzTurnMode 翻成 wpml 的枚举字符串
+ *
+ * 放在这一层而不是 lz_plan：`LzTurnMode` 是**规划层的意图**
+ * （走直线还是走曲线），wpml 的枚举名是**文件格式的词汇** ——
+ * 与 `lz_yaw_to_signed` 同一个理由，格式细节不污染 lz_core。
+ */
+static const char *lz_turn_mode_str(LzTurnMode mode)
+{
+    switch (mode) {
+    case LZ_TURN_PASS_WITH_CURVE:
+        return "toPointAndPassWithContinuityCurvature";
+    case LZ_TURN_TO_POINT_AND_STOP:
+    default:
+        return "toPointAndStopWithDiscontinuityCurvature";
+    }
+}
+
 /* 单份 XML 的预估大小。
  * ⚠️ 这个值是**估计**，不够时会返回 LZ_ERR_RANGE（见 lz_str_addf 的说明）。
  * 实测 8 航点约需 16 KB / 份，这里按 4 KB/航点留了 2 倍余量。
@@ -179,6 +197,13 @@ LzStatus LzWpml_Build(const LzRoute *route,
         rthHeight = (double)LZ_WPML_RTH_HEIGHT_FLOOR_M;
     }
 
+    /* 提前转弯截距：由**真实航段长度**反算，不接调用方给的值 ——
+     * 规范的两条约束都是相对于段长的，只有这里能量准。见 lz_plan.c。 */
+    const double dampingM =
+        (profile->turnMode == LZ_TURN_PASS_WITH_CURVE)
+            ? LzPlan_SuggestDampingM(route)
+            : 0.0;
+
     /* ================= template.kml ================= */
     lz_str_addf(&t, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     lz_str_addf(&t, "<kml xmlns=\"http://www.opengis.net/kml/2.2\" xmlns:wpml=\"http://www.dji.com/wpmz/1.0.3\">\n");
@@ -238,8 +263,11 @@ LzStatus LzWpml_Build(const LzRoute *route,
                 profile->clockwise ? "clockwise" : "counterClockwise");
     lz_str_addf(&t, "        <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>\n");
     lz_str_addf(&t, "      </wpml:globalWaypointHeadingParam>\n");
-    lz_str_addf(&t, "      <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>\n");
-    lz_str_addf(&t, "      <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>\n");
+    /* 转弯模式：决定轨迹是内接多边形还是近似圆弧 —— 见 lz_plan.h 的 LzTurnMode。
+     * globalUseStraightLine=1 与 curve 模式搭配正是 Pilot 2 里
+     * 「平滑过点，提前转弯」的设置方法（规范 waypointTurnMode 一行有注解）。 */
+    lz_str_addf(&t, "      <wpml:globalWaypointTurnMode>%s</wpml:globalWaypointTurnMode>\n",
+                lz_turn_mode_str(profile->turnMode));
 
     for (size_t i = 0; i < route->count; ++i) {
         const LzWaypoint *wp = &route->points[i];
@@ -254,7 +282,10 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&t, "        <wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>\n");
         lz_str_addf(&t, "        <wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>\n");
         lz_str_addf(&t, "        <wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>\n");
-        lz_str_addf(&t, "        <wpml:useStraightLine>0</wpml:useStraightLine>\n");
+        /* useStraightLine：规范里它只在「曲线到点停」/「曲线过点不停」两种模式下
+         * 必需，含义是"航段轨迹尽量贴合两点连线"。Pilot 2 的「平滑过点，提前
+         * 转弯」正是 curve 模式 + 本值=1。 */
+        lz_str_addf(&t, "        <wpml:useStraightLine>1</wpml:useStraightLine>\n");
         lz_str_addf(&t, "        <wpml:actionGroup>\n");
         lz_str_addf(&t, "          <wpml:actionGroupId>%zu</wpml:actionGroupId>\n", i);
         lz_str_addf(&t, "          <wpml:actionGroupStartIndex>%zu</wpml:actionGroupStartIndex>\n", i);
@@ -344,13 +375,12 @@ LzStatus LzWpml_Build(const LzRoute *route,
     lz_str_addf(&w, "      <wpml:autoFlightSpeed>%.1f</wpml:autoFlightSpeed>\n", profile->speedMs);
     /* distance/duration 是这条航线的**实际**长度与耗时，供 Pilot 显示用。
      *
-     * ️ 不是整圈周长！飞机只飞 n 个点之间**弦**的 (n-1) 段 ——
-     * 它依次经过 p0, p1, ..., p_{n-1} 就结束了（最后一个点的
-     * actionGroup 是 reachPoint，到点后按 finishAction 返航）。
-     * 从 p_{n-1} 回到 p0 那一段**不存在**，所以不能按 2πr 算。
-     *
-     * 与 lz_plan.c 里"覆盖 (n-1)/n 圈而不是整圈"是同一件事的两种体现，
-     * 两边必须一致 —— 改成闭合航线时，这里也要跟着改成整圈。 */
+     * `LzPlan_BuildOrbit` 现在会补一个与首点重合的收尾点，所以航线是
+     * **闭合**的、总长对应整圈。走直线段时总长 = n 段弦之和
+     * （≈ 2πr·sinc(π/n)，比真圆略短）；走曲线段时实际轨迹更接近真圆，
+     * 而这里量的是**航点间的直线距离**，是个下界 —— Pilot 显示的里程会
+     * 略小于实飞距离。这个偏差在 n≥8 时小于 2%，可以接受；
+     * 不做弧长估算是因为那需要知道飞机的实际转弯半径，我们没有。 */
     double pathLen = 0.0;
     for (size_t i = 1; i < route->count; ++i) {
         pathLen += LzGeo_DistanceM(&route->points[i - 1].geo, &route->points[i].geo);
@@ -383,8 +413,17 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&w, "          <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>\n");
         lz_str_addf(&w, "        </wpml:waypointHeadingParam>\n");
         lz_str_addf(&w, "        <wpml:waypointTurnParam>\n");
-        lz_str_addf(&w, "          <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>\n");
-        lz_str_addf(&w, "          <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>\n");
+        lz_str_addf(&w, "          <wpml:waypointTurnMode>%s</wpml:waypointTurnMode>\n",
+                    lz_turn_mode_str(profile->turnMode));
+        /* 转弯截距：只对 LZ_TURN_PASS_WITH_CURVE 有意义（规范注明该元素仅在
+         * coordinateTurn / toPointAndPassWithContinuityCurvature 且
+         * useStraightLine=1 时必需）。走直线段时写 0。 */
+        /* ⚠️ 精度用 %.2f 而不是 %.1f：规范要求该值落在 **(0, 航段最大长度]**
+         * —— 是个开区间下端。半径 5 m、64 点时建议截距只有 0.22 m，
+         * %.1f 会写出 "0.2"（勉强合法），再小一点就会舍成 "0.0"，
+         * 直接违反开区间。%.2f 让这个裕度大得多。 */
+        lz_str_addf(&w, "          <wpml:waypointTurnDampingDist>%.2f</wpml:waypointTurnDampingDist>\n",
+                    dampingM);
         lz_str_addf(&w, "        </wpml:waypointTurnParam>\n");
         lz_str_addf(&w, "        <wpml:useStraightLine>1</wpml:useStraightLine>\n");
         lz_str_addf(&w, "        <wpml:actionGroup>\n");

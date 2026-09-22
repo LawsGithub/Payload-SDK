@@ -125,9 +125,16 @@ LzStatus LzBridge_FillWaypointV2(const LzRoute *route,
         pt->longitude = wp->geo.longitudeDeg;
         pt->latitude = wp->geo.latitudeDeg;
         pt->relativeHeight = (float)wp->relativeAltM;
-        /* 直线段飞行；航点间不做曲线过渡，绕飞是规则多边形，曲线过渡
-         * 反而会让实际轨迹偏离算好的圆 */
-        pt->waypointType = DJI_WAYPOINT_V2_FLIGHT_PATH_MODE_GO_TO_POINT_IN_STRAIGHT_AND_STOP;
+        /* 航段模式跟着剖面的 turnMode 走 —— 与 V3 路径语义一致。
+         *
+         * ⚠️ 这条 V2 路径**在 M4T 上不可用**（只支持 M300/M350），但注释与
+         * 行为不能对不上：原注释写"绕飞是规则多边形，曲线过渡会让轨迹
+         * 偏离算好的圆"，那是**说反了** —— 直线段才是内接多边形
+         * （8 点半径 20 m 时边心距 18.48 m，比圆近 1.5 m），
+         * 曲线段反而更贴近真圆。见 lz_plan.h 的 LzTurnMode。 */
+        pt->waypointType = (profile->turnMode == LZ_TURN_PASS_WITH_CURVE)
+                               ? DJI_WAYPOINT_V2_FLIGHT_PATH_MODE_GO_TO_POINT_ALONG_CURVE
+                               : DJI_WAYPOINT_V2_FLIGHT_PATH_MODE_GO_TO_POINT_IN_STRAIGHT_AND_STOP;
         /* 机头朝向：应指向杆心 —— 与 V3 路径保持一致。
          *
          * ⚠️ 这条 V2 路径**在 M4T 上不可用**（Waypoint 2.0 只支持
@@ -146,8 +153,16 @@ LzStatus LzBridge_FillWaypointV2(const LzRoute *route,
         pt->config.useLocalCruiseVel = 0;
         pt->config.useLocalMaxVel = 0;
         /* dampingDistance 只在 COORDINATE_TURN 且 >0 时参与提前转弯。
-         * 绕飞要的是贴着算好的圆飞，不提前切角，故置 0。 */
-        pt->dampingDistance = 0;
+         * 曲线模式下由真实段长反算，直线模式置 0。
+         *
+         * ⚠️ **单位未核实**：`dji_waypoint_v2_type.h` 只写 `uint16_t
+         * dampingDistance`（"转弯缓冲距离"），没说单位；官方样例直接填 40。
+         * 这里按**米**传，不做换算 —— 猜一个系数比不换算更危险。
+         * 真要启用 V2 路径（换 M300/M350）时必须先在设备上验这个单位，
+         * 而那正是本项目从未走过这条路的原因之一。 */
+        pt->dampingDistance = (profile->turnMode == LZ_TURN_PASS_WITH_CURVE)
+                                  ? (uint16_t)LzPlan_SuggestDampingM(route)
+                                  : 0;
         pt->heading = 0.0f;
         /* turnMode 描述的是**机头**转向方向（不是航线方向，航线方向由航点
          * 顺序决定）。机头沿切线飞，转向方向自然跟着绕行方向。 */

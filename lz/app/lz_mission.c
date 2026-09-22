@@ -175,6 +175,16 @@ static bool lz_mission_start_orbit(void)
         .startBearingDeg = 0.0,
         .clockwise = true,
         .gimbalPitchDeg = -15.0,
+        /* 走曲线段（近似圆弧）而不是直线段（内接多边形）。
+         *
+         * 用户 2026-09-22 明确要求"用物理圆，无人机走弧线"：
+         * 直线模式下 8 点半径 20 m 的轨迹边心距只有 18.48 m ——
+         * 飞机实际比设定半径**近 1.5 m**。曲线段在航点附近被抹圆，
+         * 轨迹贴近真圆，同时 8 个点就够（不必靠堆到 16 点去逼近）。
+         *
+         * 配套的提前转弯截距由 `LzWpml_Build` 从真实段长反算，
+         * 这里不用管。 */
+        .turnMode = LZ_TURN_PASS_WITH_CURVE,
     };
 
     const LzGeo takeoff = pole.geo;   /* 相对高度的参考点 */
@@ -224,9 +234,12 @@ static bool lz_mission_start_orbit(void)
         return false;
     }
 
-    LzWidget_PostMessage("绕飞已启动（杆位取自%s）：半径 %.1f m，高度 %.1f m，%d 个航点",
+    LzWidget_PostMessage("绕飞已启动（杆位取自%s）：半径 %.1f m，高度 %.1f m，"
+                         "%d 个航点（%s）",
                          LzPole_SourceName(),
-                         profile.radiusM, profile.altitudeM, profile.waypointCount);
+                         profile.radiusM, profile.altitudeM, profile.waypointCount,
+                         (profile.turnMode == LZ_TURN_PASS_WITH_CURVE)
+                             ? "弧线" : "直线段");
     return true;
 }
 
