@@ -71,6 +71,10 @@ waypoint_v3_test_file.kmz`，3856 字节）为例，解出来是
 对照 `psdk_lib/include/dji_typedef.h` 的 `E_DjiAircraftType` / `E_DjiCameraType`。
 样例里是 77/66（M3E），妙算3 挂载时要按实际情况改。
 
+本项目实际下发 **99 / 89**（`DJI_AIRCRAFT_TYPE_M4T` / `DJI_CAMERA_TYPE_M4T`，
+子类型 1 / 0），定义在 `LzWpml_DefaultIdentity()`。**是否被飞机接受尚未实测** ——
+现场判据见 [`ONDEVICE-CHECKLIST.md`](ONDEVICE-CHECKLIST.md) §3.7。
+
 ## 样例源码自己怎么说
 
 `test_waypoint_v3.c` 里有一句官方注释：
