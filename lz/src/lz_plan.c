@@ -160,6 +160,27 @@ int LzPlan_ClampWaypointCount(int count)
     return count;
 }
 
+/* 相机的物理俯仰限位。与 `LzPlan_Validate` 里那道检查**同源** ——
+ * 校验层按它拒、这里按它钳，两处写的必须是同一对数。 */
+#define LZ_GIMBAL_PITCH_MIN_DEG (-90.0)
+#define LZ_GIMBAL_PITCH_MAX_DEG (30.0)
+
+double LzPlan_ComputeGimbalPitchDeg(double radiusM, double altAboveTargetM,
+                                    double targetHeightM)
+{
+    if (!(radiusM > 0.0) || !isfinite(radiusM) || !isfinite(altAboveTargetM)) {
+        return 0.0;
+    }
+    /* 高度未知按 0 处理（瞄准目标底部所在那一层水平面）—— 不猜典型杆高，
+     * 理由见头文件。 */
+    const double h = (isfinite(targetHeightM) && targetHeightM > 0.0) ? targetHeightM : 0.0;
+
+    /* 瞄目标**中点**：竖直方向上的居中，与机头瞄杆心（水平方向居中）对称。
+     * atan2 的参数次序是 (纵向差, 横向) —— 写反了得到的是余角，
+     * 而余角在 45° 附近看起来"差不多"，正是那种改错了不容易发现的地方。 */
+    return -atan2(altAboveTargetM - h * 0.5, radiusM) * 180.0 / M_PI;
+}
+
 LzStatus LzPlan_BuildOrbit(const LzTarget *target,
                            const LzGeo *takeoff,
                            const LzOrbitProfile *profile,
@@ -185,6 +206,24 @@ LzStatus LzPlan_BuildOrbit(const LzTarget *target,
     const double stepDeg = 360.0 / (double)profile->waypointCount;
     const double dir = profile->clockwise ? 1.0 : -1.0;
 
+    /* 云台俯仰：要么几何反算，要么原样用操作员给的常数。
+     *
+     * 反算需要"飞机相对目标底部的高度"，而剖面里的 altitudeM 是**相对起飞点**
+     * 的 —— 两者差一个椭球高差。用 takeoff 与 target 的椭球高补齐：
+     *
+     *     相对目标底 = (起飞点椭球高 + 相对起飞点高度) - 目标椭球高
+     *
+     * 这一步**只在这一处**做，别让每个调用方各自补 —— 忘了补的表现是
+     * 相机俯仰整体偏掉，而"偏一点"在画面上看不出来。 */
+    const double altAboveTargetM =
+        (takeoff->altitudeM + profile->altitudeM) - target->geo.altitudeM;
+
+    double pitchDeg = profile->gimbalPitchDeg;
+    if (profile->autoGimbalPitch) {
+        pitchDeg = LzPlan_ComputeGimbalPitchDeg(profile->radiusM, altAboveTargetM,
+                                                target->heightM);
+    }
+
     /* 循环跑到 waypointCount（含）—— 第 waypointCount 次即收尾点，
      * 方位角比首点多走整 360°，缩回后与首点同坐标。 */
     for (int i = 0; i <= profile->waypointCount; ++i) {
@@ -203,7 +242,7 @@ LzStatus LzPlan_BuildOrbit(const LzTarget *target,
         /* 看向杆心的方位角 —— 绕飞的全部意义就在这一行。
          * 它同时是云台 yaw 与机头目标角（M4T 的 towardPOI 要求两者一致）。 */
         wp.gimbalYawDeg = LzGeo_BearingDeg(&wp.geo, &target->geo);
-        wp.gimbalPitchDeg = profile->gimbalPitchDeg;
+        wp.gimbalPitchDeg = pitchDeg;
 
         st = lz_route_push(route, &wp);
         if (st != LZ_OK) {
@@ -294,7 +333,8 @@ LzStatus LzPlan_Validate(const LzRoute *route, const LzOrbitProfile *profile)
             return LZ_ERR_RANGE;
         }
         /* 云台俯仰的物理限位，超出范围的指令会被飞机拒绝执行 */
-        if (wp->gimbalPitchDeg < -90.0 || wp->gimbalPitchDeg > 30.0) {
+        if (wp->gimbalPitchDeg < LZ_GIMBAL_PITCH_MIN_DEG ||
+            wp->gimbalPitchDeg > LZ_GIMBAL_PITCH_MAX_DEG) {
             return LZ_ERR_RANGE;
         }
     }

@@ -181,6 +181,170 @@ int main(void)
         LZ_CHECK(!LzTarget_IsUsable(NULL, 0.5));
     }
 
+    /* ---------------- 云台俯仰角：几何反算 ---------------- */
+
+    LZ_CASE("云台俯仰角：几何反算的基本几何");
+    {
+        /* 俯仰 = -atan2(飞机相对高度 - 目标高/2, 半径)。
+         * 用几组能手算的输入钉住它 —— 尤其是 atan2 的参数次序
+         * （写反得到余角，在 45° 附近"看起来差不多"）。 */
+
+        /* 飞机与目标中点等高 → 水平看向前，俯仰 0 */
+        LZ_CHECK_NEAR(LzPlan_ComputeGimbalPitchDeg(10.0, 7.5, 15.0), 0.0, 1e-9);
+
+        /* 飞机高于目标中点 10 m、半径 10 m → 正下方 45° */
+        LZ_CHECK_NEAR(LzPlan_ComputeGimbalPitchDeg(10.0, 17.5, 15.0), -45.0, 1e-9);
+
+        /* 半径 = 高差 → 恒为 -45°，与具体数值无关 */
+        LZ_CHECK_NEAR(LzPlan_ComputeGimbalPitchDeg(100.0, 100.0, 0.0), -45.0, 1e-9);
+
+        /* 90° 正下方：半径趋于 0 时俯仰趋于 -90（但半径必须 > 0） */
+        LZ_CHECK_NEAR(LzPlan_ComputeGimbalPitchDeg(1e-9, 10.0, 0.0), -90.0, 1e-3);
+
+        /* 大半径 + 低高度 → 俯仰贴近水平（这是"半径变大后偏差减小"的来源） */
+        const double flat = LzPlan_ComputeGimbalPitchDeg(500.0, 120.0, 15.0);
+        LZ_CHECK(flat > -14.0 && flat < -12.0);
+
+        /* 目标高度未知（<= 0）按 0 处理，不猜典型杆高。
+         * 两个调用必须给出**同一个**结果 —— 若某处偷偷兜了个默认杆高，这条会红。 */
+        LZ_CHECK_NEAR(LzPlan_ComputeGimbalPitchDeg(10.0, 20.0, 0.0),
+                      LzPlan_ComputeGimbalPitchDeg(10.0, 20.0, -1.0), 1e-12);
+
+        /* 非法入参返回 0 而不是 NaN —— NaN 会让整条航线的校验炸掉，
+         * 而"俯仰 0"至少是个能看出来的确定值 */
+        LZ_CHECK(LzPlan_ComputeGimbalPitchDeg(0.0, 10.0, 15.0) == 0.0);
+        LZ_CHECK(LzPlan_ComputeGimbalPitchDeg(-1.0, 10.0, 15.0) == 0.0);
+        LZ_CHECK(LzPlan_ComputeGimbalPitchDeg(NAN, 10.0, 15.0) == 0.0);
+        LZ_CHECK(LzPlan_ComputeGimbalPitchDeg(10.0, NAN, 15.0) == 0.0);
+
+        /* 结果**照实返回**，不钳位 —— 越界由 LzPlan_Validate 拒绝。
+         * 钳位会把"相机物理上做不到"伪装成"做得到"（见头文件）。
+         * 所以这里断言的是"确实算出来了那个越界值"： */
+        LZ_CHECK(LzPlan_ComputeGimbalPitchDeg(1e-9, 10.0, 0.0) < -89.99);
+        /* 飞机低于目标 → 必须往上看（正角），哪怕超过相机的 +30° 上限 */
+        LZ_CHECK(LzPlan_ComputeGimbalPitchDeg(20.0, -80.0, 15.0) > 30.0);
+
+        /* 常用的合法组合必须落在限位内，否则规划直接产不出可用航线 */
+        const double ok[][3] = {
+            { 12.5, 80.9, 15.0 }, { 20.0, 20.0, 15.0 },
+            { 5.0, 120.0, 15.0 }, { 20.0, 5.0, 15.0 },
+            { 500.0, 120.0, 15.0 },
+        };
+        for (size_t i = 0; i < sizeof(ok) / sizeof(ok[0]); ++i) {
+            const double p = LzPlan_ComputeGimbalPitchDeg(ok[i][0], ok[i][1], ok[i][2]);
+            LZ_CHECK(p >= -90.0 && p <= 30.0);
+            LZ_CHECK(isfinite(p));
+        }
+    }
+
+    LZ_CASE("云台俯仰角：写死 -15° 在默认剖面下是错的");
+    {
+        /* 这是本函数存在的理由，所以单独一条守它。
+         *
+         * 实测（2026-09-24）：默认控件值（半径 50% → 12.5 m，
+         * 高度 66% → 80.9 m）配杆高 15 m，正确的俯仰是约 **-81°**，
+         * 而源码里写死的是 -15° —— 差 66°，相机根本没对着目标。 */
+        const double correct = LzPlan_ComputeGimbalPitchDeg(12.5, 80.9, 15.0);
+        /* -atan2(80.9 - 15/2, 12.5) = -atan2(73.4, 12.5) = -80.34° */
+        LZ_CHECK_NEAR(correct, -80.34, 0.05);
+        LZ_CHECK(fabs(correct - (-15.0)) > 60.0);
+
+        /* 反过来说：-15° 只在"低高度 + 大半径"下碰巧接近 ——
+         * 20 m 半径、20 m 高度、杆高 15 m 时是 -32°，已经差 17°，
+         * 而 -32° 与 -15° 在画面上都属于"能拍到但不居中"，
+         * 肉眼分不出来。**"有时对"正是写死常数危险的地方。** */
+        const double atLowAlt = LzPlan_ComputeGimbalPitchDeg(20.0, 20.0, 15.0);
+        LZ_CHECK_NEAR(atLowAlt, -32.0, 0.05);
+        LZ_CHECK(fabs(atLowAlt - (-15.0)) > 15.0);
+    }
+
+    LZ_CASE("云台俯仰角：autoGimbalPitch 打开才对，关掉则原样透传");
+    {
+        LzTarget p = pole();
+        LzGeo to = p.geo;
+        LzOrbitProfile pr = profile();
+        pr.autoGimbalPitch = true;
+
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &to, &pr, &route) == LZ_OK);
+
+        /* 起飞点与杆同高（本用例的构造），所以"相对目标底高度"就是 altitudeM */
+        const double expected = LzPlan_ComputeGimbalPitchDeg(pr.radiusM, pr.altitudeM,
+                                                            p.heightM);
+        for (size_t i = 0; i < route.count; ++i) {
+            LZ_CHECK_NEAR(route.points[i].gimbalPitchDeg, expected, 1e-9);
+        }
+        /* 各点俯仰相同 —— 几何决定了飞一圈俯角不变（高度定、半径定） */
+        LZ_CHECK_NEAR(route.points[0].gimbalPitchDeg,
+                      route.points[route.count - 1].gimbalPitchDeg, 1e-12);
+        LzRoute_Free(&route);
+
+        /* 关掉时原样透传 profile 的常数 —— 保留手动指定的能力 */
+        LzRoute_Init(&route);
+        pr.autoGimbalPitch = false;
+        pr.gimbalPitchDeg = -33.0;
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &to, &pr, &route) == LZ_OK);
+        for (size_t i = 0; i < route.count; ++i) {
+            LZ_CHECK_NEAR(route.points[i].gimbalPitchDeg, -33.0, 1e-12);
+        }
+        LzRoute_Free(&route);
+    }
+
+    LZ_CASE("云台俯仰角：椭球高差必须补进几何");
+    {
+        /* 飞机相对起飞点 20 m，而目标椭球高比起飞点高 100 m
+         * → 飞机实际在目标**下方** 80 m，俯仰应当是**向上**的正角。
+         *
+         * 这条守的是"只在一处补高差"：忘了补的话，飞机明明在目标下方
+         * 相机却往下看，而且下看多少完全看不出来。 */
+        LzTarget p = pole();
+        p.geo.altitudeM = p.geo.altitudeM + 100.0;   /* 目标比起飞点高 100 m */
+        LzGeo to = pole().geo;
+        LzOrbitProfile pr = profile();
+        pr.autoGimbalPitch = true;
+        pr.altitudeM = 20.0;
+
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &to, &pr, &route) == LZ_OK);
+
+        /* 相对目标底 = (0 + 20) - 100 = -80 m；瞄中点（7.5 m）→ -87.5 m
+         * → atan2(-87.5, 20) 为正角 ≈ +77.1° */
+        const double want = LzPlan_ComputeGimbalPitchDeg(20.0, -80.0, 15.0);
+        LZ_CHECK(want > 0.0);
+        LZ_CHECK_NEAR(route.points[0].gimbalPitchDeg, want, 1e-9);
+
+        /* 它确实**向上**看，而不是"高差被忽略后向下看" */
+        LZ_CHECK(route.points[0].gimbalPitchDeg > 0.0);
+
+        /* 而这个角度超过相机上仰极限（+30°）—— 所以校验**必须**拒它。
+         * 这条把"物理上做不到"变成起飞前的明确错误，而不是上机后
+         * 相机纹丝不动、却不知道原因。 */
+        LZ_CHECK(route.points[0].gimbalPitchDeg > 30.0);
+        LZ_CHECK(LzPlan_Validate(&route, &pr) == LZ_ERR_RANGE);
+
+        /* 反过来：同一场景若目标低于飞机，就能通过校验 —— 说明拒绝的
+         * 是几何本身，不是这个用例构造得怪 */
+        LzRoute_Free(&route);
+        LzOrbitProfile pr2 = profile();
+        pr2.autoGimbalPitch = true;
+        pr2.altitudeM = 20.0;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &to, &pr2, &route) == LZ_OK);
+        LZ_CHECK(LzPlan_Validate(&route, &pr2) == LZ_ERR_RANGE);   /* 同上，目标高 */
+        LzRoute_Free(&route);
+
+        LzOrbitProfile pr3 = profile();
+        pr3.autoGimbalPitch = true;
+        pr3.altitudeM = 120.0;     /* 飞机高于目标 → 向下看 */
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &to, &pr3, &route) == LZ_OK);
+        LZ_CHECK(route.points[0].gimbalPitchDeg < 0.0);
+        LZ_CHECK(LzPlan_Validate(&route, &pr3) == LZ_OK);
+        LzRoute_Free(&route);
+    }
+
     /* ---------------- 以下是绕飞的规格用例 ---------------- */
 
 #if 1

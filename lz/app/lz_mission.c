@@ -174,7 +174,14 @@ static bool lz_mission_start_orbit(void)
         .waypointCount = LzWidget_GetWaypointCount(),
         .startBearingDeg = 0.0,
         .clockwise = true,
+        /* 云台俯仰由几何反算（`autoGimbalPitch`）。
+         *
+         * ⚠️ 这里原先写死 -15°。实算下来它只在"低高度 + 大半径"下碰巧对：
+         * 默认滑杆值（半径 12.5 m、高度 80.9 m、杆高 15 m）需要的是 **-81°**，
+         * 差 66° —— 相机根本没对着目标，而画面上看不出异常。
+         * 下面这个字段现在只在 autoGimbalPitch=false 时才有意义。 */
         .gimbalPitchDeg = -15.0,
+        .autoGimbalPitch = true,
         /* 走曲线段（近似圆弧）而不是直线段（内接多边形）。
          *
          * 用户 2026-09-22 明确要求"用物理圆，无人机走弧线"：
