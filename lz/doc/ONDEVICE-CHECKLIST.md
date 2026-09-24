@@ -58,12 +58,33 @@ dji_app_ctl install -i ~/dpk/liangzhourenwu_v01.00.00.00.dpk
 | 航点转弯模式 | `toPointAndPassWithContinuityCurvature` + `useStraightLine=1` | `lz_mission.c` 的 `LZ_TURN_PASS_WITH_CURVE` |
 | 提前转弯截距 | 最短段的 45%（8 点 20 m 半径 → **6.888 m**） | `LzPlan_SuggestDampingM()` |
 | 机头朝向 | `towardPOI`，兴趣点 = 记录的杆位 | `lz_wpml.c` |
-| 云台俯仰 | −15° | `lz_mission.c` 的 `gimbalPitchDeg` |
+| 云台俯仰 | **几何反算**（见下） | `LzPlan_ComputeGimbalPitchDeg()`，`lz_mission.c` 的 `autoGimbalPitch=true` |
 | 巡航速度 | 3.0 m/s | 同上 |
 | 收尾动作 | `gotoFirstWaypoint` | `lz_wpml.h` 的 `LZ_WPML_FINISH_ACTION` |
 | 返航高度 | `max(航线高度, 30)` | `lz_wpml.c`（手动/失控返航时生效） |
 | 机型/负载枚举 | `droneEnumValue=99` / `payloadEnumValue=89` | `LzWpml_DefaultIdentity()` |
 | 航点总数 | `waypointCount + 1`（末尾补了与首点**坐标完全相同**的收尾点） | `lz_plan.c` |
+
+**云台俯仰现在是算出来的，不再是写死的 −15°**（2026-09-25 改）：
+
+    俯仰 = -atan2(飞机相对目标高度 - 目标高/2, 半径)
+
+现场对照表（杆高按 15 m 算 → 瞄中点 7.5 m；实际值待实测杆高后核对）：
+
+| 半径 | 高度（相对起飞点） | 俯仰 |
+|---|---|---|
+| 5 m | 80 m | −86.1° |
+| 12.5 m | 80 m | −80.2° |
+| 20 m | 80 m | −74.6° |
+| 20 m | 20 m | −32.0° |
+
+⚠️ **判据**：绕飞时机头对杆（`towardPOI`），杆应**大致停在画面中央**。
+若杆明显偏在画面上缘或下缘，说明俯仰算错了（或杆高填错了）——
+先量实际杆高，再看 `LzPlan_ComputeGimbalPitchDeg` 的输入。
+
+⚠️ 原 −15° 只在"低高度 + 大半径"下碰巧接近；默认滑杆值（半径 12.5 m、
+高度 80.9 m）下正解是 **−80.3°**，差 65° —— 而画面上看不出"没对准"，
+只会觉得"杆在边上"。
 
 **8 点 20 m 半径的几何**（对照 Pilot 显示的里程）：
 单段弦长 **15.307 m**、总路径 **122.459 m**、整圈周长 125.664 m。

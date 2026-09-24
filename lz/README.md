@@ -16,6 +16,8 @@ lz_core      零依赖（不依赖 PSDK / 任何第三方）        ← 永远�
   └─ lz_bridge  规划结果 → KMZ / CSV
 
 lz_vision    视觉层，两个**互斥**后端（-DLZ_VISION_BACKEND=stub|hsv，默认 stub）
+  ├─ src/lz_vision.c    **真算法，已实现**（HSV 阈值 + 连通域 + 竖线对比度滤波）
+  └─ src/lz_vision_stub.c  固定杆位占位
 lz_app       机载应用，依赖 PSDK（-DLZ_BUILD_PSDK_APP=ON）← 默认关闭
   ├─ platform/      平台层注册（移植自官方样例，逻辑未改）
   ├─ lz_pole_source 绕飞圆心从哪来（固定坐标 | 激光测距）
@@ -26,17 +28,27 @@ lz_app       机载应用，依赖 PSDK（-DLZ_BUILD_PSDK_APP=ON）← 默认关
 **视觉刻意不用 OpenCV**：国旗是高饱和红色块，HSV 双区间阈值足够。
 好处是 WSL 与妙算3 都不必装 OpenCV，且视觉层能在桌面上直接跑测试。
 
-**视觉后端为什么默认 `stub`**：`hsv` 后端的连通域部分尚未实现。
-而激光测距已实测可用，视觉层的职责可能从"解算绝对坐标"降级为"确认激光
-瞄准点是不是杆"—— 在职责定下来之前把视觉算法做深是白做。`stub` 用固定
-杆位让整条链路先能跑通。
+**视觉后端为什么默认 `stub`**：`hsv` 后端已实现，但**还没接进主链路**
+（取图那一环空着，见 CLAUDE.md）。默认 stub 是为了让「拨开关 → 飞机绕一圈」
+这条链路先能整体跑通。
+
+**`hsv` 后端怎么验证**（6 张真实俯拍照片的回归测试，约 1.6 MB 数据入库）：
+
+```bash
+cmake -S . -B build -DLZ_VISION_BACKEND=hsv && cmake --build build -j4
+./build/lz_test_vision        # 6 张照片 + 8 个人造用例
+node tools/render_vision_check.js tests/data /tmp/check.png   # 人工核对图
+```
+
+⚠️ 检测的是**杆**（`LzTarget.pixel.u` = 杆列），**不是旗面中心** ——
+实测两者相差 −3.7% ~ +4.1% 画面宽且**随风向变号**，标定不掉。详见 CLAUDE.md。
 
 ## 桌面自检（秒级，零依赖）
 
 ```bash
 cd lz
 cmake -S . -B build && cmake --build build -j4
-ctest --test-dir build --output-on-failure     # 4 个测试，140+ 断言
+ctest --test-dir build --output-on-failure     # 7 个测试（hsv 后端下 8 个）
 ./build/lz_plan_demo                            # 打印一条绕飞航线
 ./build/lz_kmz_demo /tmp/out.kmz                # 生成 KMZ 供解包器校验
 ```
