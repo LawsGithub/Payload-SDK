@@ -118,6 +118,26 @@ add_library(lz_vision STATIC ${LZ_VISION_SRC})
 target_include_directories(lz_vision PUBLIC include)
 target_link_libraries(lz_vision PUBLIC lz_core m)
 
+# ---- 视觉层的回归测试：对 6 张**真实俯拍照片**跑 ----
+#
+# ⚠️ 只在 hsv 后端下有意义：stub 后端刻意不看画面，它对照片的检测结果
+# 与照片内容无关，比对了也证明不了什么。
+#
+# 测试数据（tests/data/*.ppm + vision_golden.txt）由
+# tools/gen_vision_testdata.js 从现场照片生成，约 1.5 MB，**入库** ——
+# 它的价值就在于"不需要现场照片也能复现检测行为"，不入库等于没有。
+if(LZ_VISION_BACKEND STREQUAL "hsv" AND LZ_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
+    add_executable(lz_test_vision tests/lz_test_vision.c)
+    target_include_directories(lz_test_vision PRIVATE tests)
+    target_link_libraries(lz_test_vision PRIVATE lz_vision m)
+    add_test(NAME lz_test_vision COMMAND lz_test_vision)
+    # 数据目录用绝对路径传给测试 —— 测试的 CWD 是构建目录，
+    # 而数据在源树里（tests/data）。写相对路径会在 build/ 下找不到。
+    set_tests_properties(lz_test_vision PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        ENVIRONMENT "LZ_VISION_TESTDATA=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+endif()
+
 # ---------------------------------------------------------------------------
 # lz_app：机载目标，需要 PSDK 静态库
 #
