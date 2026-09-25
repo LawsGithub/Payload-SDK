@@ -1,12 +1,12 @@
 # HANDOFF — 读全文再开始干活
 
-生成时间: 2026-09-25T12:10:00+0800 · Git HEAD: __HEAD__
+生成时间: 2026-09-25T12:10:00+0800 · Git HEAD: 6a56808480ff4b77107b9da53d75259445af6b02
 信任规则: [V] = 交接时已用命令验证；[?] = 仅记忆未复核，当线索对待；[X] = 已证伪，别用。
 
 ## 0. 复核（下一会话先做）
 
-- 锚点: `feature/liangzhourenwu` @ `__HEAD__`（2026-09-25 12:10）
-- 漂移检查: `git rev-parse HEAD~1` 应 = `__HEAD__`——HEAD 是本次 handoff 提交，
+- 锚点: `feature/liangzhourenwu` @ `6a56808480ff4b77107b9da53d75259445af6b02`（2026-09-25 12:10）
+- 漂移检查: `git rev-parse HEAD~1` 应 = `6a56808480ff4b77107b9da53d75259445af6b02`——HEAD 是本次 handoff 提交，
   其 parent 才是本快照记录的 SHA；变了说明快照可能过期
 - **本段新增的切片尚未推送**：`c72f0ad`。推送要**走代理**，
   且**别直连**（直连 `git push` 会挂起，见 §5）
