@@ -485,3 +485,51 @@ Bad file descriptor，这是预期的。所以步骤 1 的验收只有"编译链
 - 主链路（`main.c` / `lz_mission.c`）**未接入取图** —— 因为测定还没做，
   接了也没有调用点，只会平白增加启动路径的风险
 - 控件 6（视觉标定俯仰）
+
+---
+
+## 12. 更正一条既有结论：**PSDK 是可以转自带云台的**
+
+HANDOFF 里写着「PSDK **不能转**自带云台（`dji_gimbal.h` 只服务第三方云台 +
+SkyPort，全库无 setter）」——**这条不成立**，它把两个模块混为一谈了：
+
+| 头文件 | 服务对象 | 有 setter 吗 |
+|---|---|---|
+| `dji_gimbal.h` | **第三方云台**（SkyPort / X-Port 开发板） | ❌ 只有 `Init` / `DeInit` / `RegCommonHandler`，是让**我们实现**云台回调 |
+| `dji_gimbal_manager.h` | **挂载在飞机上的云台**（含自带云台） | ✅ `SetMode` / `Reset` / `Rotate` / `SetPitchRangeExtensionEnabled` / … 共 9 个 |
+
+「全库无 setter」说的是前者，而后者**有**，其中 `DjiGimbalManager_Rotate()`
+就是「转到指定俯仰/翻滚/偏航角」：
+
+```c
+T_DjiReturnCode DjiGimbalManager_Rotate(E_DjiMountPosition mountPosition,
+                                        T_DjiGimbalManagerRotation rotation);
+/* T_DjiGimbalManagerRotation = { rotationMode; pitch; roll; yaw; time; }  单位 deg */
+```
+
+### 在 M4T + 妙算3 上可用的四条证据
+
+| # | 证据 | 说明 |
+|---|---|---|
+| 1 | **妙算3 高级功能清单含「云台管理」** `[V]` | 用户 2026-09-24 提供的官方页面截图，已记在 `API-MAP.md` §12.6。我们正是妙算3 —— **能力矩阵的机型列在妙算3 场景下由这份清单决定** |
+| 2 | 能力矩阵：`Gimbal Management` = **advanced**，且注明 M4 系列高级功能**需妙算3** | 与 #1 一致 |
+| 3 | **Payload-SDK issue #563**（M4T + 妙算 + PSDK 3.16） | 提问者用 `DjiGimbalManager_Rotate` @20Hz 控云台，**抱怨的是实速只有下发的 10–20%，不是不能用** |
+| 4 | **issue #555**（M4T + 妙算3 + PSDK 3.16） | 提问者设云台自由模式后云台**仍在跟随**，即云台**能被控制**，只是模式语义与文档不符 |
+
+⚠️ **#555 说的限制是 `yaw`，不是 `pitch`。** #555 的原话是"没有单独的云台 yaw
+控制……只能用遥控器 yaw 摇杆控制无人机转动"。那与 CLAUDE.md 已有的结论
+（M4T 云台 yaw 不可独立偏航，绕飞靠 `towardPOI` 让机头追杆）**完全一致，
+不冲突** —— 本文管的正是 `pitch`，两者是不同的轴。
+
+⚠️ **但 #563 那条值得记住**：`Rotate` 的**实际速度**与下发值差一个数量级。
+本文不依赖速度（只要求"转到位"），但**必须读回确认到没到位** ——
+这正是 §6.4 #15「设置 + 读回」的第二个理由（第一个理由是 #555/#563 说明
+"下发了 ≠ 执行了"，第二个理由就是这条）。
+
+### 对实施的影响
+
+- §7 步骤 5 的风险**从"可能根本不能用"降到"能用，但要处理速度/到位确认"**。
+- 步骤 5 终点明确：`SetMode(FREE 或 YAW_FOLLOW)` → `Rotate(pitch=θ0)` →
+  读回 `GIMBAL_ANGLES.x`，**三者都成功才算通**。
+- 本文的 §7 步骤 6（方案 A）**仍然不需要飞控接口** —— 云台控制与飞控控制
+  是两件事。方案 B 才需要飞控。
