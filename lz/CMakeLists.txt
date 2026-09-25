@@ -240,6 +240,19 @@ if(LZ_BUILD_PSDK_APP)
         ${LZ_PLATFORM_SRC}
     )
 
+    # 取图探针 —— 查 M4T 的图像流能不能取到、取到的是哪个镜头的画面。
+    #
+    # 与上面两个探针同一个理由：**把不确定性隔离在一次上机试验里**。
+    # 取图的 position/source/pixFmt 现在都是猜的，而猜错的表现是
+    # "花屏"或"收不到帧"而不是报错 —— 在主应用里排查这件事，
+    # 要连带着任务状态机一起看，成本高得多。
+    # 详见 lz/app/lz_liveview_probe.c 的文件头与 doc/VISION-GIMBAL-PITCH.md §9 #1。
+    add_executable(lz_liveview_probe
+        app/lz_liveview_probe.c
+        app/lz_vision_source.c
+        ${LZ_PLATFORM_SRC}
+    )
+
     # 任务链路探针 —— 复现"上传成功但启动航点时崩溃"，把崩溃点夹出来。
     # 与 lz_app 分开的理由同激光探针：它是**一次性的诊断工具**，
     # 且必须把变量收干净（不建线程、不注册控件），才能分清
@@ -249,7 +262,7 @@ if(LZ_BUILD_PSDK_APP)
         ${LZ_PLATFORM_SRC}
     )
 
-    foreach(lz_target lz_app lz_rangefinder_probe lz_mission_probe)
+    foreach(lz_target lz_app lz_rangefinder_probe lz_mission_probe lz_liveview_probe)
         target_include_directories(${lz_target} PRIVATE
             ${LZ_APP_INFO_DIR}
             include
