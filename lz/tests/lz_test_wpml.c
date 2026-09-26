@@ -480,13 +480,22 @@ int main(void)
                 seg[ns++] = LzGeo_DistanceM(&route.points[i - 1].geo,
                                             &route.points[i].geo);
             }
-            double shortest = seg[0], longest = seg[0];
-            for (int i = 1; i < ns; ++i) {
-                if (seg[i] < shortest) { shortest = seg[i]; }
-                if (seg[i] > longest)  { longest  = seg[i]; }
+            /* ⚠️ `ns == 0` 时必须显式失败，不能继续读 `seg[0]`。
+             * 段数取决于 `route.count` 与这条用例里那个 `+1` 的细节，
+             * 一旦将来航点数或收尾点约定变了，`ns` 就可能为 0 ——
+             * 那时读未初始化的 `seg[0]` 是 UB，而**断言会照样"通过"**，
+             * 与 `LZ_TEST_SUMMARY` 里"0 项检查也算失败"同源：
+             * 测不出东西的用例比失败的用例更危险。 */
+            LZ_CHECK(ns > 0);
+            if (ns > 0) {
+                double shortest = seg[0], longest = seg[0];
+                for (int i = 1; i < ns; ++i) {
+                    if (seg[i] < shortest) { shortest = seg[i]; }
+                    if (seg[i] > longest)  { longest  = seg[i]; }
+                }
+                LZ_CHECK(suggested <= longest);
+                LZ_CHECK(2.0 * suggested < shortest);
             }
-            LZ_CHECK(suggested <= longest);
-            LZ_CHECK(2.0 * suggested < shortest);
 
             const double fromXml = 6.0;   /* 17.5 m / 8 点：15.31 × 0.45 ≈ 6.89 */
             (void)fromXml;
