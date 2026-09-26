@@ -29,9 +29,14 @@
 /* 云台角在协议里是 int16，单位 0.1 度 */
 #define LZ_GIMBAL_DEG_SCALE 10.0
 
-/* 云台俯仰角的硬件限位，转成协议单位 */
-#define LZ_GIMBAL_PITCH_MIN_DEG (-90.0)
-#define LZ_GIMBAL_PITCH_MAX_DEG (30.0)
+/* 云台俯仰限位来自 `lz_plan.h`（经 `lz_bridge_psdk.h` 引入），
+ * **此处不再自备一份**。
+ *
+ * ⚠️ 这里原先有 `#define ... (30.0)` 的一份拷贝，而它**从未被使用** ——
+ * 本文件走的是 V2 路径，`LzBridge_FillWaypointV2()` 现在没有任何调用方
+ * （V2 已被 V3 + KMZ 取代）。但那份拷贝有个真实危害：改限位时它看起来
+ * 也被改了，实际没有，而 `-Wmacro-redefined` 只在两边不一致时才报警，
+ * 于是它会安静地留着一份**旧值**。⇒ 删掉，只留头文件那一处唯一定义。 */
 
 void LzWaypointV2Buffers_Init(LzWaypointV2Buffers *buffers)
 {

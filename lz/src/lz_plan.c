@@ -149,6 +149,14 @@ double LzPlan_SuggestDampingM(const LzRoute *route)
     return shortest * 0.45;
 }
 
+/* 云台俯仰限位（`LZ_GIMBAL_PITCH_MIN_DEG` / `MAX_DEG`）定义在 `lz_plan.h`。
+ *
+ * ⚠️ 它们**原先在这里**，与 `lz_bridge_psdk.c` 各写一份 —— 而
+ * `lz_bridge_psdk.c` 那份**从未被用过**（那个文件走的是 V2 路径，
+ * `LzBridge_FillWaypointV2` 现在**没有任何调用方**，V2 已被 V3+KMZ 取代）。
+ * 一份死的重复常量比没有更糟：它会在"改限位"时看起来也改了，实际没有。
+ * ⇒ 收敛到唯一的头文件处（与半径/高度那组包线同一个理由）。 */
+
 int LzPlan_ClampWaypointCount(int count)
 {
     if (count < LZ_PLAN_WAYPOINT_MIN) {
@@ -159,11 +167,6 @@ int LzPlan_ClampWaypointCount(int count)
     }
     return count;
 }
-
-/* 相机的物理俯仰限位。与 `LzPlan_Validate` 里那道检查**同源** ——
- * 校验层按它拒、这里按它钳，两处写的必须是同一对数。 */
-#define LZ_GIMBAL_PITCH_MIN_DEG (-90.0)
-#define LZ_GIMBAL_PITCH_MAX_DEG (30.0)
 
 double LzPlan_ComputeGimbalPitchDeg(double radiusM, double altAboveTargetM,
                                     double targetHeightM)

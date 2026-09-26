@@ -221,8 +221,8 @@ int main(void)
          * 钳位会把"相机物理上做不到"伪装成"做得到"（见头文件）。
          * 所以这里断言的是"确实算出来了那个越界值"： */
         LZ_CHECK(LzPlan_ComputeGimbalPitchDeg(1e-9, 10.0, 0.0) < -89.99);
-        /* 飞机低于目标 → 必须往上看（正角），哪怕超过相机的 +30° 上限 */
-        LZ_CHECK(LzPlan_ComputeGimbalPitchDeg(20.0, -80.0, 15.0) > 30.0);
+        /* 飞机低于目标 → 必须往上看（正角，即上仰），哪怕超过相机的上仰上限 */
+        LZ_CHECK(LzPlan_ComputeGimbalPitchDeg(20.0, -80.0, 15.0) > LZ_GIMBAL_PITCH_MAX_DEG);
 
         /* 常用的合法组合必须落在限位内，否则规划直接产不出可用航线 */
         const double ok[][3] = {
@@ -232,7 +232,7 @@ int main(void)
         };
         for (size_t i = 0; i < sizeof(ok) / sizeof(ok[0]); ++i) {
             const double p = LzPlan_ComputeGimbalPitchDeg(ok[i][0], ok[i][1], ok[i][2]);
-            LZ_CHECK(p >= -90.0 && p <= 30.0);
+            LZ_CHECK(p >= LZ_GIMBAL_PITCH_MIN_DEG && p <= LZ_GIMBAL_PITCH_MAX_DEG);
             LZ_CHECK(isfinite(p));
         }
     }
@@ -318,10 +318,10 @@ int main(void)
         /* 它确实**向上**看，而不是"高差被忽略后向下看" */
         LZ_CHECK(route.points[0].gimbalPitchDeg > 0.0);
 
-        /* 而这个角度超过相机上仰极限（+30°）—— 所以校验**必须**拒它。
-         * 这条把"物理上做不到"变成起飞前的明确错误，而不是上机后
-         * 相机纹丝不动、却不知道原因。 */
-        LZ_CHECK(route.points[0].gimbalPitchDeg > 30.0);
+        /* 而这个角度超过相机上仰极限（`LZ_GIMBAL_PITCH_MAX_DEG`）—— 所以
+         * 校验**必须**拒它。这条把"物理上做不到"变成起飞前的明确错误，
+         * 而不是上机后相机纹丝不动、却不知道原因。 */
+        LZ_CHECK(route.points[0].gimbalPitchDeg > LZ_GIMBAL_PITCH_MAX_DEG);
         LZ_CHECK(LzPlan_Validate(&route, &pr) == LZ_ERR_RANGE);
 
         /* 反过来：同一场景若目标低于飞机，就能通过校验 —— 说明拒绝的
@@ -342,6 +342,68 @@ int main(void)
         LZ_CHECK(LzPlan_BuildOrbit(&p, &to, &pr3, &route) == LZ_OK);
         LZ_CHECK(route.points[0].gimbalPitchDeg < 0.0);
         LZ_CHECK(LzPlan_Validate(&route, &pr3) == LZ_OK);
+        LzRoute_Free(&route);
+    }
+
+    LZ_CASE("云台俯仰限位：上仰到 70°，且对目标在飞机上/下方是对称的");
+    {
+        /* ⚠️ 这条用例守的是 2026-09-26 的一次**结论更正**：早期记录把
+         * M4T 的上仰极限写成 +30°（那是从 M4E 的规格照抄来的），
+         * 而 DJI 官网 M4T 页面写的是 **-90° ~ 70°**，且有固件说明
+         * 「M4T gimbal now supports up to 70° upward tilt」佐证。
+         *
+         * 后果不对称：把上限写小 = **误拒本可执行的指令**（且看不见），
+         * 写大 = 让飞机自己拒（会报错，可观测）。所以宁可写大到规格值。
+         *
+         * 这条断言同时守两件事：值本身，以及"改这个值时得连测试一起改"。 */
+        LZ_CHECK_NEAR(LZ_GIMBAL_PITCH_MAX_DEG, 70.0, 1e-9);
+        LZ_CHECK_NEAR(LZ_GIMBAL_PITCH_MIN_DEG, -90.0, 1e-9);
+
+        /* 对称性：用户 2026-09-26 指出「无论红旗在飞机上面还是下面，
+         * 只要在画面里且云台够得着，就该转过去让屏幕中心落在旗上」。
+         * 轴对称不是"高差取反"，而是**关于目标中点取反** —— 函数瞄的是
+         * `alt - h/2`（h/2 = 7.5 m），所以对称点应取 `alt = h/2 ± d`。
+         *
+         * ⚠️ 拿 `alt = ±14.5` 去测会红（我第一版就是这么写的）：
+         * 那是关于 0 取反，而 0 是"目标底部所在水平面"，不是中点。
+         * 这个错误很值得留在注释里 —— 它正是"看起来对称、其实偏了半个杆高"
+         * 那一类，而杆高的偏差在这里是 7.5 m 的量级。 */
+        const double mid = 7.5;                 /* h/2，h = 15 m */
+        const double below = LzPlan_ComputeGimbalPitchDeg(12.5, mid - 7.0, 15.0);
+        const double above = LzPlan_ComputeGimbalPitchDeg(12.5, mid + 7.0, 15.0);
+        LZ_CHECK(below > 0.0);          /* 飞机低于目标中点 → 上仰 */
+        LZ_CHECK(above < 0.0);          /* 飞机高于目标中点 → 下压 */
+        LZ_CHECK_NEAR(below, -above, 1e-9);   /* 关于中点完全对称 */
+
+        /* 而"关于地面取反"确实**不**对称 —— 把这条固化下来，
+         * 免得将来有人以为它该对称。 */
+        const double b0 = LzPlan_ComputeGimbalPitchDeg(12.5, -14.5, 15.0);
+        const double a0 = LzPlan_ComputeGimbalPitchDeg(12.5, +14.5, 15.0);
+        LZ_CHECK(fabs(b0 + a0) > 1.0);   /* 差着半个杆高，不该相等 */
+
+        /* 边界：刚好在 70° 内 / 外。用"构造一条航线再改角度"的方式，
+         * 不依赖某个特定的半径-高度组合恰好落在边界上。 */
+        LzTarget p = pole();
+        const LzGeo takeoff = pole().geo;
+        LzOrbitProfile pr = profile();
+        pr.autoGimbalPitch = false;
+
+        LzRoute route;
+        LzRoute_Init(&route);
+        LZ_CHECK(LzPlan_BuildOrbit(&p, &takeoff, &pr, &route) == LZ_OK);
+        if (route.count > 0) {
+            route.points[0].gimbalPitchDeg = LZ_GIMBAL_PITCH_MAX_DEG;      /* 恰好在界内 */
+            LZ_CHECK(LzPlan_Validate(&route, &pr) == LZ_OK);
+
+            route.points[0].gimbalPitchDeg = LZ_GIMBAL_PITCH_MAX_DEG + 0.5; /* 刚越界 */
+            LZ_CHECK(LzPlan_Validate(&route, &pr) == LZ_ERR_RANGE);
+
+            route.points[0].gimbalPitchDeg = LZ_GIMBAL_PITCH_MIN_DEG;      /* 下界同上 */
+            LZ_CHECK(LzPlan_Validate(&route, &pr) == LZ_OK);
+
+            route.points[0].gimbalPitchDeg = LZ_GIMBAL_PITCH_MIN_DEG - 0.5;
+            LZ_CHECK(LzPlan_Validate(&route, &pr) == LZ_ERR_RANGE);
+        }
         LzRoute_Free(&route);
     }
 

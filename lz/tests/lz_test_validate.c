@@ -317,7 +317,7 @@ int main(void)
             LZ_CHECK(LzPlan_BuildOrbit(&p, &takeoff, &pr, &route) == LZ_OK);
 
             if (route.count > 0) {
-                route.points[0].gimbalPitchDeg = -120.0;   /* 物理限位 [-90, 30] */
+                route.points[0].gimbalPitchDeg = -120.0;   /* 物理限位 [-90, 70]，见 lz_plan.h */
                 LZ_CHECK(LzPlan_Validate(&route, &pr) == LZ_ERR_RANGE);
 
                 route.points[0].gimbalPitchDeg = -15.0;
