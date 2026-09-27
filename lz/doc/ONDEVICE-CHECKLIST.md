@@ -260,6 +260,44 @@ position=NO_1(1) + source=1 + PIXFMT_RGB_PACKED → 1440x1080 @30fps，0 丢帧
 
 ---
 
+---
+
+## 3.11 云台控制实验（**下一步最该做的**，需要人在 Pilot 2 上配合）
+
+⚠️ 2026-09-27 已实测：云台**可识别、可设置，但 `Rotate` 报 `NON_CONTROL_AUTHORITY`**
+（`0x600000006`）。详见 `CLAUDE.md`「云台控制」一节。
+
+**最可能的成因是遥控器/Pilot 2 占着云台控制权**（人手里的云台轮优先级更高）。
+所以下一轮要做一个**对照实验**：
+
+```bash
+# 前提：飞机通电；Smart3DExplore 与已装的 liangzhourenwu 都停掉
+pgrep -x Smart3DExplore >/dev/null && /system/bin/dji_app_ctl stop Smart3DExplore
+/system/bin/dji_app_ctl stop liangzhourenwu
+
+cd ~/lzbuild/build-native/bin
+./lz_gimbal_probe
+```
+
+- [ ] **实验 A：Pilot 2 停在相机界面、不碰云台轮** → 看 `Rotate` 是否仍被拒
+- [ ] **实验 B：Pilot 2 退出相机界面（回首页/地图页）** → 再跑一次
+- [ ] **实验 C：遥控器开机但不进 Pilot 2**（若可行）→ 再跑一次
+
+**判据与结论**：
+
+| 现象 | 结论 |
+|---|---|
+| A/B/C 有一项让 `Rotate` 通过 | **"操作员不碰云台"是程序控云台的前提** —— 可行，写进操作流程 |
+| 三项都仍被拒 | 控制权不在遥控器侧，要往"是否需要额外申请 PSDK 高级权限"方向查 |
+
+⚠️ **同时观察云台角**：`lz_gimbal_probe` 会打印「8 秒里收到几条云台角消息」。
+实测是 **0 条** ⇒ 若这一项在别的条件下能收到，也一并记下来 ——
+它决定闭环能不能"确认到位"（收不到就只能开环 + 视觉复核）。
+
+⚠️ **实验期间不要同时开别的云台控制界面** —— 两个控制源会互相抢。
+
+---
+
 ## 4. 已知噪声（不是故障，别去修）
 
 - `cam` 模块刷屏 `data size = 66 > 49 is too large` —— SDK 内部警告

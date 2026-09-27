@@ -953,6 +953,44 @@ DFOV 82°（16:9 → HFOV 69.6°）下 2 m 处覆盖 2.78 m，推车占 0.43 ✓
 ⚠️ `LZ_VISION_SOURCE_MAX_PIXELS`（1920×1080）**保持不变** ——
 我们只用广角这一路（2.07 M 够），4K（12.19 M）被正确拒掉而非塞爆静态缓冲。
 
+### ⚠️ 云台控制：**可识别、可设置，但 `Rotate` 没有控制权** `[V]`（2026-09-27 上机实测）
+
+探针 `lz_gimbal_probe` 的实测返回码：
+
+```text
+DjiFcSubscription_Init                      ✅    SubscribeTopic(GIMBAL_ANGLES,50Hz) ✅
+云台角消息 8 秒 0 条                        ❌ 读不回来
+DjiGimbalManager_Init                       ✅
+SetMode(FREE) / SetMode(YAW_FOLLOW)         ✅
+SetPitchRangeExtensionEnabled(true)         ✅
+SetControllerMaxSpeedPercentage(pitch,100)  ✅
+SetControllerSmoothFactor(pitch,2)          ✅
+DjiGimbalManager_Reset(PITCH_AND_YAW)       ✅
+DjiGimbalManager_Rotate（绝对/相对都一样）   ❌ rc=0x600000006 NON_CONTROL_AUTHORITY
+```
+
+**这个组合的含义**：云台**被认出来了**（Init/Reset/所有设置型调用都通），
+**只有"写角度"被拒** ⇒ 不是"云台不存在"，是**控制权不在程序手上**。
+
+⚠️ **排除了两个假设**（都试过）：
+1. **"配速度/平滑度就能解决"** —— issue #563 的报告者配完就能转（只是慢）。
+   我们照做后**立刻重试 `Rotate`，仍然 NON_CONTROL_AUTHORITY**。
+   ⇒ 与 #563 的差异不在那些设置上。
+2. **"要用 `ObtainJoystickCtrlAuthority`"** —— 全库 grep：
+   `dji_gimbal_manager.h` **没有任何 authority 申请接口**；
+   `DjiFlightController_ObtainJoystickCtrlAuthority` 是**摇杆**权限（飞行控制），
+   与云台是两回事。**别把它当成云台权限。**
+
+**最可能的成因**：遥控器 / Pilot 2 占着云台控制权（人手里的云台轮优先级更高）。
+**要试的下一个实验**：在 Pilot 2 上**退出相机界面、不碰云台轮**，然后重跑探针。
+若那时通过 ⇒ 结论完整：**「操作员不碰云台」是程序控云台的前提**。
+
+⚠️ **另一条独立结论：云台角读不回来**（订阅成功但 0 条推送）。
+⇒ **"确认转到位"这一环目前没有依据**。若最终确认它不推，
+闭环只能改成**开环 + 视觉复核**（转完再拍一帧看目标在画面里的位置变没变）。
+⚠️ 探针**没有**用 `DjiFcSubscription_GetLatestValueOfTopic` —— 那个接口在本
+SDK 版本上**必崩**（已实测），而**官方样例用的正是它** ⇒ 照抄样例会崩。
+
 ### ❌ 「让 Pilot 2 显示红旗」在 M4T 上做不到 `[V]`（2026-09-27 上机实测）
 
 你问过「右上角那个目标类型能不能设成红旗」。**那个改不了**，而且
