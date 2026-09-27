@@ -953,41 +953,65 @@ DFOV 82°（16:9 → HFOV 69.6°）下 2 m 处覆盖 2.78 m，推车占 0.43 ✓
 ⚠️ `LZ_VISION_SOURCE_MAX_PIXELS`（1920×1080）**保持不变** ——
 我们只用广角这一路（2.07 M 够），4K（12.19 M）被正确拒掉而非塞爆静态缓冲。
 
-### ⚠️ 云台控制：**可识别、可设置，但 `Rotate` 没有控制权** `[V]`（2026-09-27 上机实测）
+### ✅ 云台**可被程序控制**，角度准、读得回 `[V]`（2026-09-27 上机实测）
 
-探针 `lz_gimbal_probe` 的实测返回码：
+探针 `lz_gimbal_probe` 的实测结果（飞机通电、`Smart3DExplore` 与已装
+`liangzhourenwu` 都停）：
 
 ```text
-DjiFcSubscription_Init                      ✅    SubscribeTopic(GIMBAL_ANGLES,50Hz) ✅
-云台角消息 8 秒 0 条                        ❌ 读不回来
-DjiGimbalManager_Init                       ✅
-SetMode(FREE) / SetMode(YAW_FOLLOW)         ✅
-SetPitchRangeExtensionEnabled(true)         ✅
-SetControllerMaxSpeedPercentage(pitch,100)  ✅
-SetControllerSmoothFactor(pitch,2)          ✅
-DjiGimbalManager_Reset(PITCH_AND_YAW)       ✅
-DjiGimbalManager_Rotate（绝对/相对都一样）   ❌ rc=0x600000006 NON_CONTROL_AUTHORITY
+SubscribeTopic(GIMBAL_ANGLES, 50Hz)                        ✅  云台角**可读**（pitch 实时更新）
+DjiGimbalManager_Init / SetMode(FREE, YAW_FOLLOW)          ✅
+SetPitchRangeExtensionEnabled / SetControllerMaxSpeed /
+  SetControllerSmoothFactor / Reset                        ✅
+Rotate(absolute −30 / −60 / −90 / 0)                       ✅ **四个角全部到位**
+                                                              误差 0.00°，耗时 1.0–1.2 s
+Rotate(relative −10°)                                      ✅ 实际转了 −10.00°
 ```
 
-**这个组合的含义**：云台**被认出来了**（Init/Reset/所有设置型调用都通），
-**只有"写角度"被拒** ⇒ 不是"云台不存在"，是**控制权不在程序手上**。
+⇒ **视觉调俯仰的闭环在本机型上是可行的**：能读回当前角、能转到指定角、准且快。
 
-⚠️ **排除了两个假设**（都试过）：
-1. **"配速度/平滑度就能解决"** —— issue #563 的报告者配完就能转（只是慢）。
-   我们照做后**立刻重试 `Rotate`，仍然 NON_CONTROL_AUTHORITY**。
-   ⇒ 与 #563 的差异不在那些设置上。
-2. **"要用 `ObtainJoystickCtrlAuthority`"** —— 全库 grep：
-   `dji_gimbal_manager.h` **没有任何 authority 申请接口**；
-   `DjiFlightController_ObtainJoystickCtrlAuthority` 是**摇杆**权限（飞行控制），
-   与云台是两回事。**别把它当成云台权限。**
+### ⚠️ 两个"看起来像权限问题、其实不是"的坑
 
-**最可能的成因**：遥控器 / Pilot 2 占着云台控制权（人手里的云台轮优先级更高）。
-**要试的下一个实验**：在 Pilot 2 上**退出相机界面、不碰云台轮**，然后重跑探针。
-若那时通过 ⇒ 结论完整：**「操作员不碰云台」是程序控云台的前提**。
+**① `absoluteAngle` 模式下 `yaw` 必须填"当前 yaw"，不能填 0。**
 
-⚠️ **另一条独立结论：云台角读不回来**（订阅成功但 0 条推送）。
-⇒ **"确认转到位"这一环目前没有依据**。若最终确认它不推，
-闭环只能改成**开环 + 视觉复核**（转完再拍一帧看目标在画面里的位置变没变）。
+`yaw = 0` 在绝对角模式下的含义是"把云台偏航转到**正北**"，而 M4T 的 pan
+只有 ±60°（软限位）—— **够不到正北**，于是整条命令被拒，报
+`0x600000004` = **YAW_REACH_POSITIVE_LIMIT**。
+
+官方样例 `test_gimbal_manager.c` 正是在这里做对了：绝对角模式下**先读出
+当前 yaw 再原样传回**。它用的是 `DjiFcSubscription_GetLatestValueOfTopic`
+（在本 SDK 版本上**必崩**，见下）；我们用**自己的回调缓存**，结论一样但不崩。
+
+⚠️ **两类失败码的病因完全不同，光看"失败"会混**：
+
+| 返回码 | 含义 | 病因 |
+|---|---|---|
+| `0x600000006` | `NON_CONTROL_AUTHORITY` | **权限** —— 有别的控制源 |
+| `0x600000004` | `YAW_REACH_POSITIVE_LIMIT` | **参数** —— yaw 填错，与 pitch 无关 |
+
+⇒ 探针在失败时**也读一次 pitch**：被拒的命令**可能已经部分执行**
+（先动了 pitch 才在 yaw 上撞限位）。不读回来就会把"部分执行"误当成"没动"。
+
+**② `NON_CONTROL_AUTHORITY` 是真实存在的状态。**
+
+第一轮实测 8 次 `Rotate` 全报 `0x600000006`，而同一时刻 `Init` /
+所有设置型调用 / `Reset` 都通 —— 说明**云台被认出来了，只是写通道没权限**。
+之后复跑就全通了。⇒ 那个状态**确实会出现**，最可能是遥控器/Pilot 2
+占着云台（人手里的云台轮优先级更高）。
+
+**操作流程上要遵守**：程序要控云台时，**人不要同时操作云台**。
+
+⚠️ **一条被推翻的推断**：第一轮我推断"配了速度/平滑度后 Rotate 通过"
+（因为复跑前恰好配了）—— 加了 `--no-speed` 做对照，**不配也通过**
+⇒ 那两项**不是**成因。**"先后发生"不等于"因果关系"**，
+这次是靠一个显式开关才验掉的。
+
+### 云台角可读（这一点第一轮是错的）
+
+第一轮只等 600 ms 就下了"读不到"的结论 —— **那是错的**，那条话题的推送
+比订阅返回晚。第二轮改成**每秒报一次累计条数**，1 秒就收到 50 条、pitch
+实时更新。⇒ **"等得不够"与"根本不推"必须分开**，只有时间能分开它们。
+
 ⚠️ 探针**没有**用 `DjiFcSubscription_GetLatestValueOfTopic` —— 那个接口在本
 SDK 版本上**必崩**（已实测），而**官方样例用的正是它** ⇒ 照抄样例会崩。
 

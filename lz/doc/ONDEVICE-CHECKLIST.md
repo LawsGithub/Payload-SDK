@@ -262,39 +262,30 @@ position=NO_1(1) + source=1 + PIXFMT_RGB_PACKED → 1440x1080 @30fps，0 丢帧
 
 ---
 
-## 3.11 云台控制实验（**下一步最该做的**，需要人在 Pilot 2 上配合）
+## 3.11 云台控制 ✅ **已验通（2026-09-27）**
 
-⚠️ 2026-09-27 已实测：云台**可识别、可设置，但 `Rotate` 报 `NON_CONTROL_AUTHORITY`**
-（`0x600000006`）。详见 `CLAUDE.md`「云台控制」一节。
+`lz_gimbal_probe` 的实测结果：**云台可被程序控制，角度准、读得回**。
 
-**最可能的成因是遥控器/Pilot 2 占着云台控制权**（人手里的云台轮优先级更高）。
-所以下一轮要做一个**对照实验**：
-
-```bash
-# 前提：飞机通电；Smart3DExplore 与已装的 liangzhourenwu 都停掉
-pgrep -x Smart3DExplore >/dev/null && /system/bin/dji_app_ctl stop Smart3DExplore
-/system/bin/dji_app_ctl stop liangzhourenwu
-
-cd ~/lzbuild/build-native/bin
-./lz_gimbal_probe
+```text
+SubscribeTopic(GIMBAL_ANGLES,50Hz)   ✅ 云台角可读（pitch 实时更新）
+Init / SetMode / SetPitchRangeExtension / SetController* / Reset   ✅
+Rotate(absolute −30/−60/−90/0)       ✅ 四个角全部到位，误差 0.00°，耗时 1.0–1.2 s
+Rotate(relative −10°)                ✅ 实际转了 −10.00°
 ```
 
-- [ ] **实验 A：Pilot 2 停在相机界面、不碰云台轮** → 看 `Rotate` 是否仍被拒
-- [ ] **实验 B：Pilot 2 退出相机界面（回首页/地图页）** → 再跑一次
-- [ ] **实验 C：遥控器开机但不进 Pilot 2**（若可行）→ 再跑一次
+**现场要点（两条都会让人误判）**：
 
-**判据与结论**：
+- [ ] **程序要控云台时，人不要同时操作云台轮** —— 实测出现过
+      `NON_CONTROL_AUTHORITY`（`0x600000006`）：同一时刻 `Init`/`Reset`/
+      所有设置型调用都通，**只有写角度被拒**。最可能就是遥控器占着控制权。
+      ⚠️ 与 `YAW_REACH_POSITIVE_LIMIT`（`0x600000004`）**病因完全不同** ——
+      后者是参数错（绝对角模式下 yaw 必须填当前值，不能填 0），与权限无关。
+- [ ] **云台角读得回来**（1 秒就有 50 条）。⚠️ 第一轮只等 600 ms 就下了
+      "读不到"的结论，**那是错的** —— "等得不够"与"根本不推"必须分开。
 
-| 现象 | 结论 |
-|---|---|
-| A/B/C 有一项让 `Rotate` 通过 | **"操作员不碰云台"是程序控云台的前提** —— 可行，写进操作流程 |
-| 三项都仍被拒 | 控制权不在遥控器侧，要往"是否需要额外申请 PSDK 高级权限"方向查 |
-
-⚠️ **同时观察云台角**：`lz_gimbal_probe` 会打印「8 秒里收到几条云台角消息」。
-实测是 **0 条** ⇒ 若这一项在别的条件下能收到，也一并记下来 ——
-它决定闭环能不能"确认到位"（收不到就只能开环 + 视觉复核）。
-
-⚠️ **实验期间不要同时开别的云台控制界面** —— 两个控制源会互相抢。
+⚠️ 探针跑完会**回中**，把云台留在自然位置。若要观察 `SetMode(FREE)` 是否
+真生效，判据是**飞机 yaw 转动时画面跟不跟着转**（需人观察）——
+issue #555 正是"设了 FREE 但云台仍在跟随"。
 
 ---
 
