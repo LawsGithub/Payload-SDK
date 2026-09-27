@@ -102,6 +102,22 @@ typedef struct {
 /** @brief 一套可用的默认配置（现场的实测参数） */
 LzVisionConfig LzVision_DefaultConfig(void);
 
+/**
+ * @brief 当前编译进来的是哪个后端（`"hsv"` 或 `"stub"`）
+ *
+ * ⚠️ **两个后端都必须实现它**（返回各自的字符串）。
+ *
+ * 它原先只在 `lz_vision_stub.c` 里定义、也只在那里就地声明，
+ * 而 `lz_vision.c` **根本没有这个函数**、头文件里也没有原型。
+ * 后果：任何想打印后端名的调用方**只在 stub 后端下编得过**，
+ * 切到 hsv 就是 `implicit declaration` + 链接失败
+ * （2026-09-27 写 `lz_vision_probe` 时踩到）。
+ *
+ * 与 `LzVision_DefaultConfig` 是**同一个形状**：头文件按"全集"声明，
+ * 而两个后端实现的函数集不一致。**凡是头文件声明的，两个后端都要给。**
+ */
+const char *LzVision_BackendName(void);
+
 /** 视觉上下文（不透明；内部持有中间缓冲，故不放进头文件） */
 typedef struct LzVision LzVision;
 

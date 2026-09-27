@@ -1,6 +1,6 @@
 /**
- * @file lz_vision_math.c
- * @brief 视觉层里与**检测算法无关**的纯数学：像素 ↔ 角度。
+ * @file lz_vision_shared.c
+ * @brief 视觉层里**两个后端都要有**的东西：默认配置 + 像素↔角度的纯数学。
  *
  * ## 为什么单独一个文件，而不是放进 `lz_vision.c`
  *
@@ -22,6 +22,17 @@
  * 长焦 15°"之前，本文件就能用规格值在桌面上跑测试。
  *
  * 设计依据与全部待定项见 [`doc/VISION-GIMBAL-PITCH.md`](../../doc/VISION-GIMBAL-PITCH.md) §7 步骤 2/4。
+ *
+ * ## ⚠️ 为什么 `LzVision_DefaultConfig` 也在这里（2026-09-27 挪过来）
+ *
+ * 它原先只定义在 `lz_vision.c`（hsv 后端）里，而**头文件声明了它**。
+ * 后果：切到 `stub` 后端时，任何调用它的代码都**链接失败**
+ * （2026-09-27 写 `lz_vision_probe` 时踩到 —— 那个探针只是想打印一下
+ * 阈值，就在 stub 下编不过）。
+ *
+ * 这与 `LzVision_BackendName` 是**同一个形状**：两个后端实现的函数集
+ * 不一致，而头文件按"全集"声明。凡是头文件声明的东西，
+ * **两个后端都必须提供** —— 要么各自实现，要么都从本文件取。
  */
 
 #include "lz_vision.h"
@@ -31,6 +42,32 @@
 /* ------------------------------------------------------------------ */
 /* 像素 ↔ 角度（实现在这里，两个后端共用 —— 它们与检测算法无关）          */
 /* ------------------------------------------------------------------ */
+
+LzVisionConfig LzVision_DefaultConfig(void)
+{
+    /* 取值依据：6 张真实俯拍照片的红色像素分布（16966 个样本）
+     *   H: p5=5.6  p50=172.9  p95=176.6   —— 双峰清晰
+     *   S: p5=129  p50=224    p95=249
+     *   V: p5=170  p50=228    p95=254
+     * 低段(H<=10) 占 8.2%，高段(H>=170) 占 91.8%。
+     * 阈值取得比 p5 更宽松（S=100 / V=60）是**刻意的**：留出阴天的余量，
+     * 代价是偶尔多几个小红块 —— 而"取面积最大"会把它滤掉。 */
+    LzVisionConfig c;
+    c.redHueLowMax = 10;
+    c.redHueHighMin = 170;
+    c.minSaturation = 100;
+    c.minValue = 60;
+    c.minBlobArea = 200;
+    c.poleRoiMarginX = 70;
+    c.poleContrastOffset = 9;
+    c.poleContrastThreshold = 34;
+    c.poleHalfWidth = 1;
+    c.poleGap = 40;
+    c.poleWinAbove = 20;
+    c.poleWinBelow = 300;
+    c.minConfidence = 0.5;
+    return c;
+}
 
 double LzVision_VerticalFovDeg(int frameW, int frameH, double diagFovDeg)
 {

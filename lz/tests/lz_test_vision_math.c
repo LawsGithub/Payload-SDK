@@ -7,7 +7,7 @@
  * 这两个函数是"视觉调俯仰"整条链路里**唯一完全可桌面验证**的部分 ——
  * 不依赖 PSDK、不依赖图像、不依赖机型。把它们挂在
  * `lz_test_vision`（只在 hsv 后端注册）上，会让"今天选 stub 后端"
- * 变成"这两条也测不到"。见 `lz_vision_math.c` 的文件头。
+ * 变成"这两条也测不到"。见 `lz_vision_shared.c` 的文件头。
  *
  * ## 本文件守的三件事
  *
@@ -173,7 +173,7 @@ int main(void)
          * 不符 —— 这是"反向验证"的可执行版本：不需要改源码再跑，
          * 断言本身就把两种算法区分开了。
          *
-         * （真正的反向验证另做：把 lz_vision_math.c 里的 `/ diag` 改成
+         * （真正的反向验证另做：把 lz_vision_shared.c 里的 `/ diag` 改成
          * `/ w`，看 ctest 是否变红 —— 记录在 commit message 里。） */
         const double w = 1920.0, h = 1080.0;
         const double diag = sqrt(w * w + h * h);

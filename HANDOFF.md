@@ -99,7 +99,7 @@ position=NO_1(1) + source=1 + PIXFMT_RGB_PACKED → 1440x1080 @30fps，0 丢帧
 **做了方案 §7 的步骤 2 与 4**（像素↔角度的纯数学），并**发现步骤 3 卡住**。
 
 ```text
-新增 src/lz_vision_math.c（两后端共用）+ tests/lz_test_vision_math.c（56 项检查）
+新增 src/lz_vision_shared.c（两后端共用）+ tests/lz_test_vision_math.c（56 项检查）
   LzVision_VerticalFovDeg(w, h, diagFovDeg)   —— 步骤 2
   LzVision_PixelOffsetToDeg(vMid, vfovDeg)    —— 步骤 4
 桌面：stub 8/8、hsv 9/9；x64 PSDK 侧 0 warning

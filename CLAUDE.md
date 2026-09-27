@@ -953,6 +953,38 @@ DFOV 82°（16:9 → HFOV 69.6°）下 2 m 处覆盖 2.78 m，推车占 0.43 ✓
 ⚠️ `LZ_VISION_SOURCE_MAX_PIXELS`（1920×1080）**保持不变** ——
 我们只用广角这一路（2.07 M 够），4K（12.19 M）被正确拒掉而非塞爆静态缓冲。
 
+### ❌ 「让 Pilot 2 显示红旗」在 M4T 上做不到 `[V]`（2026-09-27 上机实测）
+
+你问过「右上角那个目标类型能不能设成红旗」。**那个改不了**，而且
+**连"用我们自己的识别推一个框给 Pilot"也不行**。实测返回码（探针 `lz_ai_probe`）：
+
+```text
+RegUserAiTargetLableList(1, {"红旗"})   rc=0x000000E0  ❌ NONSUPPORT
+RegEncoderCallback                      rc=0x00000100  ❌ NOT_FOUND
+SendAiMetaToPilot                       rc=0x00000000  ✅ 100/100 成功
+EncodeAFrameToH264                      rc=0x000000EC  ❌ SYSTEM_ERROR
+```
+
+（`dji_error.h` 的 `DJI_ERROR_SYSTEM_MODULE_RAW_CODE_*`：`0x0E0`=NONSUPPORT、
+`0x100`=NOT_FOUND、`0xEC`=SYSTEM_ERROR。）
+
+⇒ 官方那句 **「当前仅在 Matrice 400 + H30 + 妙算3 场景下支持」是真的**，
+M4T 内置相机不在内。三处独立失败（注册类别 / 编码器 / 编码帧），
+**绕过任意一个都无用**；`--builtin` 模式（跳过注册、直接用内置的
+`MOVING_TARGET=34`）也绕不过去。
+
+⚠️ **`SendAiMetaToPilot` 返回 SUCCESS 是假阳性** —— 数据交出去了，
+但 Pilot 端没有注册表可查、没有编码器可附，画面上不会出现框。
+**返回成功 ≠ 生效**。这是「静默的失败等于假装成功」的镜像：
+**静默的成功更要命**，因为它让你以为做完了。
+
+⚠️ **右上角那个"目标类型"是 Pilot 2 + M4T 固件自带的 AI 识别**（人/车/船），
+**PSDK 没有任何接口能改它** —— 与「期望 PSDK 提供追踪拍摄」那节同源
+（全库 grep 39 个头文件，`track`/`detect`/`recogni`/`aim`/`lock` 零命中）。
+
+**对主线无影响**：`lz_vision` 认出的位置可以直接用来调云台，
+不需要经过 Pilot 显示。
+
 ### ⚠️ 设备上「改了源码却是旧行为」的两个来源（都踩过）`[V]`
 
 1. **`tar --mtime='@0'`** → 源码时间戳比 `.o` 旧 ⇒ make 静默跳过编译。
@@ -997,7 +1029,7 @@ DFOV 82°（16:9 → HFOV 69.6°）下 2 m 处覆盖 2.78 m，推车占 0.43 ✓
 **已交付**：
 - 方案文档
 - `lz_vision_source.{h,c}`（取图骨架）+ `lz_liveview_probe.c`（上机探针）
-- **`src/lz_vision_math.c`** —— 步骤 2 与 4 的纯数学
+- **`src/lz_vision_shared.c`** —— 步骤 2 与 4 的纯数学
   （`LzVision_VerticalFovDeg` / `LzVision_PixelOffsetToDeg`），
   配 `tests/lz_test_vision_math.c`（56 项检查）。
   ⚠️ 它**单独成文件、两个视觉后端共用**，测试**无条件注册** ——

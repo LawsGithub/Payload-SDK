@@ -29,9 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/** 后端标识，编译期可见 */
-const char *LzVision_BackendName(void);
-
+/** 后端标识 —— 原型在 `lz_vision.h`（两个后端共用，见那里的说明） */
 const char *LzVision_BackendName(void)
 {
     return "stub";

@@ -56,31 +56,6 @@ struct LzVision {
     LzBlobStat *stat;   /*!< 按根编号索引的面积统计 */
 };
 
-LzVisionConfig LzVision_DefaultConfig(void)
-{
-    /* 取值依据：6 张真实俯拍照片的红色像素分布（16966 个样本）
-     *   H: p5=5.6  p50=172.9  p95=176.6   —— 双峰清晰
-     *   S: p5=129  p50=224    p95=249
-     *   V: p5=170  p50=228    p95=254
-     * 低段(H<=10) 占 8.2%，高段(H>=170) 占 91.8%。
-     * 阈值取得比 p5 更宽松（S=100 / V=60）是**刻意的**：留出阴天的余量，
-     * 代价是偶尔多几个小红块 —— 而"取面积最大"会把它滤掉。 */
-    LzVisionConfig c;
-    c.redHueLowMax = 10;
-    c.redHueHighMin = 170;
-    c.minSaturation = 100;
-    c.minValue = 60;
-    c.minBlobArea = 200;
-    c.poleRoiMarginX = 70;
-    c.poleContrastOffset = 9;
-    c.poleContrastThreshold = 34;
-    c.poleHalfWidth = 1;
-    c.poleGap = 40;
-    c.poleWinAbove = 20;
-    c.poleWinBelow = 300;
-    c.minConfidence = 0.5;
-    return c;
-}
 
 /* ------------------------------------------------------------------ */
 /* 色彩转换                                                            */
@@ -126,6 +101,12 @@ static void lz_rgb2hsv(int r, int g, int b, int *h, int *s, int *v)
 /* ------------------------------------------------------------------ */
 /* 生命周期                                                            */
 /* ------------------------------------------------------------------ */
+
+/** 后端标识 —— 原型在 `lz_vision.h`（两个后端共用，见那里的说明） */
+const char *LzVision_BackendName(void)
+{
+    return "hsv";
+}
 
 LzStatus LzVision_Init(const LzVisionConfig *config, LzVision **out)
 {

@@ -114,11 +114,11 @@ else()
     message(FATAL_ERROR "不支持的 LZ_VISION_BACKEND: ${LZ_VISION_BACKEND}（可选 stub | hsv）")
 endif()
 
-# ⚠️ `lz_vision_math.c` **无条件**编进来（不属于 ${LZ_VISION_SRC} 那组
+# ⚠️ `lz_vision_shared.c` **无条件**编进来（不属于 ${LZ_VISION_SRC} 那组
 # 互斥后端）：它是像素↔角度的纯数学，与检测算法无关，两个后端都要用。
 # 放进任一个后端会导致"切到另一个后端时纯数学的测试也跟着丢了" ——
 # 而那两个函数恰恰是整条视觉调俯仰链路里唯一完全可桌面验证的部分。
-add_library(lz_vision STATIC ${LZ_VISION_SRC} src/lz_vision_math.c)
+add_library(lz_vision STATIC ${LZ_VISION_SRC} src/lz_vision_shared.c)
 target_include_directories(lz_vision PUBLIC include)
 target_link_libraries(lz_vision PUBLIC lz_core m)
 
@@ -131,7 +131,7 @@ target_link_libraries(lz_vision PUBLIC lz_core m)
 # tools/gen_vision_testdata.js 从现场照片生成，约 1.5 MB，**入库** ——
 # 它的价值就在于"不需要现场照片也能复现检测行为"，不入库等于没有。
 # 像素↔角度的纯数学：**与后端无关**，两个后端下都注册。
-# 理由同上面 lz_vision_math.c 的注释 —— 它是这条链路里唯一完全可桌面验证的
+# 理由同上面 lz_vision_shared.c 的注释 —— 它是这条链路里唯一完全可桌面验证的
 # 部分，不该因为"今天选的是 stub 后端"就测不到。
 if(LZ_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     add_executable(lz_test_vision_math tests/lz_test_vision_math.c)
@@ -280,6 +280,18 @@ if(LZ_BUILD_PSDK_APP)
         ${LZ_PLATFORM_SRC}
     )
 
+    # 视觉实时检测探针 —— 把真算法跑在**实时图像流**上。
+    #
+    # 这是"视觉接进 PSDK"的第一块可运行的东西：此前 lz_vision 只在桌面上
+    # 对着 6 张存下来的照片跑过，取图那层只在探针里取过帧、从没喂给检测器。
+    # ⚠️ 它**链接 lz_vision**（当前后端）—— 所以 stub 后端下它测的是占位实现，
+    # 那没有意义，探针会自己提示。真算法请 -DLZ_VISION_BACKEND=hsv。
+    add_executable(lz_vision_probe
+        app/lz_vision_probe.c
+        app/lz_vision_source.c
+        ${LZ_PLATFORM_SRC}
+    )
+
     # 任务链路探针 —— 复现"上传成功但启动航点时崩溃"，把崩溃点夹出来。
     # 与 lz_app 分开的理由同激光探针：它是**一次性的诊断工具**，
     # 且必须把变量收干净（不建线程、不注册控件），才能分清
@@ -289,7 +301,7 @@ if(LZ_BUILD_PSDK_APP)
         ${LZ_PLATFORM_SRC}
     )
 
-    foreach(lz_target lz_app lz_rangefinder_probe lz_mission_probe lz_liveview_probe lz_ai_probe)
+    foreach(lz_target lz_app lz_rangefinder_probe lz_mission_probe lz_liveview_probe lz_ai_probe lz_vision_probe)
         target_include_directories(${lz_target} PRIVATE
             ${LZ_APP_INFO_DIR}
             include
