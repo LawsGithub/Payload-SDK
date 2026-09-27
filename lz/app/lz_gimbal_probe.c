@@ -140,18 +140,42 @@ static void sleep_ms(uint32_t ms)
 static bool rotate_and_wait(double targetDeg, float *outSettledDeg,
                             uint32_t *outElapsedMs)
 {
+    const double pitchBefore = read_pitch();
     T_DjiGimbalManagerRotation rot;
     memset(&rot, 0, sizeof(rot));
     rot.rotationMode = DJI_GIMBAL_ROTATION_MODE_ABSOLUTE_ANGLE;
     rot.pitch = (dji_f32_t)targetDeg;
     rot.roll = 0.0f;
-    rot.yaw = 0.0f;
+    /* ⚠️ **yaw 必须填"当前 yaw"，不能填 0** —— 2026-09-27 实测踩到：
+     * `absoluteAngle` 模式下 `yaw = 0` 意为"把云台偏航转到正北 0°"，
+     * 而 M4T 的 pan 只能 ±60°（软限位），**够不到**，于是整条命令被拒，
+     * 报 `0x600000004` = **YAW_REACH_POSITIVE_LIMIT**。
+     *
+     * 表现上它和"没权限"完全不同（那个是 `0x600000006`），但**光看失败
+     * 本身会误判成权限问题** —— 我第一版就是这么写的。
+     *
+     * 官方样例 `test_gimbal_manager.c` 正是在这里做对了：绝对角模式下
+     * 先读出当前 yaw 再原样传回去。它用的是
+     * `DjiFcSubscription_GetLatestValueOfTopic`（在本 SDK 版本上**必崩**），
+     * 我们用**自己的回调缓存** —— 结论一样，但不会崩。 */
+    rot.yaw = s_gotAngles ? s_angles.z : 0.0f;
     rot.time = 0.0;   /* 0 = 让云台自己决定速度（不出手催它） */
 
     const T_DjiReturnCode rc = DjiGimbalManager_Rotate(LZ_GIMBAL_MOUNT, rot);
     if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
-        say_rc("  Rotate(absolute)", rc);
-        /* 常见失败码的中文含义 —— 直接把可能的病因列出来，省一次查表 */
+        /* ⚠️ 失败时也读一次 —— **被拒的命令可能已经部分执行**（先动了 pitch
+         * 才在 yaw 上撞限位）。不读回来就会把"部分执行"误当成"没动"。 */
+        sleep_ms(600);
+        const double pitchAfter = read_pitch();
+        say("  Rotate(absolute %.1f°) rc=0x%08llX ❌  pitch %.2f° → %.2f°\n",
+            targetDeg, (unsigned long long)rc,
+            isnan(pitchBefore) ? 0.0 : pitchBefore,
+            isnan(pitchAfter) ? 0.0 : pitchAfter);
+        if (rc == DJI_ERROR_GIMBAL_MODULE_CODE_YAW_REACH_POSITIVE_LIMIT ||
+            rc == DJI_ERROR_GIMBAL_MODULE_CODE_YAW_REACH_NEGATIVE_LIMIT) {
+            say("    ⇒ **只能在 yaw 上撞限位**，与 pitch 无关 —— "
+                "多半是命令里的 yaw 填错了（应填当前值）\n");
+        }
         if (rc == DJI_ERROR_GIMBAL_MODULE_CODE_NON_CONTROL_AUTHORITY) {
             say("    ⇒ NON_CONTROL_AUTHORITY：有别的控制源占着云台"
                 "（Pilot 界面？另一个应用？）\n");
@@ -199,8 +223,16 @@ static bool rotate_and_wait(double targetDeg, float *outSettledDeg,
 int main(int argc, char **argv)
 {
     int relOnly = 0;
-    if (argc >= 2) {
-        relOnly = atoi(argv[1]);
+    bool skipSpeedConfig = false;   /* `--no-speed` = 不配速度/平滑度，做对照 */
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--no-speed") == 0) {
+            skipSpeedConfig = true;
+        } else {
+            const int v = atoi(argv[i]);
+            if (v == 0 || v == 1) {
+                relOnly = v;
+            }
+        }
     }
 
     say("[lz_gimbal_probe] 探针：M4T 自带云台可不可控、准不准\n");
@@ -316,14 +348,19 @@ int main(int argc, char **argv)
     say("   （Rotate 被拒而 Reset 成功 ⇒ 不是「云台不存在」，是「写」没权限；\n");
     say("     这里试的每一个能不能成功，决定了病因有多宽）\n");
     {
-        say_rc("SetPitchRangeExtensionEnabled(true)",
-               DjiGimbalManager_SetPitchRangeExtensionEnabled(LZ_GIMBAL_MOUNT, true));
-        say_rc("SetControllerMaxSpeedPercentage(pitch,100)",
-               DjiGimbalManager_SetControllerMaxSpeedPercentage(
-                   LZ_GIMBAL_MOUNT, DJI_GIMBAL_AXIS_PITCH, 100));
-        say_rc("SetControllerSmoothFactor(pitch,2)",
-               DjiGimbalManager_SetControllerSmoothFactor(
-                   LZ_GIMBAL_MOUNT, DJI_GIMBAL_AXIS_PITCH, 2));
+        if (skipSpeedConfig) {
+            say("   （`--no-speed`：跳过速度/平滑度设置，做**对照实验** ——\n"
+                "     用它区分「是这些参数让 Rotate 通过」还是「这次本来就通」）\n");
+        } else {
+            say_rc("SetPitchRangeExtensionEnabled(true)",
+                   DjiGimbalManager_SetPitchRangeExtensionEnabled(LZ_GIMBAL_MOUNT, true));
+            say_rc("SetControllerMaxSpeedPercentage(pitch,100)",
+                   DjiGimbalManager_SetControllerMaxSpeedPercentage(
+                       LZ_GIMBAL_MOUNT, DJI_GIMBAL_AXIS_PITCH, 100));
+            say_rc("SetControllerSmoothFactor(pitch,2)",
+                   DjiGimbalManager_SetControllerSmoothFactor(
+                       LZ_GIMBAL_MOUNT, DJI_GIMBAL_AXIS_PITCH, 2));
+        }
         say_rc("SetMode(YAW_FOLLOW) 再试一次",
                DjiGimbalManager_SetMode(LZ_GIMBAL_MOUNT, DJI_GIMBAL_MODE_YAW_FOLLOW));
 
@@ -341,8 +378,14 @@ int main(int argc, char **argv)
             say("      ⇒ **配了速度/平滑度也没用** ⇒ 与 #563 的差异不在这些设置上，\n");
             say("        更像「控制权从一开始就不在我们这边」。下一步要试的是\n");
             say("        **在 Pilot 2 上退出相机界面 / 不碰云台**，让遥控器释放控制权。\n");
+        } else if (skipSpeedConfig) {
+            say("      ⇒ **没配速度/平滑度也通过** ⇒ 那两项不是通过的成因。\n");
+            say("        （2026-09-27 实测：上一次全被拒时它们也配了、没用。\n");
+            say("         差异在**外部状态** —— 多半是 Pilot 2/遥控器当时占着云台。）\n");
         } else {
-            say("      ⇒ 配了速度/平滑度后 Rotate 通过！与 #563 的做法一致。\n");
+            say("      ⇒ Rotate 通过。\n");
+            say("        ⚠️ **别据此认为「是这两项让它通的」** —— 用 `--no-speed`\n");
+            say("        重跑一次就知道（2026-09-27 实测：不配也通）。\n");
         }
     }
 
