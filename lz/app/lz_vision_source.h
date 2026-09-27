@@ -56,16 +56,53 @@
  */
 #define LZ_VISION_SOURCE_MAX_PIXELS (1920u * 1080u)
 
-/** 取图状态统计。用于探针与日志 —— **取图不工作时，这是唯一能说话的东西** */
+/** 一帧被丢弃的原因 */
+typedef enum {
+    LZ_VISION_DROP_NONE = 0,   /*!< 没丢过 */
+    LZ_VISION_DROP_FMT,        /*!< 像素格式不是 RGB_PACKED */
+    LZ_VISION_DROP_TOO_BIG,    /*!< 超出 `LZ_VISION_SOURCE_MAX_PIXELS` */
+    LZ_VISION_DROP_STRIDE,     /*!< 字节数 < w*h*3（不是紧密打包） */
+    LZ_VISION_DROP_NOT_READY,  /*!< 还没初始化完就来了帧 */
+} LzVisionDropReason;
+
+/** @brief 丢帧原因的可读名字（静态字符串） */
+const char *LzVisionSource_DropReasonName(LzVisionDropReason reason);
+
+/**
+ * 取图状态统计。用于探针与日志 —— **取图不工作时，这是唯一能说话的东西**。
+ *
+ * ## 为什么要记「被丢弃那一帧的尺寸」
+ *
+ * ⚠️ 这是 2026-09-27 上机实测逼出来的：`source=3` 全程 `droppedTooBig` 增长，
+ * 但**说不出被拒的多大** —— 而"多大"恰恰是判"那一路是不是 4K"的唯一证据。
+ * 只报个计数等于把"取图不工作"变成了不可诊断的状态：
+ * 你只能看到"有帧被拒"，看不到"拒掉的是什么"。
+ *
+ * ⇒ 三个统计组各自独立：**成功的帧**一组、**最后被丢弃的帧**一组、
+ * **见过的最大帧**一组。第三组是跨所有帧（含被拒的）的最大值。
+ */
 typedef struct {
     uint32_t frames;        /*!< 成功收到的帧数 */
     uint32_t droppedFmt;    /*!< 因像素格式不是 RGB_PACKED 而丢的帧 */
     uint32_t droppedTooBig; /*!< 因超出 `LZ_VISION_SOURCE_MAX_PIXELS` 而丢的帧 */
-    uint32_t droppedStride; /*!< 因行字节数 = w*3 不成立而丢的帧（打包格式应成立） */
+    uint32_t droppedStride; /*!< 因字节数不够而丢的帧（打包格式应恰好 w*h*3） */
+    uint32_t droppedNotReady; /*!< 还没初始化完就来帧 */
+
+    /* ---- 成功帧的自述 ---- */
     int lastWidth;
     int lastHeight;
-    bool lastIsBgr;         /*!< 对 3 通道的自述；真值待上机确认，见 `.h` 顶部说明 */
+    bool lastIsBgr;
     uint32_t lastFrameId;
+
+    /* ---- 最后被丢弃的那一帧（诊断用；见上方说明）---- */
+    int lastDropWidth;
+    int lastDropHeight;
+    uint32_t lastDropLen;              /*!< 回调给的字节数，用于判 stride 是否成立 */
+    LzVisionDropReason lastDropReason;
+
+    /* ---- 见过的最大帧（含被丢弃的）---- */
+    int maxSeenWidth;
+    int maxSeenHeight;
 } LzVisionSourceStats;
 
 /**
@@ -75,14 +112,22 @@ typedef struct {
  *
  * - `position`：M4T 原生相机（可见光/红外/4K）实测挂在**位置 1**
  *   （`[V]` 2026-09-19，与激光测距同一路）。
- * - `source`：`E_DjiLiveViewCameraSource` 里 M4T 有 `M4T_VIS=1` /
- *   `M4T_IR=2` / `M4T_4K=3`，而 M4T 的镜头是**广角 82° / 中长焦 35° /
- *   长焦 15°** —— **对不上**。`VIS` 到底是哪一个，无从判断。
- *   ⚠️ 这个值错不会报错，只会让视场角换算的分母错最多 **5 倍**
- *   （见 `doc/VISION-GIMBAL-PITCH.md` §6.2 #10 与 §9 #1）。
- * - `pixFmt`：官方样例用的是 `PIXFMT_RGB_PACKED`。选错**不是报错，是花屏**。
+ * - `source` / `pixFmt` / 通道顺序：**`[V]` 2026-09-27 上机实测（已定）** ——
  *
- * 所以做成参数、默认值只是"目前的最优猜测"，**由探针去试**。
+ *   | position | source | 实测 |
+ *   |---|---|---|
+ *   | 1 | 0 | 1440×1080 @30fps 彩色 |
+ *   | **1** | **1** | **1440×1080 @30fps 彩色（选它）** |
+ *   | 1 | 2 | 1280×1024 **灰度**（热成像，红色检测不能用） |
+ *   | 1 | 3 | 4032×3024（4K，超出单帧上限被拒） |
+ *
+ *   `source=0` 与 `source=1` **是同一镜头**（逐像素比对：最佳平移 (0,0)、
+ *   平均灰度差 2.9/255；且视场三角形排除中长焦/长焦）。
+ *   **通道顺序 = RGB**（最红像素数据 `(224,16,34)`，第 0 字节最大）。
+ *
+ *   ⚠️ **`E_DjiLiveViewCameraSource` 的枚举名对不上实测**：
+ *   头文件给 M4T 只列了 `M4T_VIS=1` / `M4T_IR=2` / `M4T_4K=3`，
+ *   而 **`source=0` 不在这个列表里却又确实给彩色画面**。别照名字猜语义。
  */
 typedef struct {
     E_DjiLiveViewCameraPosition position;
@@ -91,12 +136,12 @@ typedef struct {
 } LzVisionSourceConfig;
 
 /**
- * @brief 目前的默认配置（= 最优猜测，**未上机验证**）
+ * @brief 目前的默认配置（**已上机验证**，2026-09-27）
  *
  * ```text
- *   position = NO_1        （实测原生相机在位置 1）
- *   source   = M4T_VIS (1) （猜的 —— 见上）
- *   pixFmt   = RGB_PACKED  （照官方样例）
+ *   position = NO_1        （实测原生相机在位置 1，与激光同路）
+ *   source   = M4T_VIS (1) （实测：1440x1080 @30fps 彩色 = 广角 82°）
+ *   pixFmt   = RGB_PACKED  （实测通过，帧数 30fps 无丢帧）
  * ```
  */
 LzVisionSourceConfig LzVisionSource_DefaultConfig(void);

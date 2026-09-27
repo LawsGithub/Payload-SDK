@@ -52,6 +52,33 @@ static bool s_ready = false;             /* 已开流（不代表收到过帧）
 static LzVisionSourceConfig s_cfg;
 static LzVisionSourceStats s_stats;
 
+/**
+ * @brief 记一条丢弃：计数 + 被丢那一帧的自述
+ *
+ * **计数只说明"有东西被拒"，排查需要的是"拒掉的是什么"** —— 这是
+ * 2026-09-27 上机实测的教训（见 `LzVisionSourceStats` 的注释）。
+ *
+ * 宏而不是函数：`info.pixFmt` 是 SDK 的结构体字段，写成函数要多传三个参数，
+ * 而这三处调用点长得完全一样。这也是本项目少数几个用宏的场合之一。
+ *
+ * ⚠️ **宏体里不能写 `//` 注释** —— 展开成一行后后面整段都成了注释的一部分。
+ * 这是本项目踩过的坑。
+ */
+#define LZ_SOURCE_RECORD_DROP(why, info, len)                                 \
+    do {                                                                      \
+        switch (why) {                                                        \
+        case LZ_VISION_DROP_FMT:       s_stats.droppedFmt++;       break;     \
+        case LZ_VISION_DROP_TOO_BIG:   s_stats.droppedTooBig++;    break;     \
+        case LZ_VISION_DROP_STRIDE:    s_stats.droppedStride++;    break;     \
+        case LZ_VISION_DROP_NOT_READY: s_stats.droppedNotReady++;  break;     \
+        default:                                                       break;  \
+        }                                                                     \
+        s_stats.lastDropWidth  = (int)(info).width;                           \
+        s_stats.lastDropHeight = (int)(info).height;                          \
+        s_stats.lastDropLen    = (uint32_t)(len);                             \
+        s_stats.lastDropReason = (why);                                       \
+    } while (0)
+
 /* 已收到的帧（受 s_lock 保护） */
 static bool s_hasFrame = false;
 static size_t s_frameLen = 0;
@@ -82,32 +109,44 @@ static void LzVisionSource_OnImage(E_DjiLiveViewCameraPosition position,
         return;
     }
 
+    /* 先记「见过的最大帧」—— 必须在任何闸门之前。
+     *
+     * ⚠️ 2026-09-27 上机实测逼出来的：`source=3` 一路全被 `droppedTooBig`
+     * 拒掉（那说明它是 4K），但**当时记不出它到底多大**，于是"取图不工作"
+     * 变成了不可诊断的状态。最大尺寸跨所有帧（含被拒的），就是为了
+     * 回答"拒掉的到底是什么"。 */
+    const uint32_t pix = (uint32_t)info.width * (uint32_t)info.height;
+    if (info.width > s_stats.maxSeenWidth)  { s_stats.maxSeenWidth  = (int)info.width; }
+    if (info.height > s_stats.maxSeenHeight) { s_stats.maxSeenHeight = (int)info.height; }
+
     /* 闸门 1：像素格式。
      *
      * ⚠️ **选错 pixFmt 不会报错，只会给花屏** —— 所以这里对"收到的"格式
      * 做校验。不符就丢帧并计数，而不是把垃圾当图用：后者会让上层报
      * "检测不到红色目标"，而病因在格式上 —— **文案把排查方向带反**。 */
     if (info.pixFmt != PIXFMT_RGB_PACKED) {
-        s_stats.droppedFmt++;
+        LZ_SOURCE_RECORD_DROP(LZ_VISION_DROP_FMT, info, len);
         return;
     }
 
-    const uint32_t pixels = (uint32_t)info.width * (uint32_t)info.height;
-    if (pixels > LZ_VISION_SOURCE_MAX_PIXELS) {
-        s_stats.droppedTooBig++;
+    if (pix > LZ_VISION_SOURCE_MAX_PIXELS) {
+        LZ_SOURCE_RECORD_DROP(LZ_VISION_DROP_TOO_BIG, info, len);
         return;
     }
 
     /* 闸门 2：打包格式下每行字节数应恰好 = w*3。
      * 不等说明它不是我们以为的"紧密打包"，按 stride 拷会拷进错位的行。 */
-    const size_t need = (size_t)pixels * 3u;
+    const size_t need = (size_t)pix * 3u;
     if (len < need) {
-        s_stats.droppedStride++;
+        LZ_SOURCE_RECORD_DROP(LZ_VISION_DROP_STRIDE, info, len);
         return;
     }
 
     if (s_lock == NULL) {
-        return;   /* 还没初始化完就来了帧 —— 丢掉，不是错误 */
+        /* 还没初始化完就来了帧 —— 丢掉，不是错误，但要记下来：
+         * 若这一路真的在初始化前就有流，说明"开流"的时序假设不成立。 */
+        LZ_SOURCE_RECORD_DROP(LZ_VISION_DROP_NOT_READY, info, len);
+        return;
     }
     const T_DjiOsalHandler *osal = DjiPlatform_GetOsalHandler();
     if (osal == NULL || osal->MutexLock == NULL) {
@@ -277,14 +316,44 @@ void LzVisionSource_GetStats(LzVisionSourceStats *out)
     out->lastIsBgr = s_isBgr;
 }
 
+const char *LzVisionSource_DropReasonName(LzVisionDropReason reason)
+{
+    switch (reason) {
+    case LZ_VISION_DROP_FMT:       return "像素格式不是 RGB_PACKED";
+    case LZ_VISION_DROP_TOO_BIG:   return "超出单帧像素上限";
+    case LZ_VISION_DROP_STRIDE:    return "字节数不足（不是紧密打包）";
+    case LZ_VISION_DROP_NOT_READY: return "开流尚未完成";
+    case LZ_VISION_DROP_NONE:
+    default:                       return "没丢过";
+    }
+}
+
 const char *LzVisionSource_DescribeAssumptions(void)
 {
     /* 静态缓冲 + 轮转：这个函数会被反复调用（日志、探针），
      * 返回 malloc 的内存会让调用方不知道该不该 free。
      * 两个槽轮转，够覆盖"一行日志里调两次"的用法。 */
-    static char buf[2][192];
+    static char buf[2][224];
     static unsigned turn = 0;
     char *b = buf[turn++ & 1u];
+
+    /* ⚠️ **未初始化时不能报"当前配置"** —— 那时 `s_cfg` 还是零值，
+     * 打印出来的是 `position=0 source=0 pixFmt=未知`，看着像一份真实的
+     * 配置，实际是零。2026-09-27 上机实测撞到：探针在
+     * `LzVisionSource_InitWith()` 之前调本函数，输出的 position/source
+     * 都是 0，而实际用的是 1/1 —— **比崩溃更危险的一类错误：
+     * 它给出一份看起来可信、实际与运行状态无关的"事实"**。
+     *
+     * 所以未开流时显式说明"还没开流"，只报**参数默认值**（那个是确定的），
+     * 不报运行状态。 */
+    if (!s_ready) {
+        const LzVisionSourceConfig d = LzVisionSource_DefaultConfig();
+        snprintf(b, sizeof(buf[0]),
+                 "**尚未开流**（下面这些是 DefaultConfig 的值，不是运行状态）: "
+                 "position=NO_1(%d) source=%d pixFmt=%d",
+                 (int)d.position, (int)d.source, (int)d.pixFmt);
+        return b;
+    }
 
     const char *fmtName = "?";
     switch (s_cfg.pixFmt) {
@@ -295,14 +364,19 @@ const char *LzVisionSource_DescribeAssumptions(void)
     }
 
     /* 子相机源与机型强相关，且同名值在不同机型下含义不同
-     * （M4T_VIS=1 / H20_WIDE=1 / M3E_VIS=1 …），所以连机型一起打出来。 */
+     * （M4T_VIS=1 / H20_WIDE=1 / M3E_VIS=1 …），所以连机型一起打出来。
+     *
+     * ⚠️ 下面的名字来自 **2026-09-27 M4T 实测**（探针 scan 模式）：
+     *   source=0 → 1440x1080 彩色        source=1 → 1440x1080 彩色（与 0 同一路）
+     *   source=2 → 1280x1024 **灰度**    source=3 → 帧被拒（4K，超出单帧上限）
+     * 判据见 `doc/VISION-GIMBAL-PITCH.md` §9 #1。 */
     const char *srcName = "?";
     switch ((int)s_cfg.source) {
-    case 0: srcName = "DEFAULT(0)"; break;
-    case 1: srcName = "1(对 M4T 是 VIS)"; break;
-    case 2: srcName = "2(对 M4T 是 IR)"; break;
-    case 3: srcName = "3(对 M4T 是 4K)"; break;
-    default: srcName = "其他"; break;
+    case 0: srcName = "DEFAULT(0)，实测=1440x1080 彩色"; break;
+    case 1: srcName = "1，实测=1440x1080 彩色（与 0 同一路）"; break;
+    case 2: srcName = "2，实测=1280x1024 **灰度**（热成像）"; break;
+    case 3: srcName = "3，实测=4K（超出单帧上限，被丢）"; break;
+    default: srcName = "其他（未实测）"; break;
     }
 
     snprintf(b, sizeof(buf[0]),

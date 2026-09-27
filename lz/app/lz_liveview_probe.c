@@ -138,11 +138,25 @@ static bool run_one(E_DjiLiveViewCameraPosition pos, E_DjiLiveViewCameraSource s
         }
         LzVisionSourceStats s;
         LzVisionSource_GetStats(&s);
-        say("  [%2ds] 帧数=%-5u fps≈%-4u 丢(格式/过大/行宽)=%u/%u/%u "
-               "尺寸=%dx%d frameId=%u\n",
-               i + 1, s.frames, s.frames - lastFrames,
-               s.droppedFmt, s.droppedTooBig, s.droppedStride,
-               s.lastWidth, s.lastHeight, s.lastFrameId);
+        say("  [%2ds] 帧数=%-5u fps≈%-4u 丢(格式/过大/行宽/未就绪)=%u/%u/%u/%u "
+            "尺寸=%dx%d frameId=%u\n",
+            i + 1, s.frames, s.frames - lastFrames,
+            s.droppedFmt, s.droppedTooBig, s.droppedStride, s.droppedNotReady,
+            s.lastWidth, s.lastHeight, s.lastFrameId);
+        /* ⚠️ 有帧被丢时必须打出「拒掉的是什么」—— 只报计数等于把
+         * "取图不工作"变成不可诊断的状态。2026-09-27 实测踩到：
+         * source=3 一路全被 droppedTooBig 拒，而当时记不出它多大。 */
+        if (s.droppedFmt || s.droppedTooBig || s.droppedStride || s.droppedNotReady) {
+            say("         ↳ 最后被丢：%dx%d，回调给 %u 字节，原因=%s\n",
+                s.lastDropWidth, s.lastDropHeight, s.lastDropLen,
+                LzVisionSource_DropReasonName(s.lastDropReason));
+        }
+        if (s.frames == 0 && s.maxSeenWidth > 0) {
+            say("         ↳ 收到的最大帧：%dx%d（%u 像素，上限 %u）\n",
+                s.maxSeenWidth, s.maxSeenHeight,
+                (unsigned)(s.maxSeenWidth * s.maxSeenHeight),
+                (unsigned)LZ_VISION_SOURCE_MAX_PIXELS);
+        }
         lastFrames = s.frames;
     }
 
