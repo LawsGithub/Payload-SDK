@@ -292,6 +292,16 @@ if(LZ_BUILD_PSDK_APP)
         ${LZ_PLATFORM_SRC}
     )
 
+    # 云台探针 —— 查 M4T 自带云台能不能被程序控制、能不能真的转到指定角度。
+    #
+    # 这是视觉调俯仰链路里**唯一从未验过的一环**，而它有两个已知坏消息：
+    # issue #555（M4T 云台无自由模式、无独立 yaw）与 #563（Rotate 实速只有
+    # 下发的 10-20%）。两个 issue 都没有官方回复 ⇒ 只能实测。
+    add_executable(lz_gimbal_probe
+        app/lz_gimbal_probe.c
+        ${LZ_PLATFORM_SRC}
+    )
+
     # 任务链路探针 —— 复现"上传成功但启动航点时崩溃"，把崩溃点夹出来。
     # 与 lz_app 分开的理由同激光探针：它是**一次性的诊断工具**，
     # 且必须把变量收干净（不建线程、不注册控件），才能分清
@@ -301,7 +311,7 @@ if(LZ_BUILD_PSDK_APP)
         ${LZ_PLATFORM_SRC}
     )
 
-    foreach(lz_target lz_app lz_rangefinder_probe lz_mission_probe lz_liveview_probe lz_ai_probe lz_vision_probe)
+    foreach(lz_target lz_app lz_rangefinder_probe lz_mission_probe lz_liveview_probe lz_ai_probe lz_vision_probe lz_gimbal_probe)
         target_include_directories(${lz_target} PRIVATE
             ${LZ_APP_INFO_DIR}
             include
