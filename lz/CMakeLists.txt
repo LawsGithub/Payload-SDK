@@ -269,6 +269,17 @@ if(LZ_BUILD_PSDK_APP)
         ${LZ_PLATFORM_SRC}
     )
 
+    # AI 推送探针 —— 查 M4T + 妙算3 能否把自定义类别推到 Pilot 2 画框。
+    #
+    # 官方文档只声明 M400 + H30 支持「码流 AI 识别」，我们是 M4T + 内置相机
+    # （GitHub issue #428 问的正是这件事）。文档没承诺 ⇒ 实测才知道。
+    # 详见 lz/app/lz_ai_probe.c 的文件头。
+    add_executable(lz_ai_probe
+        app/lz_ai_probe.c
+        app/lz_vision_source.c
+        ${LZ_PLATFORM_SRC}
+    )
+
     # 任务链路探针 —— 复现"上传成功但启动航点时崩溃"，把崩溃点夹出来。
     # 与 lz_app 分开的理由同激光探针：它是**一次性的诊断工具**，
     # 且必须把变量收干净（不建线程、不注册控件），才能分清
@@ -278,7 +289,7 @@ if(LZ_BUILD_PSDK_APP)
         ${LZ_PLATFORM_SRC}
     )
 
-    foreach(lz_target lz_app lz_rangefinder_probe lz_mission_probe lz_liveview_probe)
+    foreach(lz_target lz_app lz_rangefinder_probe lz_mission_probe lz_liveview_probe lz_ai_probe)
         target_include_directories(${lz_target} PRIVATE
             ${LZ_APP_INFO_DIR}
             include
