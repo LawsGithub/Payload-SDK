@@ -114,7 +114,11 @@ else()
     message(FATAL_ERROR "不支持的 LZ_VISION_BACKEND: ${LZ_VISION_BACKEND}（可选 stub | hsv）")
 endif()
 
-add_library(lz_vision STATIC ${LZ_VISION_SRC})
+# ⚠️ `lz_vision_math.c` **无条件**编进来（不属于 ${LZ_VISION_SRC} 那组
+# 互斥后端）：它是像素↔角度的纯数学，与检测算法无关，两个后端都要用。
+# 放进任一个后端会导致"切到另一个后端时纯数学的测试也跟着丢了" ——
+# 而那两个函数恰恰是整条视觉调俯仰链路里唯一完全可桌面验证的部分。
+add_library(lz_vision STATIC ${LZ_VISION_SRC} src/lz_vision_math.c)
 target_include_directories(lz_vision PUBLIC include)
 target_link_libraries(lz_vision PUBLIC lz_core m)
 
@@ -126,6 +130,18 @@ target_link_libraries(lz_vision PUBLIC lz_core m)
 # 测试数据（tests/data/*.ppm + vision_golden.txt）由
 # tools/gen_vision_testdata.js 从现场照片生成，约 1.5 MB，**入库** ——
 # 它的价值就在于"不需要现场照片也能复现检测行为"，不入库等于没有。
+# 像素↔角度的纯数学：**与后端无关**，两个后端下都注册。
+# 理由同上面 lz_vision_math.c 的注释 —— 它是这条链路里唯一完全可桌面验证的
+# 部分，不该因为"今天选的是 stub 后端"就测不到。
+if(LZ_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
+    add_executable(lz_test_vision_math tests/lz_test_vision_math.c)
+    target_include_directories(lz_test_vision_math PRIVATE tests)
+    target_link_libraries(lz_test_vision_math PRIVATE lz_vision m)
+    add_test(NAME lz_test_vision_math COMMAND lz_test_vision_math)
+    set_tests_properties(lz_test_vision_math PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+endif()
+
 if(LZ_VISION_BACKEND STREQUAL "hsv" AND LZ_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     add_executable(lz_test_vision tests/lz_test_vision.c)
     target_include_directories(lz_test_vision PRIVATE tests)
