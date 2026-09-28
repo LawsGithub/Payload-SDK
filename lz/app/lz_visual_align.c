@@ -55,12 +55,14 @@
 
 #include "lz_visual_align.h"
 
+#include <dji_camera_manager.h>
 #include <dji_fc_subscription.h>
 #include <dji_gimbal_manager.h>
 #include <dji_logger.h>
 #include <dji_platform.h>
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -227,6 +229,51 @@ static double read_pitch(void)
 }
 
 /**
+ * @brief 当前光学变焦倍数；读不到时返回 1.0（= 广角端）
+ *
+ * ## 为什么照准必须知道变焦倍数（2026-09-28 现场实测）
+ *
+ * `vfov` 原先由写死的 82° DFOV 算出 = 55.09°，那是**广角端**的值。
+ * 操作员用 Pilot 2 的变焦放大到 7.0X 之后，真实垂直视场角只有 **8.55°**
+ * —— 相差 **6.98 倍**。后果不是"偏一点"：
+ *
+ * ```text
+ * 18:17:16  下发 +3.29°（按 55.09° 模型算出"该转这么多"）
+ *           实测 v: 0.5551 → 0.1708（Δv=−0.384）
+ *           按 55.09° 模型只该动 +0.055
+ * ```
+ *
+ * ⇒ 检测框一步就被甩出画面，下一轮报"看不到红色目标"。
+ * 日志表现为**云台突然跳一个角度然后照准失败**。
+ *
+ * ## 为什么返回 1.0 而不是 NAN
+ *
+ * 读不到变焦倍数时按广角端处理是**保守**的：真实视场只会更小，
+ * 于是算出的 Δθ 只会更**小**、转得更**慢** —— 多转两轮能收敛，
+ * 而按相反方向猜（当成大倍率）会让每一轮都过冲，**永远收敛不了**。
+ *
+ * ⚠️ 与 `read_pitch()` 的取舍**不一样**，理由也不一样：那里"不知道"
+ * 会导致一个**毫无依据**的起点（假 0°），必须判 BAD_MEASURE；这里
+ * "不知道"有一个安全侧的默认值可用。**两个函数的取舍不同，是因为
+ * 错的代价不同，不是因为标准不一致。**
+ */
+static double read_zoom(void)
+{
+    T_DjiCameraManagerOpticalZoomParam p;
+    memset(&p, 0, sizeof(p));
+    if (DjiCameraManager_GetOpticalZoomParam(LZ_ALIGN_MOUNT, &p)
+        != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+        return 1.0;
+    }
+    const double z = (double)p.currentOpticalZoomFactor;
+    if (!isfinite(z) || !(z > 0.0)) {
+        /* 0 / NaN / 负数都当"广角端"处理 —— 同上，保守侧 */
+        return 1.0;
+    }
+    return z;
+}
+
+/**
  * @brief 照准的目标点在画面里的归一化纵坐标
  *
  * ## ⚠️ 目前返回的是**旗面框的中心**
@@ -260,9 +307,25 @@ static void enter(LzAlignStep s)
     s_step = s;
 }
 
-static void fail(const char *why)
+/**
+ * @brief 记下失败原因并进入收尾
+ *
+ * ⚠️ **变参形式是为了让原因里能带上实测数值**。原先只接受一个字符串字面量，
+ * 于是"置信度 0.34 不足"这类关键数字没法进浮窗，操作员只能看到一个
+ * 笼统的结论 —— 而这正是本项目反复强调要避免的"只报结论、不报原因"
+ * （见 `LzVisionMiss` 的说明）。
+ *
+ * 缓冲是静态的：调用方传进来的字符串字面量生命周期不可控，
+ * 而 `s_failReason` 要在几拍之后（`do_finish_fail()`）才被读走。 */
+static char s_failBuf[160];
+
+static void fail(const char *fmt, ...)
 {
-    s_failReason = why;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(s_failBuf, sizeof(s_failBuf), fmt, ap);
+    va_end(ap);
+    s_failReason = s_failBuf;
     enter(ST_FINISH_FAIL);
 }
 
@@ -467,7 +530,19 @@ static void do_detect(void)
         /* ⚠️ 检测失败**不立刻判死** —— 可能是这一帧恰好糊了/被挡了。
          * 容忍次数由 `LzAlign_RetryPolicy::maxDetectMisses` 给（5 次）。 */
         if (LzAlign_Retry_NoteDetectMiss(&s_retry, &s_retryPolicy)) {
-            fail("看不到红色目标（检查取景）");
+            /* ⚠️ **两种未命中的处置完全不同，必须分开报**：
+             *   · 画面里没有够大的红块 → 真的看不到旗，去调取景
+             *   · 有红块但杆的证据不足 → **别动取景**，是检测判据的问题
+             * 只报"看不到红色目标（检查取景）"会把第二种引去反复调整瞄准，
+             * 而病因在代码里。见 `LzVisionMiss`。 */
+            double mc = 0.0;
+            const LzVisionMiss miss = LzVision_LastMiss(s_vision, &mc);
+            if (miss == LZ_VISION_MISS_LOW_CONF) {
+                fail("看到红色但认不出杆（置信度 %.2f）—— 不是取景问题",
+                     mc);
+            } else {
+                fail("看不到红色目标（检查取景）");
+            }
             return;
         }
         enter(ST_GRAB);
@@ -482,9 +557,14 @@ static void do_detect(void)
     s_lastU = t->pixel.u;
     s_lastV = vTarget;
 
-    /* 垂直 FOV 由**实测分辨率**与广角 DFOV 82° 现算
-     * （`[V]` 2026-09-27 探针已确认取到的是广角） */
-    const double vfov = LzVision_VerticalFovDeg(f.width, f.height, 82.0);
+    /* 垂直 FOV 由**实测分辨率** + 广角 DFOV 82° + **当前变焦倍数**现算。
+     *
+     * ⚠️ 变焦那一项是 2026-09-28 现场踩出来的：写死 82° 时，
+     * 操作员一放大（7.0X）真实视场就只有 8.55°，俯仰增益差 **6.98 倍**，
+     * 每一步都把目标甩出画面。详见 read_zoom() 的注释。 */
+    const double zoom = read_zoom();
+    const double diagFov = LzVision_ZoomedDiagFovDeg(82.0, zoom);
+    const double vfov = LzVision_VerticalFovDeg(f.width, f.height, diagFov);
     const double delta = LzVision_PixelOffsetToDeg(vTarget, vfov);
     const double cur = read_pitch();
     s_lastDelta = delta;   /* 可能是 NaN —— 下面 DecideStep 会拦；这里只用于日志 */
@@ -494,9 +574,10 @@ static void do_detect(void)
     const LzAlignDecision d =
         LzAlign_DecideStep(delta, cur, s_round, s_awaitingConfirm, &s_policy);
 
-    USER_LOG_INFO("照准第 %d 轮：u=%.4f v=%.4f conf=%.3f vfov=%.2f "
+    USER_LOG_INFO("照准第 %d 轮：u=%.4f v=%.4f conf=%.3f zoom=%.1f× vfov=%.2f "
                   "Δθ=%+.2f° pitch=%.2f° → 判定 %d",
-                  s_round + 1, s_lastU, s_lastV, s_lastConf, vfov, delta, cur, (int)d.action);
+                  s_round + 1, s_lastU, s_lastV, s_lastConf, zoom, vfov,
+                  delta, cur, (int)d.action);
 
     switch (d.action) {
     case LZ_ALIGN_ACT_BAD_MEASURE:

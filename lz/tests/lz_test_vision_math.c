@@ -236,5 +236,73 @@ int main(void)
         LZ_CHECK(delta < -8.0 && delta > -10.0);
     }
 
+
+    LZ_CASE("变焦折算：半角正切按倍数缩小，且 1.0X 是恒等");
+    {
+        /* ★ 这条守的是 2026-09-28 现场实测的那个 **7 倍**误差。
+         * 现场用 Pilot 2 变焦到 7.0X，而代码里写死"DFOV=82°"（广角端）。
+         * 反推的真实垂直视场角是 8.55°，与按下式折算出的 8.52° 吻合：
+         *
+         *     tan(DFOV_zoomed/2) = tan(DFOV_wide/2) / zoomFactor
+         *
+         * ⚠️ **不能直接对角度做除法**（82/7 = 11.7°，差 4°）。
+         * 下面第 3 条断言就是守这个：线性折算会给出 11.71，
+         * 而正确值 15.87 —— 差得足够远，反向验证时必然变红。 */
+        const double wide = M4T_WIDE_DFOV_DEG;   /* 82.0 */
+
+        /* 1. 1.0X 是恒等 */
+        LZ_CHECK_NEAR(LzVision_ZoomedDiagFovDeg(wide, 1.0), wide, 1e-9);
+
+        /* 2. 变焦只会**缩小**视场（单调） */
+        double prev = wide;
+        for (double z = 2.0; z <= 64.0; z *= 2.0) {
+            const double cur = LzVision_ZoomedDiagFovDeg(wide, z);
+            LZ_CHECK(isfinite(cur));
+            LZ_CHECK(cur > 0.0 && cur < prev);
+            prev = cur;
+        }
+
+        /* 3. 7.0X 下必须落在实测反推值附近，且**不是**线性折算值 */
+        const double at7 = LzVision_ZoomedDiagFovDeg(wide, 7.0);
+        LZ_CHECK_NEAR(at7, 14.158, 0.05);            /* tan(41°)/7 → 14.158° */
+        /* 线性折算（82/7 = 11.71°）差 2.45° —— 足够把两者区分开 */
+        LZ_CHECK(fabs(at7 - wide / 7.0) > 2.0);
+
+        /* 4. 与 VerticalFovDeg 串起来，得出实测的 8.5° 量级 */
+        const double vfov7 = LzVision_VerticalFovDeg(1440, 1080, at7);
+        /* 8.5225° —— 与现场日志反推的 8.55° 吻合（差 0.03°） */
+        LZ_CHECK_NEAR(vfov7, 8.523, 0.1);
+
+        /* 5. 俯仰增益也跟着变 —— 这是误差真正伤人的地方。
+         *
+         * ⚠️ **方向（"谁大"）值得写下来，第一版写反过**：
+         * 视场窄了，同一个像素偏差对应的角度**更小**，所以
+         *   `degPerV(变焦) < degPerV(广角)`。
+         * 写死广角模型 = **每轮多转 7 倍**，一步把目标甩出画面
+         * （现场 18:17:16 那轮：代码算出 3.29°，正解 0.47°）。
+         *
+         * 换个说法：`dv/dθ`（每度云台转动画面上移动多少）在变焦下**更大**，
+         * 而 `dθ/dv`（要让目标走这么多像素需要转多少度）**更小**。
+         * 这两个互为倒数，很容易在断言里写反 —— 所以下面两条都断言。 */
+        const double gainWide = fabs(LzVision_PixelOffsetToDeg(0.7, 55.09));
+        const double gain7    = fabs(LzVision_PixelOffsetToDeg(0.7, vfov7));
+        LZ_CHECK(gain7 < gainWide);
+        LZ_CHECK_NEAR(gainWide / gain7, 6.90, 0.2);   /* 现场实测比值 */
+
+        /* 6. 复现现场那一轮：v=0.5551 时
+         *     广角模型算出 3.29°（就是日志里那个数）
+         *     变焦 7× 正解只有 0.47° */
+        LZ_CHECK_NEAR(fabs(LzVision_PixelOffsetToDeg(0.5551, 55.0906)), 3.29, 0.05);
+        LZ_CHECK_NEAR(fabs(LzVision_PixelOffsetToDeg(0.5551, vfov7)),     0.47, 0.05);
+
+        /* 7. 退化输入 */
+        LZ_CHECK(isnan(LzVision_ZoomedDiagFovDeg(0.0, 7.0)));
+        LZ_CHECK(isnan(LzVision_ZoomedDiagFovDeg(180.0, 7.0)));
+        LZ_CHECK(isnan(LzVision_ZoomedDiagFovDeg(82.0, 0.0)));
+        LZ_CHECK(isnan(LzVision_ZoomedDiagFovDeg(82.0, -3.0)));
+        LZ_CHECK(isnan(LzVision_ZoomedDiagFovDeg(82.0, NAN)));
+        LZ_CHECK(isnan(LzVision_ZoomedDiagFovDeg(NAN, 7.0)));
+    }
+
     return LZ_TEST_SUMMARY();
 }
