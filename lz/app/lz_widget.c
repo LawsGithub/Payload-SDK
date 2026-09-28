@@ -3,7 +3,7 @@
  * @brief 控件模块实现。
  *
  * 骨架取自官方样例 `samples/sample_c/module_sample/widget/test_widget.c`，
- * 砍到只剩本项目需要的**六个**控件。**初始化四步的顺序不能变**：
+ * 砍到只剩本项目需要的**七个**控件。**初始化四步的顺序不能变**：
  *
  *   1. DjiWidget_Init()
  *   2. 注册 UI 配置（Linux 下用 ByDirPath；RTOS 下用 ByBinaryArray）
@@ -36,7 +36,7 @@
 /* ------------------------------------------------------------------ */
 /* 控件索引（必须与 app/widget_file 下的 widget_config.json 一致）        */
 /*                                                                     */
-/* 这 6 个索引必须与两份 json 的 widget_index 一一对应 —— PSDK 按索引     */
+/* 这 7 个索引必须与两份 json 的 widget_index 一一对应 —— PSDK 按索引     */
 /* 把界面控件分派给 handler，对不上的后果是"按了 A 按钮却执行了 B 的       */
 /* 动作"，而两边都不会报错。                                             */
 /* ------------------------------------------------------------------ */
@@ -46,7 +46,8 @@
 #define LZ_WIDGET_IDX_RECORD_AIRCRAFT 3
 #define LZ_WIDGET_IDX_RECORD_LASER    4
 #define LZ_WIDGET_IDX_WAYPOINT_BOX    5
-#define LZ_WIDGET_COUNT               6
+#define LZ_WIDGET_IDX_VISUAL_ALIGN    6
+#define LZ_WIDGET_COUNT               7
 
 /* 范围条是 0–100 的百分比，这里映射到实际物理量。
  *
@@ -78,6 +79,10 @@ static bool s_orbitRequested = false;
  * 并约定"只有 bool 为真时 kind 才有效"，读取在同一个函数里原子完成。 */
 static volatile bool s_recordPending = false;
 static LzPoleRecordKind s_recordKind = LZ_POLE_RECORD_AIRCRAFT;
+
+/* 视觉照准请求的待办标志。同一个模式：**回调只置它**，
+ * 真正的照准动作由主循环 `LzVisualAlign_Tick()` 推进（分多拍做，不阻塞）。 */
+static volatile bool s_alignPending = false;
 /* 默认档位。换算见下方 LzWidget_GetRadiusM/GetAltitudeM ——
  * 区间收窄到 5–20 m / 5–120 m 后，50% → 12.5 m、66% → 约 80.9 m。
  * 这两个值**不是**"设计目标值"，只是出厂默认，操作员可拨。 */
@@ -207,6 +212,36 @@ static T_DjiReturnCode LzWidget_SetWidgetValue(E_DjiWidgetType widgetType, uint3
         break;
     }
 
+    /* ---- 「识别目标」按钮 ----
+     *
+     * ⚠️ 与两个记录按钮同一条纪律：**只置标志**。照准要十几秒
+     * （多轮 × 每轮约 1.5 s 等云台），在这里做会把 PSDK 工作线程卡死。
+     * ⚠️ button 的 value 是 E_DjiWidgetButtonState：按下与松开各触发一次，
+     * 只在按下时置标志 —— 不判的话一次点击会触发两遍。 */
+    case LZ_WIDGET_IDX_VISUAL_ALIGN: {
+        if (widgetType != DJI_WIDGET_TYPE_BUTTON) {
+            return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
+        }
+        if (value != DJI_WIDGET_BUTTON_STATE_PRESS_DOWN) {
+            break;
+        }
+        s_alignPending = true;
+        /* ⚠️ **立刻回一条**，这不是客套话，是缺陷的修法之一。
+         *
+         * 2026-09-28 实测的现场形态：「点了按钮没反应」→ 操作员再点一次 →
+         * 照准启动后 100 ms 自己停了。根因是主循环处理这次按压时要跑
+         * `do_init()`（开图流 + 订阅云台角），里面有两个阻塞的 SDK 调用，
+         * **合计约 1.6 秒**（实测 01:51:47.359 按下 → 01:51:49.004 开流）。
+         * 这 1.6 秒里浮窗一片安静，而操作员对"没反应"的自然反应就是再按一次。
+         *
+         * ⇒ 按下**当场**给一条回执，打断"没反应 → 再按一次"这个循环。
+         * 本函数跑在 PSDK 工作线程上，而 `LzWidget_PostMessage()` 只是
+         * 一次定长 snprintf + 一次通道发送（`lz_widget.c` 里另外四个控件
+         * 也在这个回调里调它），不是阻塞调用，故安全。 */
+        LzWidget_PostMessage("收到「识别目标」—— 正在启动，请稍候（按一次即可）");
+        break;
+    }
+
     default:
         return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
     }
@@ -251,6 +286,7 @@ static T_DjiReturnCode LzWidget_GetWidgetValue(E_DjiWidgetType widgetType, uint3
      * 回 `RELEASE_UP` 让界面显示为未按下，与"按一下就弹回"的物理直觉一致。 */
     case LZ_WIDGET_IDX_RECORD_AIRCRAFT:
     case LZ_WIDGET_IDX_RECORD_LASER:
+    case LZ_WIDGET_IDX_VISUAL_ALIGN:
         if (widgetType != DJI_WIDGET_TYPE_BUTTON) {
             return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
         }
@@ -276,6 +312,8 @@ static const T_DjiWidgetHandlerListItem s_widgetHandlerList[LZ_WIDGET_COUNT] = {
      * "widget_type": "int_input_box" 必须一致，否则 PSDK 分派时会因
      * 类型不匹配拒绝（handler 里我们对 widgetType 做了校验）。 */
     {LZ_WIDGET_IDX_WAYPOINT_BOX,    DJI_WIDGET_TYPE_INT_INPUT_BOX, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
+    /* 视觉照准按钮（第 7 个）。同样：索引必须与两份 json 的 widget_index 一致。 */
+    {LZ_WIDGET_IDX_VISUAL_ALIGN,    DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
 };
 
 /* ------------------------------------------------------------------ */
@@ -538,6 +576,15 @@ bool LzWidget_TakeRecordRequest(LzPoleRecordKind *kind)
         *kind = s_recordKind;
     }
     s_recordPending = false;
+    return true;
+}
+
+bool LzWidget_TakeAlignRequest(void)
+{
+    if (!s_alignPending) {
+        return false;
+    }
+    s_alignPending = false;
     return true;
 }
 

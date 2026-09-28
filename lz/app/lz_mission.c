@@ -31,7 +31,9 @@
 #include "lz_bridge_psdk.h"
 #include "lz_geo.h"
 #include "lz_plan.h"
+#include "lz_align.h"
 #include "lz_pole_source.h"
+#include "lz_visual_align.h"
 #include "lz_widget.h"
 
 typedef enum {
@@ -54,6 +56,9 @@ static char s_endReason[64];
  * 不复位的话，第二次失败会被当成重复而静默 ——
  * 而重复失败恰恰说明重试也没用，更需要报。 */
 static bool s_stopRejectReported = false;
+/** "绕飞因照准在跑而推迟"的浮窗闸 —— 理由同 s_stopRejectReported：
+ *  Tick 是 100 ms 一拍，不加闸会每秒刷 10 条。 */
+static bool s_orbitDeferredReported = false;
 
 /* ------------------------------------------------------------------ */
 /* 航点状态回调（PSDK 工作线程）                                        */
@@ -352,11 +357,55 @@ void LzMission_Tick(void)
      * 放在状态机之前，避免被绕飞的状态转移耽误。 */
     lz_mission_handle_record();
 
+    /* 「识别目标」按钮：回调只置标志，这里把它转成照准模块的请求。
+     *
+     * ⚠️ 只转发，**不做任何照准动作** —— 真正的照准由 `LzVisualAlign_Tick()`
+     * 推进（在 main 的循环里，紧跟着本函数）。把十几秒的工作塞进这里会
+     * 卡住整个任务状态机，操作员这期间拨绕飞开关都没有响应。
+     *
+     * ⚠️ **照准与绕飞互斥，且两个方向都由 `LzAlign_CheckConflict()` 判**
+     * （本处是"照准"方向，下面 `lz_mission_start_orbit()` 是"绕飞"方向）。
+     * 早先只有本处这一个方向查了绕飞，反方向没查 —— 于是照准正转着云台时
+     * 拨开关能启动航线，航线里的 `gimbalRotate` 与手动控制抢同一个云台。
+     * 判据写在一处（`lz_align.c`，含"两个都在跑时绕飞优先"的用例），
+     * 两处调用，不各写一份。 */
+    if (LzWidget_TakeAlignRequest()) {
+        const LzConflict c = LzAlign_CheckConflict(
+            LzMission_IsRunning(), LzVisualAlign_State() == LZ_ALIGN_RUNNING);
+        if (c != LZ_CONFLICT_NONE && c != LZ_CONFLICT_ALIGN_ACTIVE) {
+            /* 绕飞在跑 ⇒ 不启动照准。注意「照准已在跑」时**放行**：
+             * 那个请求是"再按一次 = 停止"，由 LzVisualAlign_Tick 处理。 */
+            LzWidget_PostMessage("%s", LzAlign_ConflictStr(c));
+        } else {
+            LzVisualAlign_RequestToggle();
+        }
+    }
+
     switch (s_state) {
     case LZ_MISSION_STATE_IDLE: {
         if (!LzWidget_IsOrbitRequested()) {
             break;   /* 操作员没请求，什么都不做 */
         }
+        /* ⚠️ **互斥的反方向**（上面那条是"照准"方向）：
+         * 照准正在转云台时不许启动航线 —— 航线里的 `gimbalRotate` 与
+         * 手动云台控制会抢同一个云台，而"抢"的表现是命令被拒或姿态诡异，
+         * 都不指向真实病因。
+         *
+         * 刻意**不在这里把开关清掉**（不调 `LzWidget_ReportOrbitFinished`）：
+         * 操作员的意思很可能是"先识别、再绕飞"，此刻清掉开关会让他在照准
+         * 结束后**还得再拨一次 ON** —— 而他记得自己已经拨过了。
+         * 所以状态停在 IDLE、开关保持 ON：照准一结束，下一拍就自然启动。 */
+        const LzConflict c = LzAlign_CheckConflict(
+            false, LzVisualAlign_State() == LZ_ALIGN_RUNNING);
+        if (c == LZ_CONFLICT_ALIGN_ACTIVE) {
+            if (!s_orbitDeferredReported) {
+                s_orbitDeferredReported = true;
+                LzWidget_PostMessage("%s（开关保持 ON，照准结束后会自动启动）",
+                                     LzAlign_ConflictStr(c));
+            }
+            break;
+        }
+        s_orbitDeferredReported = false;
         if (lz_mission_start_orbit()) {
             s_state = LZ_MISSION_STATE_RUNNING;
             s_missionEnded = false;

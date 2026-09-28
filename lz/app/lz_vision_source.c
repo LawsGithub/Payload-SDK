@@ -48,7 +48,9 @@
 static uint8_t s_frameBuf[LZ_VISION_SOURCE_MAX_PIXELS * 3];
 
 static T_DjiMutexHandle s_lock = NULL;
-static bool s_ready = false;             /* 已开流（不代表收到过帧） */
+static bool s_ready = false;                      /* 已开流（不代表收到过帧） */
+/** `DjiLiveview_Init()` 是否调过 —— 只调一次的守卫，理由见 `LzVisionSource_InitWith()` */
+static bool s_liveviewInited = false;
 static LzVisionSourceConfig s_cfg;
 static LzVisionSourceStats s_stats;
 
@@ -218,12 +220,22 @@ LzStatus LzVisionSource_InitWith(const LzVisionSourceConfig *cfg)
     s_cfg = *cfg;
 
     /* ⚠️ 头文件 @note：`DjiLiveview_Init` 必须在 `DjiCore_Init` 之后。
-     * 这一条是调用方的责任，本函数只管从"核心已初始化"这个前提出发。 */
-    T_DjiReturnCode rc = DjiLiveview_Init();
-    if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
-        USER_LOG_ERROR("取图：DjiLiveview_Init 失败 rc=0x%08llX",
-                       (unsigned long long)rc);
-        return LZ_ERR_UNSUPPORTED;
+     * 这一条是调用方的责任，本函数只管从"核心已初始化"这个前提出发。
+     *
+     * ⚠️ **只调一次** —— 因为 `LzVisionSource_Stop()` 刻意不再配对地调
+     * `DjiLiveview_Deinit()`（理由见那里：Deinit 会吃掉 Pilot 的飞行画面）。
+     * 于是本函数可能被反复调用（照准可反复触发），必须自己守卫。
+     * **重复 Init 的语义没有文档保证** —— 头文件只写"必须在 DjiCore_Init
+     * 之后"，没说可以调几次。没有文档保证的事不做假设。 */
+    T_DjiReturnCode rc = DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS;
+    if (!s_liveviewInited) {
+        rc = DjiLiveview_Init();
+        if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+            USER_LOG_ERROR("取图：DjiLiveview_Init 失败 rc=0x%08llX",
+                           (unsigned long long)rc);
+            return LZ_ERR_UNSUPPORTED;
+        }
+        s_liveviewInited = true;
     }
 
     /* ⚠️ 回调**必须传**，不能传 NULL —— 我们靠它拿帧。 */
@@ -251,7 +263,35 @@ void LzVisionSource_Stop(void)
         USER_LOG_WARN("取图：StopImageStream 失败 rc=0x%08llX",
                       (unsigned long long)rc);
     }
-    (void)DjiLiveview_Deinit();
+
+    /* ⚠️ **刻意不调 `DjiLiveview_Deinit()`。**
+     *
+     * 这里原先调了它（官方样例也调，见 `test_liveview.c:224`），
+     * 结果是 **Pilot 的飞行画面变黑** —— 2026-09-28 实测：
+     *
+     * ```text
+     * 01:51:49.004  request start agent liveview  + 取图：已开流
+     * 01:51:50.157  request stop agent liveview   ← 照准被自己停掉，流关了
+     *                ↑ 之后 Pilot 画面全黑
+     * ```
+     *
+     * `DjiLiveview_Deinit()` 反初始化的是**整个 liveview 模块**，而妙算3
+     * 转发给 Pilot 的图传正走这个模块。⇒ 只要开过一次流再 Deinit，
+     * 画面就没了，而且**不会自己恢复**（实测：`systemctl restart dji_sdk_agent`
+     * 需要 root，dji 用户做不了；只能重启设备）。
+     *
+     * **为什么样例那样写没问题**：样例是一次性工具，跑完就退出进程 ——
+     * Deinit 与进程退出相隔几毫秒，用户看不到画面黑。而我们是**常驻应用**，
+     * 照准是可反复触发的动作，于是"跑一次照准黑一次画面"。
+     *
+     * ⇒ 取舍：不 Deinit，模块级资源留着不释放（`StopImageStream` 已经
+     * 把流停了，帧回调不会再触发）。**代价是几十 KB 的常驻，
+     * 收益是操作员的画面不会被我们的动作吃掉。**
+     *
+     * ⚠️ 由此带来一个约束：`LzVisionSource_Init()` 里的 `DjiLiveview_Init()`
+     * 也不能重复调用（Deinit 不再配对）。若将来要支持"开→关→再开"，
+     * 必须在这里加一个 `s_liveviewInited` 守卫，**不能**靠加回 Deinit 解决。 */
+    USER_LOG_INFO("取图：仅停流，**不**反初始化 liveview 模块（保 Pilot 画面）");
     if (s_lock != NULL) {
         const T_DjiOsalHandler *osal = DjiPlatform_GetOsalHandler();
         if (osal != NULL && osal->MutexDestroy != NULL) {

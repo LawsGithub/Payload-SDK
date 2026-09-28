@@ -80,6 +80,19 @@
                 "widget_type": "int_input_box",
                 "widget_name": "Waypoints",
                 "int_input_box_hint": "pcs"
+            },
+            {
+                "widget_index": 6,
+                "widget_type": "button",
+                "widget_name": "Detect Target",
+                "icon_file_set": {
+                    "icon_file_name_selected": "icon_visual_align.png",
+                    "icon_file_name_unselected": "icon_visual_align.png"
+                },
+                "customize_rc_buttons_config": {
+                    "is_enable": true,
+                    "mapping_config_display_order": 6
+                }
             }
         ]
     }

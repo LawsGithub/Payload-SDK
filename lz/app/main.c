@@ -35,6 +35,7 @@
 
 #include "lz_mission.h"
 #include "lz_pole_source.h"
+#include "lz_visual_align.h"
 #include "lz_widget.h"
 #include "platform/lz_platform.h"
 #include "platform/lz_user_info.h"
@@ -147,6 +148,11 @@ int main(int argc, char **argv)
 
     while (true) {
         LzMission_Tick();
+        /* 视觉照准的一拍。**必须与任务状态机同线程、同一节奏** ——
+         * 它内部是一个"每拍只推进一步"的小状态机（见 lz_visual_align.h），
+         * 一次完整照准要十几秒，但每拍只花几毫秒，不会卡住主循环。
+         * 放在 LzMission_Tick 之后：绕飞的决策优先级高于照准。 */
+        LzVisualAlign_Tick();
 
         const T_DjiOsalHandler *osal = DjiPlatform_GetOsalHandler();
         if (osal != NULL) {
@@ -157,6 +163,7 @@ int main(int argc, char **argv)
     }
 
     /* ---- 6. 清理（当前循环不退出，留着以备将来加退出信号）---------- */
+    LzVisualAlign_DeInit();
     LzMission_DeInit();
     LzWidget_Stop();
 #ifdef LZ_POLE_SOURCE_LASER

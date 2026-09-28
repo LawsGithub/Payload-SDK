@@ -80,6 +80,19 @@
                 "widget_type": "int_input_box",
                 "widget_name": "航点数",
                 "int_input_box_hint": "个"
+            },
+            {
+                "widget_index": 6,
+                "widget_type": "button",
+                "widget_name": "识别目标",
+                "icon_file_set": {
+                    "icon_file_name_selected": "icon_visual_align.png",
+                    "icon_file_name_unselected": "icon_visual_align.png"
+                },
+                "customize_rc_buttons_config": {
+                    "is_enable": true,
+                    "mapping_config_display_order": 6
+                }
             }
         ]
     }

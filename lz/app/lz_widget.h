@@ -8,7 +8,7 @@
  * M4T + 妙算3 的基础功能全支持 —— **没有"是否需要申请高级权限"那层不确定性**，
  * 比航点那条路好走。
  *
- * ## 六个控件（对应 widget_config.json 的 index）
+ * ## 七个控件（对应 widget_config.json 的 index）
  *
  * | index | 类型          | 名称     | 作用 |
  * |---|---|---|---|
@@ -18,11 +18,16 @@
  * | 3 | button        | 记录飞机位 | 把当前位置记为绕飞圆心 |
  * | 4 | button        | 记录激光点 | 激光测距点记为绕飞圆心 |
  * | 5 | int_input_box | 航点数   | **直接填个数**，夹到 [MIN, MAX] |
+ * | 6 | button        | 识别目标 | 视觉照准：看画面 → 转云台，把目标对到画面中心 |
  *
  * ⚠️ 航点数用输入框而不是滑杆：滑杆只有 0–100 的整数档，而航点数是有界的
  * 小整数（3–64），输入框能让操作员直接填 16、24，不必心算档位。
  * 代价是**输入框可以填任意整数**，所以取值必须过
  * `LzPlan_ClampWaypointCount()` 夹取 —— 见 `LzWidget_GetWaypointCount()`。
+ *
+ * ⚠️ 控件 6 与控件 0（绕飞开关）**互斥**，两个方向都拦 ——
+ * 判据在 `LzAlign_CheckConflict()`（`lz_core/lz_align.c`，有测试守着），
+ * 调用点在 `lz_mission.c`。理由见该函数的注释。
  *
  * ## 安全语义（本项目的约定）
  *
@@ -128,6 +133,15 @@ int LzWidget_GetWaypointCount(void);
  * @return true 表示取到了一次请求（此时 `kind` 有效）
  */
 bool LzWidget_TakeRecordRequest(LzPoleRecordKind *kind);
+
+/**
+ * @brief 取走"操作员按了识别目标按钮"的请求（取走即清，只返回一次 true）
+ *
+ * 与 `LzWidget_TakeRecordRequest()` 同一个模式：**回调只置标志，主循环干活**。
+ * 照准一次要十几秒（多轮 × 每轮约 1.5 s 等云台），塞进控件回调里会把
+ * PSDK 的工作线程卡死 —— 那正是本项目闪退过一次的形状。
+ */
+bool LzWidget_TakeAlignRequest(void);
 
 /**
  * @brief 报告绕飞已结束，并提醒操作员开关仍在 ON 位
