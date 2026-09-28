@@ -370,6 +370,28 @@ const char *LzPole_SourceName(void)
                                                   : "已记录（飞机位）";
 }
 
+
+/**
+ * @brief 目标高度由来源决定 —— 见 `LzPole_Acquire()` 里那段说明
+ *
+ * 单独成函数（而不是在 `LzPole_Acquire()` 里写个三元表达式）的理由：
+ * 它是"目标有没有高度"这个判据的**唯一落点**，将来视觉那条路接进来时
+ * 只改这里。写成表达式的话，下一个改的人会在调用点加分支。
+ */
+static double lz_pole_target_height(const LzGeo *geo, LzPoleRecordKind kind)
+{
+    (void)geo;
+    switch (kind) {
+    case LZ_POLE_RECORD_LASER:
+    case LZ_POLE_RECORD_AIRCRAFT:
+        /* 两个来源记录的都是**一个点**（激光打的那个点 / 飞机当时的位置），
+         * 没有"高度"这个概念 ⇒ 瞄它自身，偏移量 0。 */
+        return 0.0;
+    default:
+        return 0.0;
+    }
+}
+
 LzStatus LzPole_Acquire(LzTarget *out)
 {
     if (out == NULL) {
@@ -386,12 +408,49 @@ LzStatus LzPole_Acquire(LzTarget *out)
     memset(out, 0, sizeof(*out));
     out->id = 1;
     out->geo = s_recorded;
-    out->heightM = 15.0;   /* 杆高：国旗杆常见规格，绕飞不需要精确值 */
     out->radiusM = 0.1;
     out->confidence = 0.9;
 
-    USER_LOG_INFO("杆位取自%s：%.7f, %.7f", LzPole_SourceName(),
-                  out->geo.latitudeDeg, out->geo.longitudeDeg);
+    /* ⚠️ **`heightM` 由"记录来源"决定，不再一律写死 15 m**（2026-09-28 改）。
+     *
+     * ## 原先为什么是 15
+     *
+     * 题目是"绕国旗杆"，而国旗杆常见规格约 15 m，所以写死一个典型值。
+     * 在那时的用法下它几乎不影响结果 —— 绕飞只需要"杆在哪儿"，
+     * 高度只参与云台俯仰，而俯仰当时写死成 −15°（**本身就已经错得离谱**）。
+     *
+     * ## 为什么现在必须区分
+     *
+     * 俯仰改成几何反算之后，`heightM` **直接进入公式**：
+     *
+     *     俯仰 = -atan2(飞机相对目标底的高度 - heightM/2, 半径)
+     *
+     * 那个 `-heightM/2` 的物理含义是「**瞄目标的中点**」——对一根杆是对的。
+     * 但现场会用**激光打任意地面点当圆心**（2026-09-28 实测：打的是
+     * **足球场中心**）。那种目标没有"高度"，公式里的 `-7.5 m` 纯粹是错的：
+     *
+     *     半径 20 m、高度 40 m 时
+     *       按 h=15：−58.39°   按 h=0（真实）：−63.43°   **差 5.04°**
+     *       20 m 外是 1.76 m，画面里 118 px（画面高度的 11%）
+     *
+     * ⇒ 判据：**记录的是"一个点"还是"一根杆"**，由来源给：
+     *   - 激光点 ⇒ 靶子就是**那个点**，heightM = 0（瞄它自身）
+     *   - 飞机位 ⇒ 同样是一个点，heightM = 0
+     *
+     * ⚠️ **两个来源当前都是"点"**，所以都填 0。写成本函数而不是常量，
+     * 是为了将来视觉那条路（识别到**杆**）接进来时**只改这一处**：
+     * 那时它会填实测杆高，而"瞄中点"的语义自动生效。
+     *
+     * ⚠️ `heightM = 0` 在 `LzPlan_ComputeGimbalPitchDeg` 里走的是
+     * "高度未知按 0 处理"分支 —— 语义正确（瞄目标所在的那层水平面），
+     * 与"未知⇒不猜"的既有约定一致。 */
+    out->heightM = lz_pole_target_height(&s_recorded, s_recordKind);
+
+    USER_LOG_INFO("杆位取自%s：%.7f, %.7f（目标高 %.1f m —— %s）",
+                  LzPole_SourceName(),
+                  out->geo.latitudeDeg, out->geo.longitudeDeg,
+                  out->heightM,
+                  (out->heightM > 0.0) ? "瞄中点" : "点目标，瞄它自身");
     return LZ_OK;
 }
 

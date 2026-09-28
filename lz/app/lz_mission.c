@@ -64,14 +64,50 @@ static bool s_orbitDeferredReported = false;
 /* 航点状态回调（PSDK 工作线程）                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 上一次报过的航点号。
+ *
+ * ## ⚠️ 这个变量修的是一处**实测到的"控件点不动"**（2026-09-28）
+ *
+ * 现象：绕飞飞行中，Pilot 上的控件全部无响应；绕飞结束后也不恢复。
+ *
+ * 根因：这个回调**每次 SDK 推航点状态就发一条浮窗消息**，而 SDK 推得很密。
+ * 实测一次 3 分钟的绕飞发了 **716 条**「绕飞中：航点 N」：
+ *
+ * ```text
+ *   16:00 →  26 条
+ *   16:01 → 260 条
+ *   16:02 → 430 条
+ * ```
+ *
+ * 而浮窗的带宽上限是 **2 KB/s**（PSDK 头文件明写）。716 条把这个通道灌满，
+ * 于是**同一时期的控件回执与状态推送全被挤掉** —— 操作员看到的就是
+ * "点了没反应"。**不是命令没发出去（`0x3C1A` 有 180 条），是应用侧那条
+ * 反馈通道被自己的刷屏堵死了。**
+ *
+ * ⇒ 只在**航点号真的变了**时发。这是唯一有信息量的时刻：
+ * 「绕飞中：航点 3」重复 400 次，对操作员零信息量，对通道却是纯负担。
+ *
+ * ⚠️ 用 `int` 而不是 `uint32_t`：初值要给一个**不可能的哨兵**（-1），
+ * 否则第一个航点（0 或 1）会被误判成"没变过"而漏报。
+ */
+static int s_lastReportedWaypoint = -1;
+
 static T_DjiReturnCode LzMission_OnWaypointState(T_DjiWaypointV3MissionState state)
 {
     /* 只做"记下事件"，动作交给主循环 —— 回调里不能做耗时操作 */
     switch (state.state) {
-    case DJI_WAYPOINT_V3_MISSION_STATE_MISSION:
-        /* 正在执行，更新进度消息 */
-        LzWidget_PostMessage("绕飞中：航点 %u", (unsigned)state.currentWaypointIndex);
+    case DJI_WAYPOINT_V3_MISSION_STATE_MISSION: {
+        /* 只在航点号变化时发 —— 理由见 `s_lastReportedWaypoint`。
+         * ⚠️ 这个回调**在 PSDK 工作线程上**，而这里只比一个整数 + 一次
+         * 定长拷贝，不是阻塞调用，符合"回调不做耗时动作"的纪律。 */
+        const int idx = (int)state.currentWaypointIndex;
+        if (idx != s_lastReportedWaypoint) {
+            s_lastReportedWaypoint = idx;
+            LzWidget_PostMessage("绕飞中：航点 %d", idx);
+        }
         break;
+    }
 
     case DJI_WAYPOINT_V3_MISSION_STATE_IDLE:
         /* 回到空闲 = 任务结束（正常跑完或被打断）。
@@ -410,6 +446,7 @@ void LzMission_Tick(void)
             s_state = LZ_MISSION_STATE_RUNNING;
             s_missionEnded = false;
             s_stopRejectReported = false;   /* 新一轮作业，告警闸归零 */
+            s_lastReportedWaypoint = -1;    /* 新一轮的第一个航点必须报 */
         } else {
             /* 启动失败：清本地意图并发结束消息。
              * ⚠️ 注意这**不会**把 Pilot 上的开关拨回去（PSDK 没有那个接口，

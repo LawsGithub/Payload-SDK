@@ -23,34 +23,6 @@
             },
             {
                 "widget_index": 1,
-                "widget_type": "scale",
-                "widget_name": "Radius m",
-                "icon_file_set": {
-                    "icon_file_name_selected": "icon_scale.png",
-                    "icon_file_name_unselected": "icon_scale.png"
-                },
-                "customize_rc_buttons_config": {
-                    "is_enable": true,
-                    "mapping_config_display_order": 1,
-                    "button_value_step_length": 5
-                }
-            },
-            {
-                "widget_index": 2,
-                "widget_type": "scale",
-                "widget_name": "Height m",
-                "icon_file_set": {
-                    "icon_file_name_selected": "icon_scale.png",
-                    "icon_file_name_unselected": "icon_scale.png"
-                },
-                "customize_rc_buttons_config": {
-                    "is_enable": true,
-                    "mapping_config_display_order": 2,
-                    "button_value_step_length": 5
-                }
-            },
-            {
-                "widget_index": 3,
                 "widget_type": "button",
                 "widget_name": "Record Aircraft",
                 "icon_file_set": {
@@ -59,11 +31,11 @@
                 },
                 "customize_rc_buttons_config": {
                     "is_enable": true,
-                    "mapping_config_display_order": 3
+                    "mapping_config_display_order": 1
                 }
             },
             {
-                "widget_index": 4,
+                "widget_index": 2,
                 "widget_type": "button",
                 "widget_name": "Record Laser",
                 "icon_file_set": {
@@ -72,17 +44,11 @@
                 },
                 "customize_rc_buttons_config": {
                     "is_enable": true,
-                    "mapping_config_display_order": 4
+                    "mapping_config_display_order": 2
                 }
             },
             {
-                "widget_index": 5,
-                "widget_type": "int_input_box",
-                "widget_name": "Waypoints",
-                "int_input_box_hint": "pcs"
-            },
-            {
-                "widget_index": 6,
+                "widget_index": 3,
                 "widget_type": "button",
                 "widget_name": "Detect Target",
                 "icon_file_set": {
@@ -91,8 +57,38 @@
                 },
                 "customize_rc_buttons_config": {
                     "is_enable": true,
-                    "mapping_config_display_order": 6
+                    "mapping_config_display_order": 3
                 }
+            }
+        ]
+    },
+    "config_interface": {
+        "widget_list": [
+            {
+                "widget_index": 4,
+                "widget_type": "scale",
+                "widget_name": "Radius m",
+                "customize_rc_buttons_config": {
+                    "is_enable": true,
+                    "mapping_config_display_order": 4,
+                    "button_value_step_length": 5
+                }
+            },
+            {
+                "widget_index": 5,
+                "widget_type": "scale",
+                "widget_name": "Height m",
+                "customize_rc_buttons_config": {
+                    "is_enable": true,
+                    "mapping_config_display_order": 5,
+                    "button_value_step_length": 5
+                }
+            },
+            {
+                "widget_index": 6,
+                "widget_type": "int_input_box",
+                "widget_name": "Waypoints",
+                "int_input_box_hint": "pcs"
             }
         ]
     }

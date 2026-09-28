@@ -100,6 +100,39 @@ int main(void)
         LZ_CHECK_NEAR(g.altitudeM, 61.5, 1e-6);
     }
 
+    LZ_CASE("⚠️ 目标高度由来源决定：点目标必须是 0，不是写死的 15");
+    {
+        /* ---- 这条守的是一个**实测到的 5° 偏差**（2026-09-28）----
+         *
+         * 现场用激光打**足球场中心**当圆心（半径 20 m、高度 40 m），
+         * 而 `heightM` 写死 15 ⇒ 俯仰按 `-atan2(40 - 7.5, 20)` = -58.39°，
+         * 正确值是 `-atan2(40 - 0, 20)` = **-63.43°**，**差 5.04°**。
+         * 20 m 外是 1.76 m，画面里 118 px（画面高度的 11%）。
+         *
+         * `heightM` 里那个 `-h/2` 的物理含义是「瞄**目标的中点**」——
+         * 对一根杆对，对**一个地面点**纯粹是错的。
+         *
+         * ⇒ 记录来源是"点"，高度就必须是 0。
+         * ⚠️ 断言的是**具体值 0** 而不是"小于 15" —— 后者在填 7 时也会过，
+         * 而 7 同样错得没道理。 */
+        const LzGeo pos = {
+            .latitudeDeg = 28.1788480,
+            .longitudeDeg = 112.9210020,
+            .altitudeM = 61.5,
+        };
+        LZ_CHECK(LzPole_RecordAircraft(&pos) == LZ_OK);
+        LZ_CHECK(LzPole_Acquire(&t) == LZ_OK);
+        LZ_CHECK_NEAR(t.heightM, 0.0, 1e-12);
+
+        /* 换成激光来源，同样必须是 0 —— 两个来源记录的**都是一个点**，
+         * 语义相同。若将来视觉（识别到**杆**）接进来，这里会多一条
+         * "填实测杆高"的分支，而那时本条应当跟着改。 */
+#ifdef LZ_POLE_SOURCE_LASER
+        LZ_CHECK(LzPole_RecordLaser(&pos) == LZ_OK ||
+                 LzPole_RecordLaser(&pos) == LZ_ERR_NOT_READY);   /* 需相机，桌面上可能不可用 */
+#endif
+    }
+
     LZ_CASE("落盘：文件应可被外部工具直接 cat 出来核对");
     {
         /* 格式刻意是人类可读的一行 —— 现场排查时 `cat data/pole.txt`

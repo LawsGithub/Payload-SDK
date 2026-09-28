@@ -3,7 +3,8 @@
  * @brief 控件模块实现。
  *
  * 骨架取自官方样例 `samples/sample_c/module_sample/widget/test_widget.c`，
- * 砍到只剩本项目需要的**七个**控件。**初始化四步的顺序不能变**：
+ * 砍到只剩本项目需要的**七个**控件（分**两个界面**：main 4 个 + config 3 个）。
+ * **初始化四步的顺序不能变**：
  *
  *   1. DjiWidget_Init()
  *   2. 注册 UI 配置（Linux 下用 ByDirPath；RTOS 下用 ByBinaryArray）
@@ -36,17 +37,44 @@
 /* ------------------------------------------------------------------ */
 /* 控件索引（必须与 app/widget_file 下的 widget_config.json 一致）        */
 /*                                                                     */
-/* 这 7 个索引必须与两份 json 的 widget_index 一一对应 —— PSDK 按索引     */
+/* 这 7 个索引必须与两份 json 的 widget_index 一一对应（含 config 界面）—— */
 /* 把界面控件分派给 handler，对不上的后果是"按了 A 按钮却执行了 B 的       */
 /* 动作"，而两边都不会报错。                                             */
 /* ------------------------------------------------------------------ */
+/* ---- main_interface（PSDK 菜单，飞行中操作）---- */
 #define LZ_WIDGET_IDX_ORBIT_SWITCH 0
-#define LZ_WIDGET_IDX_RADIUS_SCALE 1
-#define LZ_WIDGET_IDX_HEIGHT_SCALE 2
-#define LZ_WIDGET_IDX_RECORD_AIRCRAFT 3
-#define LZ_WIDGET_IDX_RECORD_LASER    4
-#define LZ_WIDGET_IDX_WAYPOINT_BOX    5
-#define LZ_WIDGET_IDX_VISUAL_ALIGN    6
+#define LZ_WIDGET_IDX_RECORD_AIRCRAFT 1
+#define LZ_WIDGET_IDX_RECORD_LASER    2
+#define LZ_WIDGET_IDX_VISUAL_ALIGN    3
+
+/* ---- config_interface（Payload Settings，起飞前配置）----
+ *
+ * ⚠️ **这两组索引共用一个编号序列，不重叠** —— 与官方样例同规则
+ * （官方 main 0–3、config 4–8）。PSDK 的 handler 列表是**一个扁平的
+ * 索引表**，不区分界面，所以两边的 index 必须能在同一张表里唯一对上。
+ *
+ * ⚠️ **为什么半径/高度/航点数必须放在 config_interface**（2026-09-28 实测）：
+ *
+ * 它们原先都在 `main_interface` 里，现象是「航点数」「提示"航点数 N 超出"」
+ * 这类交互**从未生效过** —— 日志里控件事件按类型统计：
+ *
+ * ```text
+ * type=1(button)  index=1/2/3 → 通
+ * type=2(switch)  index=0     → 通
+ * type=3(scale)   index=1/2   → 通（在 main 时确实能拖）
+ * type=5(int_input_box)       → **一次都没有**
+ * ```
+ *
+ * 而官方样例里 **`int_input_box` 只出现在 `config_interface`**，
+ * `main_interface` 里根本没有这个类型。⇒ **输入框属于配置界面**，
+ * 放进 main 会被 SDK 收下（解析计数正常）但 Pilot 不渲染成可编辑控件。
+ *
+ * ⇒ 按 SDK 的界面语义归位：**飞行中操作的留在 main，起飞前定的挪进 config**。
+ * 半径/高度/航点数都是"起飞前定的参数"，本来就不该在飞行中改。 */
+#define LZ_WIDGET_IDX_RADIUS_SCALE    4
+#define LZ_WIDGET_IDX_HEIGHT_SCALE    5
+#define LZ_WIDGET_IDX_WAYPOINT_BOX    6
+
 #define LZ_WIDGET_COUNT               7
 
 /* 范围条是 0–100 的百分比，这里映射到实际物理量。
@@ -300,20 +328,24 @@ static T_DjiReturnCode LzWidget_GetWidgetValue(E_DjiWidgetType widgetType, uint3
 }
 
 static const T_DjiWidgetHandlerListItem s_widgetHandlerList[LZ_WIDGET_COUNT] = {
-    {LZ_WIDGET_IDX_ORBIT_SWITCH, DJI_WIDGET_TYPE_SWITCH, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
-    {LZ_WIDGET_IDX_RADIUS_SCALE, DJI_WIDGET_TYPE_SCALE,  LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
-    {LZ_WIDGET_IDX_HEIGHT_SCALE, DJI_WIDGET_TYPE_SCALE,  LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
+    /* ---- main_interface ---- */
+    {LZ_WIDGET_IDX_ORBIT_SWITCH,    DJI_WIDGET_TYPE_SWITCH, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
     /* 两个记录按钮。**索引必须与两份 widget_config.json 里的 widget_index 对上** ——
      * PSDK 按索引把界面控件分派给这里的 handler，对不上的后果是
      * "按了 A 按钮却执行了 B 的动作"，而两边都不会报错。 */
     {LZ_WIDGET_IDX_RECORD_AIRCRAFT, DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
     {LZ_WIDGET_IDX_RECORD_LASER,    DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
+    {LZ_WIDGET_IDX_VISUAL_ALIGN,    DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
+
+    /* ---- config_interface（Payload Settings）----
+     * ⚠️ handler 列表**不区分界面**，是一张扁平表 —— 所以两边的 index
+     * 必须共用一个编号序列（理由见上面的索引定义处）。 */
+    {LZ_WIDGET_IDX_RADIUS_SCALE,    DJI_WIDGET_TYPE_SCALE,  LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
+    {LZ_WIDGET_IDX_HEIGHT_SCALE,    DJI_WIDGET_TYPE_SCALE,  LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
     /* 航点数输入框。类型是 int_input_box —— 与 json 里的
      * "widget_type": "int_input_box" 必须一致，否则 PSDK 分派时会因
      * 类型不匹配拒绝（handler 里我们对 widgetType 做了校验）。 */
     {LZ_WIDGET_IDX_WAYPOINT_BOX,    DJI_WIDGET_TYPE_INT_INPUT_BOX, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
-    /* 视觉照准按钮（第 7 个）。同样：索引必须与两份 json 的 widget_index 一致。 */
-    {LZ_WIDGET_IDX_VISUAL_ALIGN,    DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
 };
 
 /* ------------------------------------------------------------------ */
