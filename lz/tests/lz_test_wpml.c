@@ -466,8 +466,23 @@ int main(void)
             LZ_CHECK(strstr(f.templateKml, ">toPointAndStopWithDiscontinuityCurvature<") == NULL);
             LZ_CHECK(strstr(f.waylinesWpml, ">toPointAndStopWithDiscontinuityCurvature<") == NULL);
 
-            /* useStraightLine=1 是与 curve 模式配套的（Pilot 2 的设置方法） */
-            LZ_CHECK(count_occurrences(f.waylinesWpml, "<wpml:useStraightLine>1</wpml:useStraightLine>") == (int)route.count);
+            /* ★ useStraightLine 必须为 **0**（= 航段全程走曲线）。
+             *
+             * ⚠️ 这条断言**方向被修正过**（2026-09-28）。原先是
+             * `useStraightLine=1`，因为注释里把两件事混成了一件：
+             *
+             *   waypointTurnMode  → 过点**停不停**
+             *   useStraightLine   → 两点之间**走直线还是曲线**
+             *                       0 = 全程曲线，1 = 尽量贴合两点连线
+             *
+             * 「平滑过点，提前转弯」= Pass + **0**。写 1 就是明确要求
+             * "贴着两点连线飞"，即内接正多边形 —— 用户现场看到的
+             * "到点瞬间机械地折一个角度"正是它。
+             *
+             * ⇒ 反向验证：把这个宏改回 1，本条必须变红。 */
+            LZ_CHECK(count_occurrences(f.templateKml, "<wpml:useStraightLine>0</wpml:useStraightLine>") == (int)route.count);
+            LZ_CHECK(count_occurrences(f.waylinesWpml, "<wpml:useStraightLine>0</wpml:useStraightLine>") == (int)route.count);
+            LZ_CHECK(strstr(f.waylinesWpml, "<wpml:useStraightLine>1</wpml:useStraightLine>") == NULL);
 
             /* 截距：规范要求落在 (0, 航段最大长度]，且段长必须 > 2×截距。
              * 逐个从 XML 里抠出来核 —— 光看生成函数不算数，要看落盘的值。 */
@@ -513,6 +528,12 @@ int main(void)
                        "<wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>") == (int)route2.count);
             LZ_CHECK(count_occurrences(f2.waylinesWpml,
                        "<wpml:waypointTurnDampingDist>0.00</wpml:waypointTurnDampingDist>") == (int)route2.count);
+            /* ⚠️ 两种 turnMode 下 `useStraightLine` **都是 0** ——
+             * 这个元素控制的是"两点之间弯曲与否"，与"过点停不停"无关。
+             * 曾经以为它要跟着 turnMode 变，那是把它当成了 turnMode 的
+             * 附属开关。写死 0 之后这条对照仍然成立。 */
+            LZ_CHECK(count_occurrences(f2.waylinesWpml,
+                       "<wpml:useStraightLine>0</wpml:useStraightLine>") == (int)route2.count);
         }
         LzWpml_Free(&f2);
         LzRoute_Free(&route2);

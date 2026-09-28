@@ -273,8 +273,13 @@ LzStatus LzWpml_Build(const LzRoute *route,
     lz_str_addf(&t, "        <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>\n");
     lz_str_addf(&t, "      </wpml:globalWaypointHeadingParam>\n");
     /* 转弯模式：决定轨迹是内接多边形还是近似圆弧 —— 见 lz_plan.h 的 LzTurnMode。
-     * globalUseStraightLine=1 与 curve 模式搭配正是 Pilot 2 里
-     * 「平滑过点，提前转弯」的设置方法（规范 waypointTurnMode 一行有注解）。 */
+     *
+     * ⚠️ 「能不能走弧线」由**两个**元素共同决定，别只看这一个（2026-09-28 更正）：
+     *   · `waypointTurnMode`   → 过点**停不停**
+     *   · `useStraightLine`    → 两点之间**走直线还是曲线**（0 = 曲线）
+     * Pilot 2 的「平滑过点，提前转弯」= 本元素取 `toPointAndPass…`
+     * **且** `useStraightLine` 取 **0**。取值与理由见
+     * `LZ_WPML_USE_STRAIGHT_LINE`。 */
     lz_str_addf(&t, "      <wpml:globalWaypointTurnMode>%s</wpml:globalWaypointTurnMode>\n",
                 lz_turn_mode_str(profile->turnMode));
 
@@ -291,10 +296,9 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&t, "        <wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>\n");
         lz_str_addf(&t, "        <wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>\n");
         lz_str_addf(&t, "        <wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>\n");
-        /* useStraightLine：规范里它只在「曲线到点停」/「曲线过点不停」两种模式下
-         * 必需，含义是"航段轨迹尽量贴合两点连线"。Pilot 2 的「平滑过点，提前
-         * 转弯」正是 curve 模式 + 本值=1。 */
-        lz_str_addf(&t, "        <wpml:useStraightLine>1</wpml:useStraightLine>\n");
+        /* useStraightLine —— 见 LZ_WPML_USE_STRAIGHT_LINE 的说明。 */
+        lz_str_addf(&t, "        <wpml:useStraightLine>%d</wpml:useStraightLine>\n",
+                    LZ_WPML_USE_STRAIGHT_LINE);
         lz_str_addf(&t, "        <wpml:actionGroup>\n");
         lz_str_addf(&t, "          <wpml:actionGroupId>%zu</wpml:actionGroupId>\n", i);
         lz_str_addf(&t, "          <wpml:actionGroupStartIndex>%zu</wpml:actionGroupStartIndex>\n", i);
@@ -331,7 +335,8 @@ LzStatus LzWpml_Build(const LzRoute *route,
          * ⚠️ 这不是"云台独立偏转"：光轴对准杆**靠的是机头**，云台只是
          * 跟着（M4T 的 pan 轴本身不可独立控制，见文件头的说明）。
          * 曾经的实现让云台转 45° 而机头不转 —— 那个组合在 M4T 上非法。 */
-        lz_str_addf(&t, "              <wpml:gimbalYawRotateEnable>1</wpml:gimbalYawRotateEnable>\n");
+        lz_str_addf(&t, "              <wpml:gimbalYawRotateEnable>%d</wpml:gimbalYawRotateEnable>\n",
+                    LZ_WPML_GIMBAL_YAW_IN_ACTION);
         lz_str_addf(&t, "              <wpml:gimbalYawRotateAngle>%.1f</wpml:gimbalYawRotateAngle>\n",
                     lz_yaw_to_signed(wp->gimbalYawDeg));
         lz_str_addf(&t, "              <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>\n");
@@ -434,7 +439,8 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&w, "          <wpml:waypointTurnDampingDist>%.2f</wpml:waypointTurnDampingDist>\n",
                     dampingM);
         lz_str_addf(&w, "        </wpml:waypointTurnParam>\n");
-        lz_str_addf(&w, "        <wpml:useStraightLine>1</wpml:useStraightLine>\n");
+        lz_str_addf(&w, "        <wpml:useStraightLine>%d</wpml:useStraightLine>\n",
+                    LZ_WPML_USE_STRAIGHT_LINE);
         lz_str_addf(&w, "        <wpml:actionGroup>\n");
         lz_str_addf(&w, "          <wpml:actionGroupId>%zu</wpml:actionGroupId>\n", i);
         lz_str_addf(&w, "          <wpml:actionGroupStartIndex>%zu</wpml:actionGroupStartIndex>\n", i);
@@ -454,7 +460,8 @@ LzStatus LzWpml_Build(const LzRoute *route,
         lz_str_addf(&w, "              <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>\n");
         lz_str_addf(&w, "              <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>\n");
         /* 数值须与机头目标角一致 —— 理由见 template.kml 那处。 */
-        lz_str_addf(&w, "              <wpml:gimbalYawRotateEnable>1</wpml:gimbalYawRotateEnable>\n");
+        lz_str_addf(&w, "              <wpml:gimbalYawRotateEnable>%d</wpml:gimbalYawRotateEnable>\n",
+                    LZ_WPML_GIMBAL_YAW_IN_ACTION);
         lz_str_addf(&w, "              <wpml:gimbalYawRotateAngle>%.1f</wpml:gimbalYawRotateAngle>\n",
                     lz_yaw_to_signed(wp->gimbalYawDeg));
         lz_str_addf(&w, "              <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>\n");

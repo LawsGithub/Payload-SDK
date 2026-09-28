@@ -47,6 +47,79 @@
 #define LZ_WPML_FINISH_ACTION "gotoFirstWaypoint"
 
 /**
+ * @brief 航段是否"贴着两点连线飞"—— **走弧线必须置 0**
+ *
+ * ## ⚠️ 这个值原先写反了（2026-09-28 修正）
+ *
+ * 规范原文（`40.common-element.md` 的 `<wpml:waypointTurnParam>` 一节，
+ * 与 `30.waylines-wpml.md` 的 `wpml:useStraightLine` 一节一致）：
+ *
+ * ```text
+ * 0：航段轨迹**全程为曲线**
+ * 1：航段轨迹**尽量贴合两点连线**
+ * ```
+ *
+ * 原实现写 1，并在注释里称它"与 curve 模式搭配正是 Pilot 2 的
+ * 「平滑过点，提前转弯」"—— **那是把两件事混成了一件**：
+ *
+ * | | 控制什么 | 取值 |
+ * |---|---|---|
+ * | `waypointTurnMode` | **过点停不停**（要不要减速到点） | `toPointAndPassWithContinuityCurvature` |
+ * | `useStraightLine` | **两点之间走直线还是走曲线** | **0 = 曲线** |
+ *
+ * ⇒ 「平滑过点，提前转弯」= 前者取 `Pass` + 后者取 **0**。
+ * 写 1 等于明确要求"尽量贴着两点连线飞" —— 那就是**内接正多边形**，
+ * 正是用户反馈的"航点之间机械地折一个角度"。
+ *
+ * 用户的现场观察佐证了这一点（2026-09-28）：「从一个航点到下一个航点的
+ * 瞬间，运动突然很机械地调整小角度」。
+ *
+ * ## 为什么不能只靠"把转弯截距调大"来解决
+ *
+ * 截距（`waypointTurnDampingDist`）只在**曲线模式**下有意义
+ * （规范标注：该元素仅在 `coordinateTurn` 或
+ * `toPointAndPassWithContinuityCurvature` + `useStraightLine=1` 时必需）。
+ * 在"贴直线"模式下，截距再大也只是把拐点提前一点，轨迹仍是折线。
+ */
+#define LZ_WPML_USE_STRAIGHT_LINE 0
+
+/**
+ * @brief 逐点 `gimbalRotate` 动作里是否使能 **yaw**
+ *
+ * ## 为什么置 0（2026-09-28 修正）
+ *
+ * 逐点下发 `gimbalRotate` 是**为了让云台俯仰在任务开始时到位** ——
+ * 这是必需的，因为 WPML 的 `towardPOI` **只管水平方向**（规范原文：
+ * "目前不支持 Z 方向朝向兴趣点，高度可设置为0"），垂直方向没有
+ * 别的元素能替代它。
+ *
+ * 但 **yaw 不该由这个动作下发**：
+ *
+ * 1. **机头已经负责了这件事。** 每个航点都写了
+ *    `waypointHeadingMode=towardPOI` + `waypointPoiPoint` 指向杆心，
+ *    机头（因而光轴）在**整个航段上连续**地朝向圆心。
+ * 2. **逐点下发 yaw 会把那个连续性打断。** `gimbalRotate` 的触发器是
+ *    `reachPoint` —— 到点才执行。于是飞行途中云台 yaw 被"停在"上一个
+ *    航点的角度，每次到点才**跳**一次。用户现场看到的「到点瞬间突然
+ *    机械地调整一个小角度」正是这个。
+ * 3. **规范对本机型有硬要求**（`40.common-element.md` 的 `gimbalRotate` /
+ *    `orientedShoot` / `rotateYaw` 三处都标）：
+ *    `wpml:gimbalYawRotateAngle` 与 `wpml:aircraftHeading` 需保持一致，
+ *    而 M4T 那一条注明确列在机型栏里。
+ *    `towardPOI` 算出的 `aircraftHeading` 是**连续变化**的，任何
+ *    "到点才更新"的离散值都必然与它不一致 —— 这一条本身就说明
+ *    逐点写 yaw 是错的路子。
+ *
+ * ⇒ 只保留 pitch：云台 yaw 由 `towardPOI` 的机头跟随带着走（M4T 的 pan
+ * 轴本来就不能独立于机头偏转，见 CLAUDE.md「绕飞怎么让相机盯着杆」）。
+ *
+ * ⚠️ `gimbalYawRotateAngle` 元素**仍然照写**（规范标为必需元素），
+ * 只是 `Enable` 置 0 —— 它的值仍是该点看向杆心的方位角，
+ * 与飞机自己算的 `aircraftHeading` 一致。
+ */
+#define LZ_WPML_GIMBAL_YAW_IN_ACTION 0
+
+/**
  * 机型 / 负载身份。
  *
  * ⚠️ 这两个值**必须与实际机型负载匹配**，否则飞机可能拒绝执行航线。

@@ -133,8 +133,17 @@ int main(void)
                 if (buf != NULL) {
                     LZ_CHECK(fread(buf, 1, (size_t)sz, fp) == (size_t)sz);
                     /* 绕飞的核心字段必须在包里 */
-                    LZ_CHECK(contains(buf, (size_t)sz, "gimbalYawRotateEnable>1"));
                     LZ_CHECK(contains(buf, (size_t)sz, "absoluteAngle"));
+                    /* ⚠️ 云台 yaw **不由 action 下发**（2026-09-28 改）——
+                     * 见 lz_wpml.h 的 LZ_WPML_GIMBAL_YAW_IN_ACTION：
+                     * 机头由 towardPOI 连续跟随杆心，逐点写 yaw 会在每个
+                     * 航点上"跳"一次（reachPoint 触发），正是现场看到的
+                     * "到点瞬间机械地调整一个小角度"。
+                     * 但元素仍须存在（规范标为必需元素），只是 Enable=0。 */
+                    LZ_CHECK(contains(buf, (size_t)sz, "gimbalYawRotateEnable>0"));
+                    LZ_CHECK(contains(buf, (size_t)sz, "gimbalYawRotateAngle>"));
+                    /* ★ 弧线：useStraightLine 必须是 0 */
+                    LZ_CHECK(contains(buf, (size_t)sz, "useStraightLine>0"));
                     /* 机型必须是 M4T 而不是样例的 M3E(77) */
                     LZ_CHECK(contains(buf, (size_t)sz, "droneEnumValue>99"));
                     free(buf);

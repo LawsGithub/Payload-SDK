@@ -88,6 +88,12 @@ int LzPlan_ClampWaypointCount(int count);
  *       这就是 DJI Pilot 2 里「平滑过点，提前转弯」那个组合
  *       （规范 40.common-element.md 的 waypointTurnMode 一行有明确注解）。
  *
+ * ⚠️ **但本枚举只控制"过点停不停"，不足以决定走不走弧线**（2026-09-28 更正）：
+ * 两点之间是直线还是曲线由 wpml 的 `useStraightLine` 单独控制
+ * （0 = 全程曲线），取值见 `lz_wpml.h` 的 `LZ_WPML_USE_STRAIGHT_LINE`。
+ * 早先只改本枚举、而 `useStraightLine` 写死 1（贴直线），
+ * 于是轨迹仍是内接多边形 —— 现场表现为"到点瞬间机械地折一个角度"。
+ *
  * ⚠️ **走多边形时"航点在圆上"这件事本身是对的** —— 错的只是"飞机贴着两点
  * 连线飞"。所以修法是改转弯模式，不是把航点往里挪。
  *
