@@ -56,11 +56,19 @@ def main():
 
     for p in paths:
         d = load(p)
-        items = d['main_interface']['widget_list']
+        # ⚠️ 控件分**两个界面**：main（PSDK 菜单，飞行中操作）与
+        # config（Payload Settings，起飞前配置）。两边的索引共用一个
+        # 编号序列、不重叠 —— SDK 的 handler 表是扁平的（见 lz_widget.c）。
+        main_items = d.get('main_interface', {}).get('widget_list', [])
+        cfg_items = d.get('config_interface', {}).get('widget_list', [])
+        items = list(main_items) + list(cfg_items)
         keys = [(w.get('widget_index'), w.get('widget_type')) for w in items]
-        print('%-58s %d 个控件: %s'
-              % (os.path.relpath(p, root), len(items),
-                 ', '.join('%s(%s)' % (i, t) for i, t in keys)))
+        print('%-52s main=%d config=%d' % (os.path.relpath(p, root),
+                                           len(main_items), len(cfg_items)))
+        print('    main  : %s' % ', '.join('%s(%s)' % (i, t)
+              for i, t in [(w.get('widget_index'), w.get('widget_type')) for w in main_items]))
+        print('    config: %s' % ', '.join('%s(%s)' % (i, t)
+              for i, t in [(w.get('widget_index'), w.get('widget_type')) for w in cfg_items]))
 
         # ---- 约束 1：语言之间的类型/索引/数量一致 ----
         if baseline is None:
@@ -69,15 +77,22 @@ def main():
             failures.append('%s 与 %s 的控件清单不一致'
                             '\n    %s\n    %s' % (p, baseline_path, keys, baseline))
 
-        # ---- 约束 2：索引不能重复、不能有空洞 ----
+        # ---- 约束 2：索引不能重复、跨两个界面必须 0..N-1 连续 ----
+        # 为什么要求**跨界面**连续：SDK 的 handler 表是扁平的，
+        # 两边的 index 落在同一张表里，重叠会让分派指向错的回调。
         idx = [w.get('widget_index') for w in items]
         if len(set(idx)) != len(idx):
-            failures.append('%s 有重复的 widget_index：%s' % (p, idx))
-        if idx != list(range(len(idx))):
-            failures.append('%s 的 widget_index 不是 0..N-1 连续：%s' % (p, idx))
+            failures.append('%s 有重复的 widget_index（两个界面共用编号）：%s' % (p, idx))
+        if sorted(idx) != list(range(len(idx))):
+            failures.append('%s 的 widget_index 跨 main+config 不是 0..N-1 连续：main=%s config=%s'
+                            % (p, [w.get('widget_index') for w in main_items],
+                               [w.get('widget_index') for w in cfg_items]))
 
         # ---- 约束 3：图标文件必须存在 ----
-        for w in items:
+        # ⚠️ 只查 main_interface —— 官方样例的 config_interface 里
+        # **没有 icon_file_set 这个字段**（配置界面不显示图标）。
+        # 对 config 也查会误报（它本来就没有图标名可查）。
+        for w in main_items:
             fs = w.get('icon_file_set') or {}
             for k in ('icon_file_name_selected', 'icon_file_name_unselected'):
                 name = fs.get(k)

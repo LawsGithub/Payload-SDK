@@ -127,7 +127,27 @@ fi
 check_call lz/app/lz_mission.c 'LzWidget_TakeAlignRequest' \
     "「识别目标」按钮的请求在主循环里被消费"
 check_call lz/app/lz_widget.c   's_alignPending' \
-    "控件 6 的回调置了待办标志"
+    "「识别目标」按钮的回调置了待办标志"
+
+# ---- 控件的**界面归属**：int_input_box 绝不能放 main_interface ----
+# 2026-09-28 实测：放 main 时 SDK 收下（解析计数正常）但 Pilot 不渲染成
+# 可编辑控件 —— 日志里 type=5 的回调**零命中**。官方样例里
+# main_interface 根本没有这个类型；int_input_box 只出现在 config_interface。
+if python3 - <<'PY'
+import json, glob, sys
+bad = []
+for p in glob.glob('lz/app/widget_file/*/widget_config.json'):
+    d = json.load(open(p, encoding='utf-8'))
+    for w in d.get('main_interface', {}).get('widget_list', []):
+        if w.get('widget_type') == 'int_input_box':
+            bad.append('%s: index %s' % (p, w.get('widget_index')))
+sys.exit(1 if bad else 0)
+PY
+then
+    ok "int_input_box 都在 config_interface（Payload Settings）"
+else
+    bad "int_input_box 出现在 main_interface —— 放那里 Pilot 不会渲染成可编辑控件"
+fi
 
 # 「按下当场回执」是打断"没反应→再按一次"循环的那一环，掉了就退回旧现场形态。
 # ⚠️ 查的是**回调函数体里**有没有 PostMessage，不是全文件 ——
