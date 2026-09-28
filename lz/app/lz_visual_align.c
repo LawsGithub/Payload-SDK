@@ -565,6 +565,15 @@ static void do_detect(void)
     const double zoom = read_zoom();
     const double diagFov = LzVision_ZoomedDiagFovDeg(82.0, zoom);
     const double vfov = LzVision_VerticalFovDeg(f.width, f.height, diagFov);
+
+    /* ★ 死区按**当前视场角**重算 —— 它是个画面比例（见 lz_align.h）。
+     *
+     * 只用 `LzAlign_DefaultPolicy()` 里那个角度初值的话，7× 变焦下
+     * 死区会从"画面高度的 2.5%"变成"17.6%"。 */
+    const double dz = LzAlign_DeadzoneDegFromFrac(s_policy.deadzoneFrac, vfov);
+    if (isfinite(dz)) {
+        s_policy.deadzoneDeg = dz;
+    }
     const double delta = LzVision_PixelOffsetToDeg(vTarget, vfov);
     const double cur = read_pitch();
     s_lastDelta = delta;   /* 可能是 NaN —— 下面 DecideStep 会拦；这里只用于日志 */

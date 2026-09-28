@@ -51,12 +51,52 @@
 /* ① 每一步该做什么                                                     */
 /* ------------------------------------------------------------------ */
 
-/** 照准迭代的参数。都是现场判断，不是规范值 —— 见 `lz_visual_align.c` 的取值说明 */
+/**
+ * 照准迭代的参数。都是现场判断，不是规范值 —— 见 `lz_visual_align.c` 的取值说明
+ *
+ * ## ⚠️ 死区必须是**画面比例**，不能是固定角度（2026-09-29 修）
+ *
+ * 早先只有一个 `deadzoneDeg = 1.5`（绝对角度），而"对准了没有"这件事
+ * 在**画面上**看，不在**角度**上看。两者只在广角端接近：
+ *
+ * | 倍率 | VFOV | 1.5° 等于画面高度的 |
+ * |---|---|---|
+ * | 1.00× | 55.09° | 2.5%（27 px） |
+ * | 1.34× | 42.54° | 3.4%（36 px） |
+ * | **7.00×** | **8.52°** | **17.6%（190 px）** |
+ * | 10.0× | 5.97° | 25.1%（271 px） |
+ *
+ * ⇒ 7× 变焦下，画面中央上下各 17.6% 的区间都会被判成"已对准"——
+ * 未变焦时是"瞄得很准"，变焦后是"差得挺远"。
+ * **与 `poleWinBelowRatioQ`、置信度分母是同一个形状：绝对常量在变倍率下失真。**
+ */
 typedef struct {
-    double deadzoneDeg;   /*!< 死区：|Δθ| 小于它就算对准了 */
+    double deadzoneDeg;   /*!< 死区（度）：|Δθ| 小于它就算对准了。
+                           *   ⚠️ 由 `LzAlign_DeadzoneDegFromFrac()` 从
+                           *   `deadzoneFrac` 按当前视场角折算得来，**不要手填常量** */
+    double deadzoneFrac;  /*!< 死区（**画面高度的比例**）：权威值。0 表示用 `deadzoneDeg` */
     double maxStepDeg;    /*!< 单轮最大转角 —— 检测读错一个数时不让云台猛甩 */
     int    maxRounds;     /*!< 总轮数上限 —— 超过就判"未收敛"，不无限试 */
 } LzAlignPolicy;
+
+/**
+ * @brief 把"画面高度的比例"折算成"角度"（纯数学，零依赖）
+ *
+ *     deadzoneDeg = atan( frac · 2 · tan(VFOV/2) )
+ *
+ * 与 `LzVision_PixelOffsetToDeg()` 是同一套投影关系（小孔成像 +
+ * `v` 向下为正），只是反向用：那个是"像素偏差 → 该转多少"，
+ * 这个是"允许多大偏差（按画面比例给）→ 对应多少度"。
+ *
+ * ⚠️ **不能用线性近似**（`frac · VFOV`）。在 frac = 0.03、VFOV = 55.09° 时
+ * 线性给 1.65°、正切给 1.79°；而线性近似在边缘（frac → 0.5）误差最大。
+ * 与 `LzVision_PixelOffsetToDeg` 里"统一用 atan"是同一条理由。
+ *
+ * @param frac    画面高度的比例，必须落在 (0, 0.5]
+ * @param vfovDeg 垂直视场角（度），由 `LzVision_VerticalFovDeg()` 给
+ * @return 角度（度）；入参非法时返回 NAN
+ */
+double LzAlign_DeadzoneDegFromFrac(double frac, double vfovDeg);
 
 /** 一步的结论 */
 typedef enum {

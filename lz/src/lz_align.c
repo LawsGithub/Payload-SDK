@@ -18,19 +18,53 @@
 LzAlignPolicy LzAlign_DefaultPolicy(void)
 {
     LzAlignPolicy p;
-    /* 死区 1.5°：12.5 m 外约 0.33 m —— 与"半个杆"同量级。
-     * 单轮 30° 上限：检测读错一个数时不让云台猛甩。
-     * 20 轮上限：实测单轮约 1.5 s，20 轮 ≈ 30 s —— 超过就说明
-     * 目标在动或者检测不稳定，继续试下去只是耗电。 */
-    p.deadzoneDeg = 1.5;
+    /* 死区 **3% 画面高度** —— 权威值是比例，不是角度。
+     *
+     * 为什么是 3%：1080 行上约 32 px。现场那面带星的红旗在画面里
+     * 高 110 px（广角）~ 517 px（变焦 7×），3% 都远小于旗本身的高度，
+     * 所以"画面中心落在旗面上"这个目标一定满足；同时又比检测本身的
+     * 抖动（实测同一静止场景下杆列只动 0~2 px）大两个数量级，
+     * 不会因为噪声永远收敛不了。
+     *
+     * `deadzoneDeg` 给一个**广角端的等价初值**，供"还不知道 VFOV 时"
+     * 使用（如单元测试）。运行时由调用方按当前视场角重算，见
+     * `LzAlign_DeadzoneDegFromFrac()`。 */
+    p.deadzoneFrac = 0.03;
+    p.deadzoneDeg  = 1.79;   /* = atan(0.03 · 2 · tan(55.09°/2))，广角端 */
     p.maxStepDeg  = 30.0;
     p.maxRounds   = 20;
     return p;
 }
 
+double LzAlign_DeadzoneDegFromFrac(double frac, double vfovDeg)
+{
+    /* NaN 的比较全为 false，所以这里显式判有限性 —— 与 DecideStep 里
+     * 那道"NaN 会穿过阈值判据"的守卫同一个理由。 */
+    if (!isfinite(frac) || !isfinite(vfovDeg)) {
+        return NAN;
+    }
+    /* frac 取 (0, 0.5]：0.5 = 半个画面，超过它"死区"就大得没有意义了 */
+    if (!(frac > 0.0) || frac > 0.5) {
+        return NAN;
+    }
+    if (!(vfovDeg > 0.0) || vfovDeg >= 180.0) {
+        return NAN;
+    }
+
+    const double halfRad = vfovDeg * 0.5 * (M_PI / 180.0);
+    const double d = atan(frac * 2.0 * tan(halfRad)) * (180.0 / M_PI);
+    return isfinite(d) ? d : NAN;
+}
+
 /** 参数是否可用：`NaN` 的比较全为 false，所以这里显式用 `isfinite` 判 */
 static bool policy_ok(const LzAlignPolicy *p)
 {
+    /* `deadzoneFrac` 允许为 0（= 用 `deadzoneDeg`），但若给了就必须合法 ——
+     * 一个非法的比例（负数/NaN）静默退回角度值会让"按画面比例"的意图落空，
+     * 而那种落空在画面上看不出来（与 `policy_ok` 拦 NaN 是同一个理由）。 */
+    if (!(isfinite(p->deadzoneFrac) && p->deadzoneFrac >= 0.0 && p->deadzoneFrac <= 0.5)) {
+        return false;
+    }
     return isfinite(p->deadzoneDeg) && p->deadzoneDeg > 0.0 &&
            isfinite(p->maxStepDeg)  && p->maxStepDeg  > 0.0 &&
            p->maxRounds > 0;

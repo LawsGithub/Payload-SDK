@@ -27,9 +27,18 @@
 
 #include <math.h>
 
+/**
+ * 构造一个**只给绝对角度**的策略。
+ *
+ * ⚠️ `deadzoneFrac = 0` 是必须的：缺省策略里 `deadzoneFrac = 0.03` 是
+ * **权威值**（会按视场角折算覆盖 `deadzoneDeg`）。被测用例大多是
+ * "给定角度下判据对不对"，必须显式声明"用角度、别折算"，
+ * 否则用例测的是折算后的值而不是它写的那个 —— 而且看起来照样能过。
+ */
 static LzAlignPolicy pol(double dead, double step, int rounds)
 {
     LzAlignPolicy p;
+    p.deadzoneFrac = 0.0;
     p.deadzoneDeg = dead;
     p.maxStepDeg  = step;
     p.maxRounds   = rounds;
@@ -42,11 +51,17 @@ int main(void)
 
     /* ================= A. 非法测量值必须最先被拦 ================= */
 
-    LZ_CASE("A1 缺省参数就是文档写的 1.5° / 30° / 20 轮");
+    LZ_CASE("A1 缺省参数：死区的**权威值是画面比例**，角度只是广角端等价");
     {
-        /* 这三个数**单独立一条用例**，因为它们散落在两处（本层与 app 层）
-         * 时会各自漂移。断言值本身而不只是"大于 0"。 */
-        LZ_CHECK_NEAR(P.deadzoneDeg, 1.5, 1e-12);
+        /* ⚠️ 这条断言在 2026-09-29 **方向被改过**：原先是
+         * `deadzoneDeg == 1.5`（固定角度）。固定角度在变焦下会失真 ——
+         * 7× 时 1.5° 等于画面高度的 17.6%（见 B4 组）。
+         * 现在比例是权威值，角度由它折算而来。
+         *
+         * 断言值本身而不只是"大于 0"：这些数散落在两处（本层与 app 层）
+         * 时会各自漂移。 */
+        LZ_CHECK_NEAR(P.deadzoneFrac, 0.03, 1e-12);
+        LZ_CHECK_NEAR(P.deadzoneDeg, 1.79, 0.01);   /* 广角 55.09° 下的等价角度 */
         LZ_CHECK_NEAR(P.maxStepDeg, 30.0, 1e-12);
         LZ_CHECK(P.maxRounds == 20);
     }
@@ -112,11 +127,14 @@ int main(void)
         /* 取"≤"而不是"<"是刻意的：死区是一个承诺（偏差在这个范围内就算
          * 对准了），边界值当然属于这个承诺。这条断言把边界钉住 ——
          * 改成 `<` 会在这里变红。 */
-        LZ_CHECK(LzAlign_DecideStep(1.5, -40.0, 0, false, &P).action
+        /* 用"只给绝对角度"的策略（`deadzoneFrac = 0`），
+         * 否则缺省的 0.03 会按视场角折算覆盖掉这里的 1.5 —— 见 `pol()`。 */
+        const LzAlignPolicy ang = pol(1.5, 30.0, 20);
+        LZ_CHECK(LzAlign_DecideStep(1.5, -40.0, 0, false, &ang).action
                  == LZ_ALIGN_ACT_CONFIRM);
-        LZ_CHECK(LzAlign_DecideStep(-1.5, -40.0, 0, false, &P).action
+        LZ_CHECK(LzAlign_DecideStep(-1.5, -40.0, 0, false, &ang).action
                  == LZ_ALIGN_ACT_CONFIRM);
-        LZ_CHECK(LzAlign_DecideStep(1.5000001, -40.0, 0, false, &P).action
+        LZ_CHECK(LzAlign_DecideStep(1.5000001, -40.0, 0, false, &ang).action
                  == LZ_ALIGN_ACT_ROTATE);
     }
 
@@ -385,6 +403,68 @@ int main(void)
         LzAlign_Retry_NoteFrameOk(NULL);      /* 不应崩 */
         LzAlign_Retry_NoteDetectHit(NULL);
         LzAlign_Retry_Reset(NULL);
+    }
+
+    LZ_CASE("死区必须按画面比例算 —— 固定角度在变焦下会失真");
+    {
+        /* ★ 这条守的是 2026-09-29 发现的形状：
+         * 死区原先是固定的 1.5°，而"对准了没有"看在**画面上**，
+         * 不在**角度**上 —— 两者只在广角端接近：
+         *
+         * | 倍率 | VFOV | 1.5° 等于画面高度的 |
+         * |---|---|---|
+         * | 1.00× | 55.09° | 2.5% |
+         * | 7.00× |  8.52° | **17.6%** |
+         *
+         * ⇒ 与 `poleWinBelowRatioQ`、置信度分母是同一个形状。 */
+
+        /* 1. 正切折算（**不是**线性近似 frac·VFOV） */
+        const double d30_wide = LzAlign_DeadzoneDegFromFrac(0.03, 55.09);
+        LZ_CHECK_NEAR(d30_wide, 1.79, 0.01);
+        LZ_CHECK(fabs(d30_wide - 0.03 * 55.09) > 0.1);   /* 线性给 1.65 */
+
+        /* 2. 同一个比例在变焦下得到**更小**的角度 —— 这是重点 */
+        const double d30_zoom = LzAlign_DeadzoneDegFromFrac(0.03, 8.52);
+        LZ_CHECK_NEAR(d30_zoom, 0.26, 0.01);
+        LZ_CHECK(d30_zoom < d30_wide / 6.0);
+
+        /* 3. 单调：VFOV 越小 → 角度越小 */
+        double prev = 1e9;
+        for (double vf = 60.0; vf >= 5.0; vf -= 5.0) {
+            const double d = LzAlign_DeadzoneDegFromFrac(0.03, vf);
+            LZ_CHECK(isfinite(d) && d > 0.0 && d < prev);
+            prev = d;
+        }
+
+        /* 4. 比例越大 → 角度越大 */
+        LZ_CHECK(LzAlign_DeadzoneDegFromFrac(0.06, 55.09) >
+                 LzAlign_DeadzoneDegFromFrac(0.03, 55.09));
+
+        /* 5. 退化输入返回 NAN —— 返回 0 会静默变成"必须完全对准" */
+        LZ_CHECK(isnan(LzAlign_DeadzoneDegFromFrac(0.0, 55.0)));
+        LZ_CHECK(isnan(LzAlign_DeadzoneDegFromFrac(-0.1, 55.0)));
+        LZ_CHECK(isnan(LzAlign_DeadzoneDegFromFrac(0.6, 55.0)));
+        LZ_CHECK(isnan(LzAlign_DeadzoneDegFromFrac(NAN, 55.0)));
+        LZ_CHECK(isnan(LzAlign_DeadzoneDegFromFrac(0.03, 0.0)));
+        LZ_CHECK(isnan(LzAlign_DeadzoneDegFromFrac(0.03, 180.0)));
+        LZ_CHECK(isnan(LzAlign_DeadzoneDegFromFrac(0.03, NAN)));
+
+        /* 6. 缺省策略里比例是权威值，角度只是广角端的等价初值 */
+        const LzAlignPolicy P = LzAlign_DefaultPolicy();
+        LZ_CHECK_NEAR(P.deadzoneFrac, 0.03, 1e-12);
+        LZ_CHECK_NEAR(P.deadzoneDeg,
+                      LzAlign_DeadzoneDegFromFrac(P.deadzoneFrac, 55.09), 0.02);
+
+        /* 7. 非法的 deadzoneFrac 必须被 policy_ok 拦掉（否则静默退回角度值，
+         *    而"按画面比例"的意图落空 —— 那种落空在画面上看不出来） */
+        {
+            LzAlignPolicy bad = LzAlign_DefaultPolicy();
+            bad.deadzoneFrac = -0.5;
+            const LzAlignDecision d =
+                LzAlign_DecideStep(10.0, -20.0, 0, false, &bad);
+            /* 退回缺省策略：10° 远超缺省死区 ⇒ 仍是 ROTATE 而不是 CONFIRM */
+            LZ_CHECK(d.action == LZ_ALIGN_ACT_ROTATE);
+        }
     }
 
     return LZ_TEST_SUMMARY();
