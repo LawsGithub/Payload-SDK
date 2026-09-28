@@ -484,6 +484,20 @@ int main(void)
             LZ_CHECK(count_occurrences(f.waylinesWpml, "<wpml:useStraightLine>0</wpml:useStraightLine>") == (int)route.count);
             LZ_CHECK(strstr(f.waylinesWpml, "<wpml:useStraightLine>1</wpml:useStraightLine>") == NULL);
 
+            /* ★ template.kml 的**全局**项也必须写（2026-09-29 补）。
+             *
+             * 规范对 `globalUseStraightLine` 标"必需元素"，条件是
+             * `globalWaypointTurnMode` 取 curve 系列 —— 我们正是那个取值，
+             * 所以它在我们这套配置下是必需的。原先整条缺项。
+             *
+             * ⚠️ 缺了它**可能**不会出错：规范说"局部定义会覆盖全局定义"，
+             * 而每个 Placemark 都写了 `useStraightLine`。但那是一条
+             * "飞机先读全局还是先读局部"的**无法验证的假设**，
+             * 一个元素就能让假设消失，没有理由留着。 */
+            LZ_CHECK(count_occurrences(f.templateKml, "<wpml:globalUseStraightLine>") == 1);
+            LZ_CHECK(count_occurrences(f.templateKml,
+                       "<wpml:globalUseStraightLine>0</wpml:globalUseStraightLine>") == 1);
+
             /* 截距：规范要求落在 (0, 航段最大长度]，且段长必须 > 2×截距。
              * 逐个从 XML 里抠出来核 —— 光看生成函数不算数，要看落盘的值。 */
             const double suggested = LzPlan_SuggestDampingM(&route);

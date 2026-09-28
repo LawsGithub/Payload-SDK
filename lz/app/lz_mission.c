@@ -349,8 +349,26 @@ static void lz_mission_handle_record(void)
     /* ---- 激光点 ---- */
     st = LzPole_RecordLaser();
     if (st == LZ_OK && LzPole_GetRecorded(&recorded) == LZ_OK) {
-        LzWidget_PostMessage("✓ 已记录激光点为圆心：%.7f, %.7f",
-                             recorded.latitudeDeg, recorded.longitudeDeg);
+        /* ⚠️ **把目标高度报出来**（2026-09-29）。
+         *
+         * 它直接进俯仰公式的 `-h/2` 那一项，而操作员**看不见**它 ——
+         * 不报的话，"激光打在旗面上"与"打在旗后面的地面上"在界面上
+         * 长得一模一样，而两者的俯仰能差 5° 以上（20 m 外 1.76 m，
+         * 画面里 118 px）。用户指出的正是这个风险。
+         *
+         * 措辞给出**判据**而不只是数值："打旗面"与"打地面"是操作员
+         * 自己能分辨的两件事，报出高度后他一眼就知道刚才瞄的是什么。 */
+        LzTarget tgt;
+        if (LzPole_Acquire(&tgt) == LZ_OK && tgt.heightM > 0.0) {
+            LzWidget_PostMessage("✓ 已记录激光点为圆心：%.7f, %.7f（目标高 %.1f m "
+                                 "—— 俯仰将瞄它的中点）",
+                                 recorded.latitudeDeg, recorded.longitudeDeg,
+                                 tgt.heightM);
+        } else {
+            LzWidget_PostMessage("✓ 已记录激光点为圆心：%.7f, %.7f（点目标，"
+                                 "俯仰瞄它自身）",
+                                 recorded.latitudeDeg, recorded.longitudeDeg);
+        }
     } else if (st == LZ_OK) {
         LzWidget_PostMessage("✓ 已记录激光点");
     } else if (st == LZ_ERR_UNSUPPORTED) {

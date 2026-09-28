@@ -310,5 +310,85 @@ int main(void)
     }
 
     remove(LZ_TEST_POLE_FILE);
+
+    LZ_CASE("目标高度：由「激光海拔 − 起飞点海拔」算，三个出口都不猜");
+    {
+        /* ★ 这条守的是**问题 3 的修法本身**。
+         *
+         * 用户 2026-09-28 指出：把激光打在**旗面**上时，靶子不是"地面上的
+         * 一个点"，而是离地 h 米的一个点 —— 俯仰公式里的 `-h/2`
+         * 必须真的用上。而 h 可以从两个高程之差得到（比"距离 × 俯仰角"
+         * 少两个误差源）。
+         *
+         * ⚠️ 本函数**必须能在桌面上被测到**。放在 `#ifdef LZ_POLE_SOURCE_LASER`
+         * 里面的话，桌面构建根本不编它 —— 改了判定逻辑测试照样绿。
+         * 本项目已经在完全相同的地方踩过一次（激光零解闸门）。 */
+
+        /* 1. 正常：打旗面。10 m 高的旗面，起飞点在 0 m 那层 */
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(50.0, 40.0), 10.0, 1e-9);
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(40.02, 40.0), 0.02, 1e-9);
+
+        /* 2. 打地面：差 ≈ 0 或略负 ⇒ 0（**合法用法**，不是失败） */
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(40.0, 40.0), 0.0, 1e-9);
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(39.7, 40.0), 0.0, 1e-9);
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(0.0, 100.0), 0.0, 1e-9);
+
+        /* 3. 超上限 ⇒ 0（参考面不一致 / 打到远处）。
+         *    ⚠️ **不是钳位到上限** —— 钳位会把明显错的量伪装成
+         *    "一个很高的目标"。取 0 至少是已知合法的那种用法。 */
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(40.0 + 1000.0, 40.0), 0.0, 1e-9);
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(40.0 + LZ_POLE_TARGET_HEIGHT_MAX_M,
+                                                 40.0), 0.0, 1e-9);   /* 边界：开区间下端 */
+        LZ_CHECK(LzPole_ComputeTargetHeight(
+                     40.0 + LZ_POLE_TARGET_HEIGHT_MAX_M - 0.01, 40.0) > 0.0);
+
+        /* 4. 拿不到起飞点海拔 ⇒ 0，**不猜一个典型杆高** */
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(50.0, 0.0 / 0.0), 0.0, 1e-9);
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(0.0 / 0.0, 40.0), 0.0, 1e-9);
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(0.0 / 0.0, 0.0 / 0.0), 0.0, 1e-9);
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(1.0 / 0.0, 40.0), 0.0, 1e-9);
+    }
+
+    LZ_CASE("目标高度要能落盘并读回（th= 字段；旧文件缺它时按 0）");
+    {
+        /* ⚠️ **本条只覆盖"读"这一侧，写那一侧在桌面上测不到。**
+         *
+         * 写路径是 `LzPole_RecordLaser()` → `lz_record_common()`，而整个
+         * 函数在 `#ifdef LZ_POLE_SOURCE_LASER` 内 —— 桌面构建不编它。
+         * 实测过：把 `lz_record_common()` 里那行赋值改成写死 0，
+         * **本条照样全绿**。所以这里**不声称**守住了写路径。
+         *
+         * 写路径的验证手段是另一条：`LzPole_RecordLaser()` 会把
+         * 「激光海拔 / 起飞点海拔 / 飞机椭球高 / 反算目标高」四个值
+         * 打进日志，上机按一次就能看出算得对不对 —— 靠观测，不靠断言。
+         *
+         * （这是"判据在 ifdef 里就测不到"的又一个实例。判据本身已经抽到
+         * `#ifdef` 之外了，但**赋值**这一步没法抽 —— 它是取数与落盘之间的
+         * 接线。至少要在这里说清楚，别让下一个人以为这条用例守住了写侧。） */
+        /* ⚠️ `th=` 是**后加的**字段。旧文件（现场设备上那份）没有它 ——
+         * 读旧文件必须**当作目标高 0**，而不是判成坏文件。
+         * 判错会让操作员莫名其妙地丢掉一条本来可用的记录。 */
+        remove(LZ_TEST_POLE_FILE);
+        write_file("lon=112.9500000 lat=28.1800000 alt=55.0 th=9.75 src=laser\n");
+        LZ_CHECK(LzPole_LoadRecorded() == LZ_OK);
+        LZ_CHECK(LzPole_Acquire(&t) == LZ_OK);
+        LZ_CHECK_NEAR(t.heightM, 9.75, 1e-9);
+
+        /* 旧格式（4 字段，无 th=）⇒ 目标高 0，仍要能读回 */
+        remove(LZ_TEST_POLE_FILE);
+        write_file("lon=112.9500000 lat=28.1800000 alt=55.0 src=laser\n");
+        LZ_CHECK(LzPole_LoadRecorded() == LZ_OK);
+        LZ_CHECK(LzPole_Acquire(&t) == LZ_OK);
+        LZ_CHECK_NEAR(t.heightM, 0.0, 1e-9);
+        LZ_CHECK_NEAR(t.geo.latitudeDeg, 28.1800000, 1e-7);
+
+        /* th=0（打地面）与"没有 th="等价 —— 都是点目标 */
+        remove(LZ_TEST_POLE_FILE);
+        write_file("lon=112.9500000 lat=28.1800000 alt=55.0 th=0.00 src=laser\n");
+        LZ_CHECK(LzPole_LoadRecorded() == LZ_OK);
+        LZ_CHECK(LzPole_Acquire(&t) == LZ_OK);
+        LZ_CHECK_NEAR(t.heightM, 0.0, 1e-9);
+    }
+
     return LZ_TEST_SUMMARY();
 }

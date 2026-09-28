@@ -107,6 +107,38 @@ LzStatus LzPole_JudgeLaserReading(double latDeg, double lonDeg, double altM,
                                   double distanceM);
 
 /**
+ * @brief 由「激光点海拔 − 起飞点海拔」算**目标离地高度**（**纯逻辑，零依赖**）
+ *
+ * ## 用法与来历（用户 2026-09-28 的方案）
+ *
+ * 把激光打在**旗面**上时，`LaserRangingInfo.altitude` 就是旗面那个点的
+ * 高程；减去起飞点海拔就是旗面离地多高。这条比"距离 × 云台俯仰角"
+ * 少两个误差源：俯仰角有噪声（实测 Rotate 实速只有下发的 10–20%），
+ * 经纬度解算还要机身自身定位参与。
+ *
+ * ## 三个出口，都不猜
+ *
+ * | 情形 | 返回 |
+ * |---|---|
+ * | 两值有限且差落在 `(0, LZ_POLE_TARGET_HEIGHT_MAX_M]` | 那个差 |
+ * | 差 ≤ 0（激光打的是地面） | **0** —— 合法用法，瞄它自身 |
+ * | 差 > 上限（参考面不一致 / 打到远处） | **0**，并在日志里报出原始值 |
+ * | 任一值拿不到（NaN） | **0** |
+ *
+ * ⚠️ **超限不"钳位到上限"而取 0**：钳位会把一个明显错的量伪装成
+ * "一个很高的目标"，而取 0 至少是已知合法的那种用法。
+ *
+ * ⚠️ 本函数**放在 `#ifdef LZ_POLE_SOURCE_LASER` 之外** —— 与
+ * `LzPole_JudgeLaserReading` 同一条纪律：判据要能在桌面上被测试打到。
+ * 本项目已经因为"判据在 ifdef 里、测试编不到"踩过一次（激光零解闸门）。
+ *
+ * @param laserAltM 激光点海拔（米）；NaN = 拿不到
+ * @param homeAltM  起飞点海拔（米）；NaN = 拿不到
+ * @return 目标离地高度（米）；不可用时 0
+ */
+double LzPole_ComputeTargetHeight(double laserAltM, double homeAltM);
+
+/**
  * @brief 从磁盘读回上次记录的圆心（进程启动时调一次）
  *
  * 失败不是错误 —— 首次运行本来就没有文件。返回 `LZ_ERR_NOT_READY`

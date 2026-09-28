@@ -169,6 +169,29 @@ void LzBridge_LogStartPreconditions(void);
  */
 const char *LzBridge_StartDiagSummary(void);
 
+/**
+ * @brief 起飞点海拔（米）；无数据时返回 **NAN**
+ *
+ * ## ⚠️ 参考面没有权威来源 —— 用之前先看这一段
+ *
+ * 头文件对这个话题的原文是 "Provides the altitude from sea level when the
+ * aircraft last took off" + "also uses the ICAO model"，即**气压高度**。
+ * 而 `LaserRangingInfo.altitude` 的头文件只写 `Unit: 0.1m`，
+ * **没说参考面**。两者相减在参考面不一致时会系统性偏掉。
+ *
+ * ⇒ 调用方（`lz_pole_source.c`）把三个高程**都打进日志**做自洽校验，
+ * 不靠猜。详见该文件的 `LzPole_RecordLaser()`。
+ */
+double LzBridge_GetHomeAltitudeM(void);
+
+/**
+ * @brief 飞机当前的椭球高（米）；无数据时返回 **NAN**
+ *
+ * 与 `LzBridge_GetCurrentPosition()` 同源，单位与参考面都是 WGS84 椭球。
+ * 单独开一个是因为激光记点要**同一时刻**同时拿到位置与高度做自洽校验。
+ */
+double LzBridge_GetFusedAltitudeM(void);
+
 /** @brief 航点任务的启停（转发 DjiWaypointV3_Action，避免调用方直接依赖 PSDK） */
 LzStatus LzBridge_StopMissionV3(void);
 

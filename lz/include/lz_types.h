@@ -75,6 +75,34 @@ bool LzGeo_IsValid(const LzGeo *geo);
  * 激光在 `distance=0` 时给出的也是"机身位置附近的精确错误值"而非 0。
  * 退化情形总带着一层浮点皮。 */
 #define LZ_GEO_NULL_SOLUTION_DEG 0.5
+#define LZ_GEO_NULL_SOLUTION_DEG 0.5
+
+/**
+ * 目标自身的最大合理高度（m）。
+ *
+ * ## 它拦的是什么
+ *
+ * `LzPole_RecordLaser()` 用「激光点海拔 − 起飞点海拔」当**目标离地高度**，
+ * 而这个差有两个已知的污染源：
+ *
+ * 1. **两个高程的参考面可能不一致** —— `LaserRangingInfo.altitude` 的头文件
+ *    只写 `Unit: 0.1m` 没说参考面，而 `ALTITUDE_OF_HOMEPOINT` 原文是
+ *    "altitude from sea level ... also uses the ICAO model"（气压高）。
+ * 2. **激光飘走打到远处地面**（用户指出的风险）—— 那时量到的是地面，
+ *    但离地高度会算出一个不真实的值。
+ *
+ * ## 为什么给上限而不是给判据
+ *
+ * 二者都能让差变**大**，而"多大算不合理"没有干净的分界：旗面飘动本身
+ * 就有 ±0.5 m，而一个 50 m 的差既可能是参考面错、也可能是真打到了
+ * 一栋楼顶上。⇒ **只拦明显荒谬的量**，超限**如实报出并按 0 处理**
+ * （不静默取一个看起来合理的数）。这与 `LzPlan_Validate` 拒绝而不钳位
+ * 是同一条纪律：**做不到就说做不到，别伪装成做得到。**
+ *
+ * 取值 60 m：比常见国旗杆（15–30 m）留一倍余量，又远小于参考面
+ * 不一致时可能出现的几百米量级偏差。
+ */
+#define LZ_POLE_TARGET_HEIGHT_MAX_M 60.0
 
 /** @brief 坐标是否落在"零解"邻域内（即当前没有真实定位） */
 bool LzGeo_IsNullSolution(const LzGeo *geo);

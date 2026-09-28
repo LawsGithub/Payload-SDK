@@ -282,6 +282,25 @@ LzStatus LzWpml_Build(const LzRoute *route,
      * `LZ_WPML_USE_STRAIGHT_LINE`。 */
     lz_str_addf(&t, "      <wpml:globalWaypointTurnMode>%s</wpml:globalWaypointTurnMode>\n",
                 lz_turn_mode_str(profile->turnMode));
+    /* ⚠️ **template.kml 里的这一对必须成对出现**（2026-09-29 补）。
+     *
+     * 规范对 `globalUseStraightLine` 的注解（40.common-element.md）：
+     * "必需元素 * 注：当且仅当 `globalWaypointTurnMode` 被设置为
+     *  `toPointAndStopWithContinuityCurvature` 或
+     *  `toPointAndPassWithContinuityCurvature` 时必需"。
+     *
+     * 我们正是后者 —— 于是它**在当前配置下是必需元素**，而我们一直没写。
+     * 官方样例也有它（`globalUseStraightLine=1`，配它自己的
+     * `toPointAndStopWithDiscontinuityCurvature`）。
+     *
+     * ⚠️ 规范同时给了兜底："**如果额外定义了某航点的该元素，
+     * 则局部定义会覆盖全局定义**" —— 而我们在每个 Placemark 里都写了
+     * `useStraightLine`，所以缺这一条**理论上**不会改变轨迹。
+     * 但"靠局部覆盖来掩饰全局缺项"是**一种我们无法验证的假设**：
+     * 飞机到底先读全局还是先读局部、局部缺失时怎么回退，规范没说。
+     * 既然一个元素就能让假设消失，就不该留着这个假设。 */
+    lz_str_addf(&t, "      <wpml:globalUseStraightLine>%d</wpml:globalUseStraightLine>\n",
+                LZ_WPML_USE_STRAIGHT_LINE);
 
     for (size_t i = 0; i < route->count; ++i) {
         const LzWaypoint *wp = &route->points[i];

@@ -277,6 +277,10 @@ static volatile bool s_gotFused = false;
 static volatile T_DjiFcSubscriptionPositionFused s_fused = {0};
 static volatile bool s_gotHome = false;
 static volatile uint8_t s_home = 0;
+/* 起飞点海拔（WGS84 或气压高，见 LzBridge_GetHomeAltitudeM 的说明）。
+ * 用它把"激光点的绝对高程"折算成"目标离地高度" —— 见 lz_pole_source.c。 */
+static volatile bool s_gotHomeAlt = false;
+static volatile T_DjiFcSubscriptionAltitudeOfHomePoint s_homeAlt = 0.0f;
 
 /* 每个话题一个专用回调：长度校验 + 拷贝，写自己的缓存。
  * 分开写而不是用一个带 topic 参数的函数，是因为回调签名里没有 topic。 */
@@ -298,6 +302,7 @@ DEFINE_TOPIC_CB(lz_cb_rc, s_rc, s_gotRc, T_DjiFcSubscriptionRC)
 DEFINE_TOPIC_CB(lz_cb_gps, s_gps, s_gotGps, T_DjiFcSubscriptionGpsDetails)
 DEFINE_TOPIC_CB(lz_cb_fused, s_fused, s_gotFused, T_DjiFcSubscriptionPositionFused)
 DEFINE_TOPIC_CB(lz_cb_home, s_home, s_gotHome, T_DjiFcSubscriptionHomePointSetStatus)
+DEFINE_TOPIC_CB(lz_cb_home_alt, s_homeAlt, s_gotHomeAlt, T_DjiFcSubscriptionAltitudeOfHomePoint)
 
 LzStatus LzBridge_InitStartDiagnostics(void)
 {
@@ -328,6 +333,10 @@ LzStatus LzBridge_InitStartDiagnostics(void)
         {DJI_FC_SUBSCRIPTION_TOPIC_GPS_DETAILS, lz_cb_gps, "GPS 详情"},
         {DJI_FC_SUBSCRIPTION_TOPIC_POSITION_FUSED, lz_cb_fused, "融合位置"},
         {DJI_FC_SUBSCRIPTION_TOPIC_HOME_POINT_SET_STATUS, lz_cb_home, "起飞点状态"},
+        /* ★ 起飞点**海拔** —— 把激光的绝对高程折成"目标离地高度"要用它。
+         * 与"起飞点状态"是**两个不同的话题**（一个是布尔、一个是高度），
+         * 头文件里它们是相邻的两项，很容易看成一个。 */
+        {DJI_FC_SUBSCRIPTION_TOPIC_ALTITUDE_OF_HOMEPOINT, lz_cb_home_alt, "起飞点海拔"},
     };
 
     int okCount = 0;
@@ -345,8 +354,10 @@ LzStatus LzBridge_InitStartDiagnostics(void)
     }
 
     s_startDiagSubscribed = (okCount > 0);
-    USER_LOG_INFO("启动诊断已就绪（%d/5 个飞机状态话题订阅成功，10Hz，走回调缓存）",
-                  okCount);
+    /* ⚠️ 分母别再写死 5 —— 加话题时忘了改会打出一条**看起来对、实际错**的日志
+     * （"5/5 成功"而实际订阅了 6 个）。从数组长度算。 */
+    USER_LOG_INFO("启动诊断已就绪（%d/%d 个飞机状态话题订阅成功，10Hz，走回调缓存）",
+                  okCount, (int)(sizeof(items) / sizeof(items[0])));
     return LZ_OK;
 }
 
@@ -629,4 +640,49 @@ LzStatus LzBridge_GetCurrentPosition(LzGeo *out)
 
     *out = g;
     return LZ_OK;
+}
+
+/**
+ * @brief 起飞点海拔（米）；无数据时返回 NAN
+ *
+ * ## ⚠️ 参考面**没有权威来源**，用法必须留有余地
+ *
+ * 头文件对这个话题的原文是 "Provides the altitude from sea level when the
+ * aircraft last took off" + "also uses the ICAO model" —— 即**气压高度**
+ * （ICAO 标准大气，1013.25 mBar @ 15 ℃）。它**不是** WGS84 椭球高。
+ *
+ * 而 `T_DjiCameraManagerLaserRangingInfo::altitude` 的头文件只写
+ * `Unit: 0.1m`，**一个字都没说参考面** —— 既可能是椭球高（像
+ * `PositionFused.altitude`），也可能是气压高（像本话题）。
+ *
+ * ⇒ **两者相减在参考面不一致时会错**，而这一点在桌面上无法判定。
+ * 解决办法不是猜，是**让它对一次现场按压就可见**：
+ * `LzPole_RecordLaser()` 会把激光海拔、起飞点海拔、飞机融合海拔
+ * **三个都打进日志**，并同时报出"距离 + 云台俯仰"能算出的几何预期 ——
+ * 哪一对自洽，一眼就能看出来。
+ *
+ * 在那之前，本函数只做一件事：**把值交出去**，参考面的问题由调用方
+ * 在日志与浮窗里显式说明。
+ */
+double LzBridge_GetHomeAltitudeM(void)
+{
+    if (!s_gotHomeAlt) {
+        return NAN;
+    }
+    return (double)s_homeAlt;
+}
+
+/**
+ * @brief 飞机当前的**椭球高**（米）；无数据时返回 NAN
+ *
+ * 与 `LzBridge_GetCurrentPosition()` 同源（`POSITION_FUSED.altitude`，
+ * 头文件明写 "Altitude, WGS 84 reference ellipsoid"）。单独一个 getter
+ * 是因为激光记点时要在**同一时刻**同时拿到位置与高度做自洽校验。
+ */
+double LzBridge_GetFusedAltitudeM(void)
+{
+    if (!s_gotFused) {
+        return NAN;
+    }
+    return (double)s_fused.altitude;
 }

@@ -22,11 +22,18 @@
 
 #include <dji_logger.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 #ifdef LZ_POLE_SOURCE_LASER
+/* ⚠️ 这两个 include **必须在 ifdef 内** —— `lz_test_pole` 会在桌面上编本文件
+ * （用 tests/stub/ 的替身头文件替换 dji_logger.h），而 PSDK 的头文件在
+ * 桌面上找不到。放进 ifdef 里，桌面构建就只编到纯逻辑那部分，
+ * 与"判据与取数分离"是同一条纪律。 */
 #include <dji_camera_manager.h>
+
+#include "lz_bridge_psdk.h"   /* LzBridge_GetHomeAltitudeM / GetFusedAltitudeM */
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -49,6 +56,16 @@
 static bool s_haveRecord = false;
 static LzGeo s_recorded;
 static LzPoleRecordKind s_recordKind = LZ_POLE_RECORD_AIRCRAFT;
+/**
+ * 目标自身的高度（m，相对起飞点）；**0 = 未知/点目标**。
+ *
+ * 它是"瞄准点离地多高"这个物理量的唯一落点，由**记录来源**给：
+ *   · 激光打旗面 ⇒ 实测值（见 `LzPole_RecordLaser()`）
+ *   · 激光打地面 ⇒ 0
+ *   · 飞机位     ⇒ 0
+ * 落盘到 `data/pole.txt` 的 `th=` 字段。
+ */
+static double s_recordedHeightM = 0.0;
 
 /**
  * @brief 把坐标写成一行文本
@@ -72,8 +89,9 @@ static LzStatus lz_record_save(void)
         return LZ_ERR_IO;
     }
 
-    fprintf(fp, "lon=%.7f lat=%.7f alt=%.1f src=%s\n",
+    fprintf(fp, "lon=%.7f lat=%.7f alt=%.1f th=%.2f src=%s\n",
             s_recorded.longitudeDeg, s_recorded.latitudeDeg, s_recorded.altitudeM,
+            s_recordedHeightM,
             (s_recordKind == LZ_POLE_RECORD_LASER) ? "laser" : "aircraft");
     fclose(fp);
     return LZ_OK;
@@ -91,10 +109,41 @@ LzStatus LzPole_LoadRecorded(void)
 
     char src[16] = {0};
     LzGeo g;
+    double th = 0.0;
     memset(&g, 0, sizeof(g));
-    const int n = fscanf(fp, "lon=%lf lat=%lf alt=%lf src=%15s",
-                         &g.longitudeDeg, &g.latitudeDeg, &g.altitudeM, src);
+
+    /* ⚠️ 用 fgets + 两次 sscanf，**不能用「一次 fscanf 读 5 个字段再看返回值」**
+     * （第一版那么写，被 `lz_test_pole` 的"重启后能读回"用例当场抓红）。
+     *
+     * 原因：格式串 `... th=%lf src=%s` 碰到旧格式（没有 `th=`）时，
+     * `%lf` 会去解析 "src=laser" 里的 's'，**在 4 字段处停下并返回 3**
+     * —— 于是"旧格式"与"文件被截断"两者的返回值撞在一起，分不开。
+     * 读成一整行再各自 sscanf，两种格式的成功与否就是**两个独立的布尔**，
+     * 不会有这种歧义。 */
+    char line[256] = {0};
+    if (fgets(line, sizeof(line), fp) == NULL) {
+        fclose(fp);
+        USER_LOG_ERROR("杆位记录文件读不出内容（%s）", LZ_POLE_RECORD_PATH);
+        s_haveRecord = false;
+        memset(&s_recorded, 0, sizeof(s_recorded));
+        return LZ_ERR_IO;
+    }
     fclose(fp);
+
+    /* 新格式（带 th=）优先；不匹配再试旧格式（4 字段，th 视为 0）。 */
+    int fields = 0;
+    if (sscanf(line, "lon=%lf lat=%lf alt=%lf th=%lf src=%15s",
+               &g.longitudeDeg, &g.latitudeDeg, &g.altitudeM, &th, src) == 5) {
+        fields = 5;
+    } else {
+        memset(&g, 0, sizeof(g));
+        th = 0.0;
+        memset(src, 0, sizeof(src));
+        if (sscanf(line, "lon=%lf lat=%lf alt=%lf src=%15s",
+                   &g.longitudeDeg, &g.latitudeDeg, &g.altitudeM, src) == 4) {
+            fields = 4;
+        }
+    }
 
     /* 字段数不对（文件被截断/手改坏）与坐标非法都拒绝。
      * 半个坐标比没有坐标更危险 —— 它会看起来"有记录"，实际是垃圾。
@@ -108,20 +157,22 @@ LzStatus LzPole_LoadRecorded(void)
      * 这是被 `lz_test_pole` 的"文件被改坏"用例抓出来的。 */
     /* 零解也要拒 —— 旧版本可能已经把零解写进过文件，
      * 或者文件被手改成 0,0。读回来等于"有一个看起来有效的圆心"。 */
-    if (n != 4 || !LzGeo_IsValid(&g) || LzGeo_IsNullSolution(&g)) {
-        USER_LOG_ERROR("杆位记录文件格式不对（读到 %d 个字段），当作未记录处理", n);
+    if ((fields != 4 && fields != 5) || !LzGeo_IsValid(&g) || LzGeo_IsNullSolution(&g)) {
+        USER_LOG_ERROR("杆位记录文件格式不对（读到 %d 个字段），当作未记录处理", fields);
         s_haveRecord = false;
         memset(&s_recorded, 0, sizeof(s_recorded));
         return LZ_ERR_IO;
     }
 
     s_recorded = g;
+    s_recordedHeightM = (isfinite(th) && th > 0.0) ? th : 0.0;
     s_haveRecord = true;
     s_recordKind = (strcmp(src, "laser") == 0) ? LZ_POLE_RECORD_LASER
                                                : LZ_POLE_RECORD_AIRCRAFT;
 
-    USER_LOG_INFO("已从 %s 读回杆位：%.7f, %.7f（%s）",
-                  LZ_POLE_RECORD_PATH, g.latitudeDeg, g.longitudeDeg, src);
+    USER_LOG_INFO("已从 %s 读回杆位：%.7f, %.7f（%s，目标高 %.2f m）",
+                  LZ_POLE_RECORD_PATH, g.latitudeDeg, g.longitudeDeg, src,
+                  s_recordedHeightM);
     return LZ_OK;
 }
 
@@ -129,10 +180,11 @@ LzStatus LzPole_LoadRecorded(void)
 /* 记录                                                               */
 /* ------------------------------------------------------------------ */
 
-static void lz_record_common(const LzGeo *g, LzPoleRecordKind kind)
+static void lz_record_common(const LzGeo *g, LzPoleRecordKind kind, double heightM)
 {
     s_recorded = *g;
     s_recordKind = kind;
+    s_recordedHeightM = (isfinite(heightM) && heightM > 0.0) ? heightM : 0.0;
     s_haveRecord = true;
 
     /* 落盘失败**不回退**内存里的记录：内存中的坐标是可用的（本次绕飞能用），
@@ -167,7 +219,7 @@ LzStatus LzPole_RecordAircraft(const LzGeo *curPos)
         return LZ_ERR_NO_TARGET;
     }
 
-    lz_record_common(curPos, LZ_POLE_RECORD_AIRCRAFT);
+    lz_record_common(curPos, LZ_POLE_RECORD_AIRCRAFT, 0.0);
     USER_LOG_INFO("★ 已记录飞机位置为绕飞圆心：%.7f, %.7f",
                   curPos->latitudeDeg, curPos->longitudeDeg);
     return LZ_OK;
@@ -236,6 +288,53 @@ LzStatus LzPole_JudgeLaserReading(double latDeg, double lonDeg, double altM,
     return LZ_OK;
 }
 
+/**
+ * @brief 由「激光点海拔 − 起飞点海拔」算**目标离地高度**（纯逻辑，零依赖）
+ *
+ * ## 为什么单独抽出来，且放在 `#ifdef LZ_POLE_SOURCE_LASER` **之前**
+ *
+ * 与 `LzPole_JudgeLaserReading()` 完全同一个理由（那条注释写得更细）：
+ * 判定是纯逻辑、取数才依赖相机接口。放在 `#ifdef` 里面的话，
+ * 桌面测试**根本编不到它** —— 于是"改了判定逻辑，测试照样绿"，
+ * 而本项目已经在完全相同的地方踩过一次（激光零解闸门，见 CLAUDE.md）。
+ *
+ * ## 量的是什么
+ *
+ * 用户 2026-09-28 的方案：把激光打在**旗面**上，`altitude` 就是旗面那个
+ * 点的高程；减去起飞点海拔，就是旗面离地多高。这条比"距离 × 俯仰角"
+ * 少两个误差源 —— 俯仰角有噪声（实测 Rotate 实速只有下发的 10–20%），
+ * 经纬度解算还要机身自身定位参与。
+ *
+ * ## 三个出口，都不猜
+ *
+ * | 情形 | 返回 | 为什么 |
+ * |---|---|---|
+ * | 两值都有限且差在 (0, MAX] | 那个差 | 正常 |
+ * | 差 ≤ 0（打的是地面） | 0 | 点目标，瞄它自身 —— 这是**合法**用法 |
+ * | 差 > MAX | 0 | 参考面不一致或打到远处 —— 荒谬量，不采用 |
+ * | 起飞点海拔拿不到 | 0 | 不知道就不猜，按点目标（用户可重记） |
+ *
+ * ⚠️ **上限那一条不"钳位到 MAX"而取 0**：钳位会把一个明显错的量
+ * 伪装成"一个很高的目标"，而取 0 至少是**已知合法**的那种用法。
+ * 与 `LzPlan_ComputeGimbalPitchDeg` 照实返回、由 `LzPlan_Validate`
+ * 拒绝是同一条纪律：**别把"做不到"或"不知道"伪装成"做得到"。**
+ *
+ * @param laserAltM 激光点海拔（米）；NaN 表示拿不到
+ * @param homeAltM  起飞点海拔（米）；NaN 表示拿不到
+ * @return 目标离地高度（米），失败时 0
+ */
+double LzPole_ComputeTargetHeight(double laserAltM, double homeAltM)
+{
+    if (!isfinite(laserAltM) || !isfinite(homeAltM)) {
+        return 0.0;
+    }
+    const double raw = laserAltM - homeAltM;
+    if (!isfinite(raw) || raw <= 0.0 || raw >= LZ_POLE_TARGET_HEIGHT_MAX_M) {
+        return 0.0;
+    }
+    return raw;
+}
+
 #ifdef LZ_POLE_SOURCE_LASER
 
 /* `[V]` 实测：M4T 的激光测距在位置 1（E1，自带云台相机那一路） */
@@ -292,14 +391,70 @@ LzStatus LzPole_RecordLaser(void)
         return st;
     }
 
+    /* ---- 目标高度：激光海拔 − 起飞点海拔（用户 2026-09-28 的方案）----
+     *
+     * ## 为什么走这条路，而不是"距离 × 俯仰角"
+     *
+     * 用户的原话：把激光打在旗面上，用**激光点自己的高程**减去**起飞点
+     * 高程**就是旗面离地多高。这条比"距离 + 云台俯仰角"少两个误差源：
+     *   · 云台俯仰角有噪声（实测 Rotate 的实速只有下发的 10–20%，
+     *     到位前读到的角不一定是最终角）
+     *   · 经纬度解算还要机身自身定位参与（零解就整个废掉）
+     * 而 `LaserRangingInfo.altitude` 是激光**直接给出**的第三个独立量。
+     *
+     * ## ⚠️ 两个高程的参考面可能不一致 —— 所以**三个都打日志**
+     *
+     * `LaserRangingInfo.altitude` 的头文件只写 `Unit: 0.1m`，**没说参考面**；
+     * `ALTITUDE_OF_HOMEPOINT` 的原文是 "altitude from sea level ... also uses
+     * the ICAO model"，即**气压高**。两者相减在参考面不同时会系统性偏掉。
+     *
+     * 这一点在桌面上判不了，所以做法不是猜，而是**让一次现场按压就能看出来**：
+     * 下面同时打出激光海拔、起飞点海拔、飞机融合海拔（椭球高），
+     * 再打出"距离 + 这一对高程"能算出的几何预期。**哪一对自洽，一眼可见。**
+     *
+     * ⚠️ 顺带一个**必须显式记录的坑**：用户指出的风险是"激光飘走后打到
+     * 后面的地面"。那时 `distance` 会突然变大（实测 25 → 60 m 都见过），
+     * 于是量到的是地面高度而不是旗面。这里不试图自动判它 ——
+     * 判据不足（旗面飘动 0.5 m 与"打到地面"之间没有干净的分界），
+     * 硬判会把正常读数误拒。⇒ 只**如实报出量到的值**，由操作员核对。 */
+    /* 判据在 `LzPole_ComputeTargetHeight()`（纯函数，在 #ifdef 之外，
+     * 桌面上被 lz_test_pole 打得到）。这里只负责取数与**说清楚发生了什么**。 */
+    const double homeAlt = LzBridge_GetHomeAltitudeM();
+    const double fusedAlt = LzBridge_GetFusedAltitudeM();
+    const double rawDiff = isfinite(homeAlt) && isfinite(altM) ? (altM - homeAlt) : NAN;
+    const double targetH = LzPole_ComputeTargetHeight(altM, homeAlt);
+
+    if (!isfinite(homeAlt)) {
+        USER_LOG_WARN("拿不到起飞点海拔 —— 目标高按 0 处理，"
+                      "俯仰将瞄地面那一层而不是旗面。"
+                      "若本次要打旗面，请等起飞点话题就绪后再记");
+    } else if (isfinite(rawDiff) && rawDiff > 0.0 && targetH <= 0.0) {
+        /* 差为正但被判 0 ⇒ 必然是超上限那一条 */
+        USER_LOG_WARN("激光目标高算出来 %.2f m（激光海拔 %.2f − 起飞点海拔 %.2f）"
+                      "—— 超出 %.0f m 上限，按点目标（0）处理。"
+                      "请核对参考面，或激光是不是打到远处地面上去了",
+                      rawDiff, altM, homeAlt, LZ_POLE_TARGET_HEIGHT_MAX_M);
+    } else if (isfinite(rawDiff) && rawDiff <= 0.0) {
+        USER_LOG_INFO("激光目标高 %.2f m ≤ 0 —— 按点目标处理（打的是地面）",
+                      rawDiff);
+    }
+
+    /* 自洽校验：三个高程同框。飞机融合高是**椭球高**（头文件明写），
+     * 激光海拔若与它接近，说明激光那个也是椭球高。 */
+    USER_LOG_INFO("高程自洽校验：激光点海拔 %.2f m ｜ 起飞点海拔 %.2f m ｜ "
+                  "飞机椭球高 %.2f m ｜ 反算目标高 %.2f m（距离 %.1f m）",
+                  altM, homeAlt, fusedAlt, targetH, distanceM);
+
     const LzGeo g = {
         .latitudeDeg = info.latitude,
         .longitudeDeg = info.longitude,
         .altitudeM = altM,
     };
-    lz_record_common(&g, LZ_POLE_RECORD_LASER);
-    USER_LOG_INFO("★ 已记录激光瞄准点为绕飞圆心：%.7f, %.7f（距离 %.1f m，exception=%u）",
-                  g.latitudeDeg, g.longitudeDeg, distanceM, (unsigned)info.exception);
+    lz_record_common(&g, LZ_POLE_RECORD_LASER, targetH);
+    USER_LOG_INFO("★ 已记录激光瞄准点为绕飞圆心：%.7f, %.7f（距离 %.1f m，"
+                  "目标高 %.2f m，exception=%u）",
+                  g.latitudeDeg, g.longitudeDeg, distanceM, targetH,
+                  (unsigned)info.exception);
     return LZ_OK;
 }
 
@@ -378,18 +533,26 @@ const char *LzPole_SourceName(void)
  * 它是"目标有没有高度"这个判据的**唯一落点**，将来视觉那条路接进来时
  * 只改这里。写成表达式的话，下一个改的人会在调用点加分支。
  */
-static double lz_pole_target_height(const LzGeo *geo, LzPoleRecordKind kind)
+static double lz_pole_target_height(void)
 {
-    (void)geo;
-    switch (kind) {
-    case LZ_POLE_RECORD_LASER:
-    case LZ_POLE_RECORD_AIRCRAFT:
-        /* 两个来源记录的都是**一个点**（激光打的那个点 / 飞机当时的位置），
-         * 没有"高度"这个概念 ⇒ 瞄它自身，偏移量 0。 */
-        return 0.0;
-    default:
-        return 0.0;
-    }
+    /* ⚠️ **这个值现在是"记录时实测/判定的"，不再由来源写死**（2026-09-29 改）。
+     *
+     * 早先的实现按来源给：激光 ⇒ 0、飞机位 ⇒ 0（"两个来源记录的都是一个点"）。
+     * 那个判断在**激光打地面时是对的**，但用户指出另一种用法：
+     * **把激光打在旗面上** —— 那时靶子不是"地面上的一个点"，而是
+     * **离地 h 米的一个点**，`-h/2` 那一项必须真的用上。
+     *
+     * 现场实测的差距（CLAUDE.md 记过同一形状）：打地面点当圆心时，
+     * 写死 15 m 会让俯仰偏 5.04°（20 m 外 1.76 m，画面里 118 px）；
+     * 反过来，打旗面时按 0 处理也会偏 —— 而且偏的方向相反。
+     *
+     * ⇒ 唯一正确的来源是**记录那一刻量到的目标高度**（`s_recordedHeightM`），
+     * 它由 `LzPole_RecordLaser()` 从"激光海拔 − 起飞点海拔"算出，
+     * 并落盘到 `pole.txt` 的 `th=`。
+     *
+     * 仍然保留这个函数（而不是直接用变量）的理由与之前相同：
+     * 将来视觉识别到**杆**时，只改这一处。 */
+    return s_recordedHeightM;
 }
 
 LzStatus LzPole_Acquire(LzTarget *out)
@@ -444,9 +607,9 @@ LzStatus LzPole_Acquire(LzTarget *out)
      * ⚠️ `heightM = 0` 在 `LzPlan_ComputeGimbalPitchDeg` 里走的是
      * "高度未知按 0 处理"分支 —— 语义正确（瞄目标所在的那层水平面），
      * 与"未知⇒不猜"的既有约定一致。 */
-    out->heightM = lz_pole_target_height(&s_recorded, s_recordKind);
+    out->heightM = lz_pole_target_height();
 
-    USER_LOG_INFO("杆位取自%s：%.7f, %.7f（目标高 %.1f m —— %s）",
+    USER_LOG_INFO("杆位取自%s：%.7f, %.7f（目标高 %.2f m —— %s）",
                   LzPole_SourceName(),
                   out->geo.latitudeDeg, out->geo.longitudeDeg,
                   out->heightM,
