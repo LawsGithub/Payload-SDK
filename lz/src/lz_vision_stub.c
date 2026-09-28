@@ -134,3 +134,13 @@ LzStatus LzVision_EstimateSize(const LzPixelBox *pixel, int frameW, int frameH,
     *outRadiusM = (knownDiameterM > 0.0) ? (knownDiameterM * 0.5) : 0.0;
     return LZ_OK;
 }
+
+LzVisionMiss LzVision_LastMiss(const LzVision *vision, double *outConfidence)
+{
+    /* stub 后端刻意不看画面，永远不该被当成"检测过了"。
+     * 报 NONE 是**诚实**的：它没有"没找到"这个概念，只是没在做检测。
+     * 两个后端都要实现 —— 见 lz_vision.h 关于"头文件按全集声明"的说明。 */
+    (void)vision;
+    if (outConfidence != NULL) { *outConfidence = 0.0; }
+    return LZ_VISION_MISS_NONE;
+}

@@ -64,7 +64,10 @@ LzVisionConfig LzVision_DefaultConfig(void)
     c.poleHalfWidth = 1;
     c.poleGap = 40;
     c.poleWinAbove = 20;
-    c.poleWinBelow = 300;
+    /* ⚠️ 下界**按旗高缩放**，不是固定像素 —— 见 lz_vision.h 的说明。
+     * 2600/1000 = 2.6 倍旗高。6 张黄金图 + 现场广角/变焦两张截图实测：
+     * 从 2.0 到 3.5 倍之间，杆列位置不变、8 张全部检出。 */
+    c.poleWinBelowRatioQ = 2600;
     c.minConfidence = 0.5;
     return c;
 }
@@ -99,6 +102,37 @@ double LzVision_VerticalFovDeg(int frameW, int frameH, double diagFovDeg)
         return NAN;
     }
     return vfovDeg;
+}
+
+double LzVision_ZoomedDiagFovDeg(double wideDiagFovDeg, double zoomFactor)
+{
+    if (!isfinite(wideDiagFovDeg) || !(wideDiagFovDeg > 0.0) || !(wideDiagFovDeg < 180.0)) {
+        return NAN;
+    }
+    if (!isfinite(zoomFactor) || !(zoomFactor > 0.0)) {
+        return NAN;
+    }
+
+    /* 小孔成像：焦距 f 越大视场越小，而"变焦倍数"就是焦距之比 ——
+     * 于是半角的正切按倍数**缩小**：
+     *
+     *     tan(DFOV_zoomed / 2) = tan(DFOV_wide / 2) / zoomFactor
+     *
+     * ⚠️ **不能直接对角度做除法**（`DFOV / z`）。视场角与焦距是
+     * **正切**关系而非线性关系：82° 除以 7 得 11.7°，而按正切算是 15.9°，
+     * 差 4° —— 在 12.5 m 外是 0.9 m，比一根杆还粗。
+     * 这与 `LzVision_VerticalFovDeg` 里"不能把 DFOV 当 HFOV 用"同源：
+     * **凡是视场角，变换都发生在正切上。**
+     *
+     * 用 double 直接算即可：zoomFactor 到 100 时半角仍在 (0, 45°) 内，
+     * 不存在精度问题。 */
+    const double halfWide = wideDiagFovDeg * 0.5 * (M_PI / 180.0);
+    const double tanHalfZoomed = tan(halfWide) / zoomFactor;
+    const double zoomedDeg = 2.0 * atan(tanHalfZoomed) * (180.0 / M_PI);
+    if (!isfinite(zoomedDeg) || !(zoomedDeg > 0.0) || !(zoomedDeg < 180.0)) {
+        return NAN;
+    }
+    return zoomedDeg;
 }
 
 double LzVision_PixelOffsetToDeg(double vMid, double vfovDeg)

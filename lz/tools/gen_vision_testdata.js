@@ -63,8 +63,10 @@ const CFG = {
      * 业务上也更对：杆的证据应当来自目标附近，画面底部的绿篱边缘、
      * 铺装接缝不该参与投票。
      */
-    poleWinAbove: 20,           /*!< 投票窗口上界 = 旗 bbox 顶 - 这个值 */
-    poleWinBelow: 300,          /*!< 投票窗口下界 = 旗 bbox 顶 + 这个值 */
+    poleWinAbove: 20,           /*!< 投票窗口上界 = 旗 bbox 顶 - 这个值（绝对像素） */
+    /* ⚠️ 下界**按旗高缩放**（2026-09-28 改，与 lz_vision.h 同步）——
+     * 固定 300 px 在放大取景时会整个落进旗里。2600/1000 = 2.6 倍旗高。 */
+    poleWinBelowRatioQ: 2600,
 };
 
 /* ============================ 图像算法 ============================
@@ -162,7 +164,8 @@ function detectPoleColumn(D, W, H, flag) {
     const x1 = Math.min(W - 1 - off, flag.maxX + CFG.poleRoiMarginX);
     /* 打分行窗：只取旗附近这一段，理由见 CFG.poleWinAbove 的注释 */
     const wy0 = Math.max(0, flag.minY - CFG.poleWinAbove);
-    const wy1 = Math.min(H - 1, flag.minY + CFG.poleWinBelow);
+    const flagH = Math.max(1, flag.maxY - flag.minY + 1);
+    const wy1 = Math.min(H - 1, flag.minY + Math.floor(flagH * CFG.poleWinBelowRatioQ / 1000));
 
     const V = new Int32Array(W * H);
     for (let i = 0; i < W * H; i++) V[i] = Math.max(D[i * 4], D[i * 4 + 1], D[i * 4 + 2]);

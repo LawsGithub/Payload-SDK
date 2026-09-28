@@ -695,7 +695,7 @@ int main(int argc, char **argv)
         LZ_CHECK(LzVision_Init(&c, &v) == LZ_ERR_PARAM);
 
         c = LzVision_DefaultConfig();
-        c.poleWinBelow = -1;
+        c.poleWinBelowRatioQ = 0;
         LZ_CHECK(LzVision_Init(&c, &v) == LZ_ERR_PARAM);
 
         c = LzVision_DefaultConfig();
@@ -720,6 +720,112 @@ int main(int argc, char **argv)
 
         LZ_CHECK(LzVision_Init(NULL, &v) == LZ_ERR_PARAM);
         LZ_CHECK(LzVision_Init(&c, NULL) == LZ_ERR_PARAM);
+    }
+
+
+    LZ_CASE("变焦场景：旗在画面里变大后，杆只能靠可见段辨认（不得因放大而拒）");
+    {
+        /* ## 这条守的是 2026-09-28 现场那个"变焦后照准失败"
+         *
+         * ## 构造（与"整图等比放大"的区别，这一点是关键）
+         *
+         * 第一版写的是"把整张图连同画布一起放大"，那条**测不出缺陷** ——
+         * 画幅与目标一起变大，票数与分母 `0.25 × 画面高` 同比例增长，
+         * 比值居然不变，反向验证时旧规则**照样全绿**。
+         *
+         * 真实的变焦是**画幅不变、目标变大**，而且现场还有一步：
+         * 旗变大之后**把杆大半遮住了**，只剩旗下方一段可见
+         * （看现场那张 7.0X 截图就很清楚：红旗占据了左上大半，
+         *   杆只有底下那一截露出来）。
+         *
+         * 所以构造是：
+         *   固定 1000×1000 画幅 + 一块红旗（高度可变）+ 旗右缘往下一段亮杆
+         *
+         * 旗越高，旧规则越吃亏 —— 它按**旗顶**锚定一个固定 300 px 的窗口，
+         * 那 300 px 会整个落进红旗里，杆根本没机会投票。
+         *
+         * ## 实测（构造这份时在 /tmp 上逐档跑出来的）
+         *
+         * ⇒ 下面三档是**逐处反向验证**逼出来的：每一档都对应一处修复，
+         * 把那一处退回旧写法，该档就拒（实测逐档跑过，见每行注释）。
+         * 三档合起来的效果：**任何一处修复被退回，本条都变红。**
+         *
+         * ⚠️ 反向验证：把窗口退回固定 300 px，本条必须变红。实测会红。 */
+        const int W = 1000, H = 1000;
+
+        /* 造一帧：红旗一块 + 旗右下缘一条亮杆（模拟"旗把杆遮住了"） */
+        struct { int flagH, poleBelow; const char *why; } cases[] = {
+            /* 小旗：新旧规则都该过 —— 守住"别改成对所有尺寸一律放行" */
+            { 100, 420, "小旗，两套规则都该过" },
+            /* ↑ 退回「固定 300px 窗」时本档拒（杆在窗口里只剩几行可见） */
+            { 440, 200, "退回固定窗会红" },
+            /* ↑ 退回「票数 / 0.25H」时本档拒（杆只露出 80 px，票数不够） */
+            { 440,  80, "退回旧置信度会红" },
+            /* ↑ 退回「旗面惩罚 5%」时本档拒（旗占 17.8% > 5%，得分被压到 0.28） */
+            { 517, 200, "退回 5% 旗面惩罚会红" },
+        };
+
+        LzVisionConfig cfg = LzVision_DefaultConfig();
+        LzVision *vision = NULL;
+        LZ_CHECK(LzVision_Init(&cfg, &vision) == LZ_OK);
+
+        int checked = 0;
+        for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); ++k) {
+            const int flagH = cases[k].flagH;
+            const int poleBelow = cases[k].poleBelow;
+            (void)cases[k].why;
+
+            uint8_t *img = malloc((size_t)W * H * 3);
+            LZ_CHECK(img != NULL);
+            if (img == NULL) { continue; }
+            for (int i = 0; i < W * H; ++i) {
+                img[i * 3] = 70; img[i * 3 + 1] = 72; img[i * 3 + 2] = 75;  /* 灰地 */
+            }
+            const int fx0 = W / 2 - flagH / 3, fx1 = W / 2 + flagH / 3;
+            const int fy0 = H / 20;
+            const int fy1 = (fy0 + flagH < H - 1) ? (fy0 + flagH) : (H - 1);
+            for (int y = fy0; y <= fy1; ++y) {
+                for (int x = fx0; x <= fx1; ++x) {
+                    const int i = (y * W + x) * 3;
+                    img[i] = 200; img[i + 1] = 25; img[i + 2] = 25;
+                }
+            }
+            /* 杆：紧贴旗的右缘，只有**旗下方**那段露出（旗把它盖住） */
+            int px = fx1;
+            if (px > W - 13) { px = W - 13; }
+            int py1 = fy1 + poleBelow;
+            if (py1 > H - 12) { py1 = H - 12; }
+            for (int y = fy1 + 1; y <= py1; ++y) {
+                for (int x = px; x <= px + 2; ++x) {
+                    const int i = (y * W + x) * 3;
+                    img[i] = 225; img[i + 1] = 228; img[i + 2] = 232;
+                }
+            }
+            const double wantU = (double)(px + 1) / (double)W;
+
+            LzTargetList L;
+            LzTargetList_Init(&L);
+            const LzFrame f = frame_of(img, W, H);
+            const LzStatus st = LzVision_Detect(vision, &f, &L);
+
+            /* ★ 核心断言：必须检出。旧规则在 flagH=270 这一档必然失败。 */
+            LZ_CHECK(st == LZ_OK);
+            if (st == LZ_OK && L.count > 0) {
+                /* 杆列必须指到那条亮线上（±3 px）——
+                 * 只断言"检出了"是不够的：把旗自身的边缘当成杆也能检出，
+                 * 而那是个比"检不出"更难发现的错误。 */
+                LZ_CHECK_NEAR(L.items[0].pixel.u * W, wantU * W, 3.0);
+                checked++;
+            } else {
+                fprintf(stderr, "[FAIL ] 旗高 %d / 杆露出 %d（%s）未检出 (st=%s)\n",
+                        flagH, poleBelow, cases[k].why, LzStatus_Str(st));
+            }
+            LzTargetList_Free(&L);
+            free(img);
+        }
+        LZ_CHECK(checked == (int)(sizeof(cases) / sizeof(cases[0])));
+
+        LzVision_Deinit(vision);
     }
 
     return LZ_TEST_SUMMARY();

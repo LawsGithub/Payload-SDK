@@ -54,6 +54,10 @@ struct LzVision {
     int32_t *label;     /*!< 连通域等价类，-1 = 非目标 */
     int32_t *parent;    /*!< 并查集父指针（下标 0 是哨兵，不用） */
     LzBlobStat *stat;   /*!< 按根编号索引的面积统计 */
+    /* 上一次未命中的原因与当时的置信度 —— 供上层把"场景问题"与
+     * "判据问题"分开报给操作员（见 lz_vision.h 的 LzVisionMiss）。 */
+    LzVisionMiss lastMiss;
+    double lastMissConf;
 };
 
 
@@ -126,7 +130,7 @@ LzStatus LzVision_Init(const LzVisionConfig *config, LzVision **out)
      * 地方，之后每次 Detect 都会拿这些值去算下标。 */
     if (config->poleContrastOffset < 1 || config->poleHalfWidth < 0 ||
         config->poleGap < 0 || config->poleRoiMarginX < 0 ||
-        config->poleWinAbove < 0 || config->poleWinBelow < 0 ||
+        config->poleWinAbove < 0 || config->poleWinBelowRatioQ <= 0 ||
         config->poleContrastThreshold < 0) {
         return LZ_ERR_PARAM;
     }
@@ -136,6 +140,7 @@ LzStatus LzVision_Init(const LzVisionConfig *config, LzVision **out)
         return LZ_ERR_IO;
     }
     vision->config = *config;
+    vision->lastMiss = LZ_VISION_MISS_NONE;
     *out = vision;
     return LZ_OK;
 }
@@ -391,7 +396,8 @@ static int lz_max3(const uint8_t *px, int channels)
  * @return 杆列 x。找不到时返回旗 bbox 中心（退化值，由 confidence 反映）
  */
 static int lz_detect_pole_column(const LzVision *vision, const LzFrame *frame,
-                                 const LzBlobStat *flag, int *outVotes)
+                                 const LzBlobStat *flag, int *outVotes,
+                                 int *outMedianVotes)
 {
     const LzVisionConfig *c = &vision->config;
     const int w = frame->width, h = frame->height;
@@ -402,17 +408,34 @@ static int lz_detect_pole_column(const LzVision *vision, const LzFrame *frame,
     int x1 = flag->maxX + c->poleRoiMarginX;
     if (x0 < off)          { x0 = off; }
     if (x1 > w - 1 - off)  { x1 = w - 1 - off; }
+    /* ⚠️ 窗口下界**按旗高缩放**（`poleWinBelowRatioQ / 1000` 倍），
+     * 不是固定像素 —— 固定值会在放大取景时整个落进旗里，见 lz_vision.h。
+     * 旗高至少按 1 算，避免退化旗（bbox 高 0）把窗口压没。 */
+    int flagH = flag->maxY - flag->minY + 1;
+    if (flagH < 1) { flagH = 1; }
+    const int winBelow = (flagH * c->poleWinBelowRatioQ) / 1000;
     int wy0 = flag->minY - c->poleWinAbove;
-    int wy1 = flag->minY + c->poleWinBelow;
+    int wy1 = flag->minY + winBelow;
     if (wy0 < 0)           { wy0 = 0; }
     if (wy1 > h - 1 - off) { wy1 = h - 1 - off; }
 
     if (x0 > x1 || wy0 > wy1) {
         *outVotes = 0;
+        if (outMedianVotes != NULL) { *outMedianVotes = 0; }
         return (flag->minX + flag->maxX) / 2;
     }
 
-    int bestX = x0, bestVotes = -1;
+    /* 票数直方图：用来求 ROI 内票数的**中位数**（见函数尾部的说明）。
+     * 静态大小按"窗口行数上限"开：票数不可能超过窗口行数。 */
+    size_t histSize = (size_t)(wy1 - wy0 + 2);
+    int *votesHist = (int *)calloc(histSize, sizeof(int));
+    if (votesHist == NULL) {
+        *outVotes = 0;
+        if (outMedianVotes != NULL) { *outMedianVotes = 0; }
+        return (flag->minX + flag->maxX) / 2;
+    }
+
+    int bestX = x0, bestVotes = -1, maxVotes = 0;
     for (int x = x0; x <= x1; ++x) {
         int votes = 0;
         for (int y = wy0; y <= wy1; ++y) {
@@ -430,9 +453,28 @@ static int lz_detect_pole_column(const LzVision *vision, const LzFrame *frame,
             bestVotes = votes;
             bestX = x;
         }
+        if (votes > maxVotes) { maxVotes = votes; }
+        votesHist[votes]++;
     }
 
     *outVotes = bestVotes;
+    free(votesHist);
+    if (outMedianVotes != NULL) {
+        /* 中位票 = ROI 内**一半列**都不超过的那个票数。
+         *
+         * 它衡量的是"背景里有多少竖线在跟真杆抢" —— 也就是**这张图有
+         * 多容易骗**。真杆的票数相对它高出多少，才是"这是一根杆"的证据。
+         *
+         * 为什么要用中位而不是均值/最大值：均值会被真杆自己拉高
+         * （几列几百票，其余几十票），最大值的语义是"第二名"，
+         * 而那正是要被区分掉的那个东西。中位数不受少数大值影响。 */
+        int half = (x1 - x0 + 1) / 2;
+        int acc = 0;
+        for (int v = 0; v <= maxVotes; ++v) {
+            acc += votesHist[v];
+            if (acc > half) { *outMedianVotes = v; break; }
+        }
+    }
     return bestX;
 }
 
@@ -513,40 +555,63 @@ static void lz_pole_extent(const LzVision *vision, const LzFrame *frame,
  * 阴天/逆光下该不该跟着变没有依据。宁可少一个自由度。
  */
 static double lz_confidence(const LzVision *vision, const LzFrame *frame,
-                            const LzBlobStat *flag, int poleVotes)
+                            const LzBlobStat *flag, int poleVotes,
+                            int medianVotes)
 {
     (void)vision;
     const double frameArea = (double)frame->width * (double)frame->height;
     const double frac = (double)flag->area / frameArea;
 
     /* 旗面：小于 minBlobArea 的已经在候选里滤过，所以这里只惩罚"过大"。
-     * 5% 是现场尺度下的经验值：画面里那面旗大约占 0.14%–0.44%
-     * （实测 6 张图），留一个数量级余量。 */
+     *
+     * ⚠️ **上限从 5% 放宽到 15%**（2026-09-28）——
+     * 5% 是在**广角**照片上定的（那时旗占 0.14%–0.44%），而操作员一放大
+     * 取景，旗就占 4.3%（变焦 7× 实测）甚至更多。旧阈值下"画面里有面
+     * 清楚的大旗"会被当成"镜头被糊住了"，与事实相反。
+     *
+     * 15% 仍能拦住真正的"糊住镜头"（全屏红 ≈ 100%，实测 conf 掉到 0.30
+     * 被拒），同时给放大取景留出余量。 */
     double flagScore = 1.0;
-    if (frac > 0.05) {
-        flagScore = 0.05 / frac;      /* 糊满画面 → 迅速掉分 */
+    if (frac > 0.15) {
+        flagScore = 0.15 / frac;      /* 糊满画面 → 迅速掉分 */
     } else if (frac < 0.0005) {
         flagScore = frac / 0.0005;    /* 太小 → 线性掉分 */
     }
 
-    /* 杆的证据：**这根竖线有多长**。
+    /* 杆的证据：**真杆的票数相对"背景里的竖线"高出多少**。
      *
-     * ## 分母为什么是"画面高度的 25%"而不是投票窗口的行数
+     * ## 为什么不再是「票数 / 画面高度的 25%」
      *
-     * 投票窗口总是比杆长 —— 它要为旗**下方**那段杆留余量（现场实测杆的
-     * 可见长度是旗高的两倍以上）。拿窗口行数当分母，量到的是
-     * "杆长 / 窗口长"，那是个与取景方式有关的量，不是"这是不是一根杆"。
+     * 那个分母是个**与取景无关的常量**，于是分数随倍率反向变化：
+     * 变焦 7× 时杆在画面里清楚得很（旗高 517 px），却因为占了画面很高的
+     * 比例而拿不到 25% 的分母，票数 138 被算成 0.55 都不到。
+     * **放大越狠、杆越清楚，分数反而越低** —— 方向是反的。
      *
-     * 更具移植性的判据是"杆至少占了画面四分之一的高度"：那是一条
-     * **看得见的杆**的物理下限，与分辨率、裁剪方式都无关。
+     * ## 改用什么
      *
-     * ⚠️ 本函数早期版本用的是"票数 / 配置里的名义窗口行数"再乘 2 ——
-     * 那个 2 其实就是在把分母折半（321 → 160），只是没有说出来。
-     * 现在把"满分行数"写成显式的量，理由才看得出来。 */
-    const double fullMarkRows = (double)frame->height * 0.25;
-    double poleScore = (fullMarkRows > 0.0) ? (double)poleVotes / fullMarkRows : 0.0;
-    if (poleScore > 1.0) {
-        poleScore = 1.0;
+     * `medianVotes` 是 ROI 内票数的中位数，衡量**这张图有多容易骗**
+     * （背景里有多少竖线在跟真杆抢）。真杆的票数相对它高出多少，
+     * 就是"这是一根杆"的证据。实测判别比：
+     *
+     * | 图 | 真杆票 | 中位票 | 比值 |
+     * |---|---|---|---|
+     * | 6 张黄金图 | 102–306 | 16–39 | 2.6 – 19.1 |
+     * | 现场广角 | 167 | 26 | 6.4 |
+     * | 现场变焦 7× | 149 | 12 | **12.4** ← 旧规则给它 0.17 |
+     *
+     * 比值 2.5 以上给满分，1.0 以下给 0，中间线性。
+     *
+     * ⚠️ **`poleVotes` 仍要有绝对下限（8 票）**：全零背景上"1 票 > 0 票"
+     * 的比值是无穷大，但那 1 票是噪声。绝对下限与本判据**互不替代** ——
+     * 前者拦"票太少"，后者拦"没比别人多"。 */
+    double poleScore = 0.0;
+    if (poleVotes >= 8) {
+        const double ratio = (medianVotes > 0)
+                                 ? (double)poleVotes / (double)medianVotes
+                                 : 999.0;   /* 背景一票都没有 → 判别力拉满 */
+        poleScore = (ratio - 1.0) / 1.5;
+        if (poleScore > 1.0) { poleScore = 1.0; }
+        if (poleScore < 0.0) { poleScore = 0.0; }
     }
 
     return (flagScore < poleScore) ? flagScore : poleScore;
@@ -579,22 +644,30 @@ LzStatus LzVision_Detect(LzVision *vision, const LzFrame *frame, LzTargetList *t
     if (flag.area < vision->config.minBlobArea) {
         /* 没有够大的红色块 —— 可能根本没有旗，也可能阈值把它滤掉了。
          * 两种情况上层都只能"重新瞄准"，所以不细分。 */
+        vision->lastMiss = LZ_VISION_MISS_NO_RED;
+        vision->lastMissConf = 0.0;
         return LZ_ERR_NO_TARGET;
     }
 
     /* ---- 步骤 3：杆列 ---- */
-    int poleVotes = 0;
-    const int poleX = lz_detect_pole_column(vision, frame, &flag, &poleVotes);
+    int poleVotes = 0, medianVotes = 0;
+    const int poleX = lz_detect_pole_column(vision, frame, &flag, &poleVotes,
+                                            &medianVotes);
 
     int poleTop = -1, poleBottom = -1;
     lz_pole_extent(vision, frame, poleX, &poleTop, &poleBottom);
     (void)poleTop;
     (void)poleBottom;
 
-    const double conf = lz_confidence(vision, frame, &flag, poleVotes);
+    const double conf = lz_confidence(vision, frame, &flag, poleVotes, medianVotes);
     if (conf < vision->config.minConfidence) {
+        /* **有红块**但杆的证据不足 —— 与上面那条的处置完全不同：
+         * 这条不是"去调取景"，是"检测判据没认出杆"。 */
+        vision->lastMiss = LZ_VISION_MISS_LOW_CONF;
+        vision->lastMissConf = conf;
         return LZ_ERR_NO_TARGET;
     }
+    vision->lastMiss = LZ_VISION_MISS_NONE;
 
     LzTarget t;
     memset(&t, 0, sizeof(t));
@@ -642,4 +715,12 @@ LzStatus LzVision_EstimateSize(const LzPixelBox *pixel, int frameW, int frameH,
     *outRadiusM = (knownDiameterM > 0.0) ? (knownDiameterM * 0.5) : 0.0;
 
     return LZ_OK;
+}
+
+LzVisionMiss LzVision_LastMiss(const LzVision *vision, double *outConfidence)
+{
+    if (outConfidence != NULL) {
+        *outConfidence = (vision != NULL) ? vision->lastMissConf : 0.0;
+    }
+    return (vision != NULL) ? vision->lastMiss : LZ_VISION_MISS_NONE;
 }

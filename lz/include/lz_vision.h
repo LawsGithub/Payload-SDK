@@ -81,7 +81,7 @@ typedef struct {
     int poleHalfWidth;      /*!< 判定"该行属于杆"时允许的 x 偏移，默认 1 */
     int poleGap;            /*!< 竖向延伸允许的最大间断（行），默认 40 */
 
-    /* ---- 打分行窗（**裁剪不变性的关键**）----
+    /* ---- 打分行窗（**裁剪不变性与倍率不变性的关键**）----
      *
      * 杆列是谁，靠"这一列有多少行满足对比度判据"来投票。**投票窗口必须
      * 只取旗附近这一段**，不能取整幅图：
@@ -92,9 +92,24 @@ typedef struct {
      *
      * 业务上也更对：杆的证据应当来自目标附近，画面底部的绿篱边缘、
      * 铺装接缝不该参与投票。
+     *
+     * ## ⚠️ 窗口长度必须**按旗高缩放**，不能用固定像素数（2026-09-28 修）
+     *
+     * 原实现是固定值（上 20 / 下 300），而 300 是在**广角**图上量出来的。
+     * 操作员一放大（Pilot 2 的变焦），旗本身就有 517 px 高，300 px 的窗口
+     * **整个落在红旗里面** —— 在均匀红色区域里找杆，票数从 138 掉到 34，
+     * 照准直接报"看不到红色目标"。**放大越狠、杆越清楚，分数反而越低。**
+     *
+     * ⇒ 下界改成"**旗 bbox 顶 + poleWinBelowRatio × 旗高**"：
+     * 窗口随目标一起缩放，与分辨率、倍率都无关。
+     *
+     * ## 窗口锚在**旗顶**而不是旗底
+     *
+     * 旗在杆顶，杆往**下**延伸；锚在旗顶能同时覆盖旗自身的跨度与
+     * 下方那段裸杆。（锚旗底会丢掉旗那段，实测杆列偏移 18 px。）
      */
-    int poleWinAbove;       /*!< 投票窗口上界 = 旗 bbox 顶 - 这个值，默认 20 */
-    int poleWinBelow;       /*!< 投票窗口下界 = 旗 bbox 顶 + 这个值，默认 300 */
+    int poleWinAbove;       /*!< 投票窗口上界 = 旗 bbox 顶 - 这个值（**绝对像素**），默认 20 */
+    int poleWinBelowRatioQ; /*!< 投票窗口下界 = 旗 bbox 顶 + 这个值 × 旗高 / 1000，默认 2600（= 2.6 倍旗高） */
 
     double minConfidence;   /*!< 低于此置信度的结果丢弃 */
 } LzVisionConfig;
@@ -166,6 +181,35 @@ void     LzVision_Deinit(LzVision *vision);
 double LzVision_VerticalFovDeg(int frameW, int frameH, double diagFovDeg);
 
 /**
+ * @brief 把**广角端**的对角视场角折算到"当前变焦倍数下"的对角视场角
+ *
+ * ## 为什么必须有这个函数（2026-09-28 现场实测逼出来的）
+ *
+ * 现场用 Pilot 2 的变焦把画面放大到 **7.0X**，而代码里写死"DFOV = 82°"
+ * （那是**广角端**的规格值）。后果不是"差一点"，而是**差 7 倍**：
+ *
+ * | 量 | 代码以为 | 实际 |
+ * |---|---|---|
+ * | 垂直视场角 | 55.09° | **8.55°** |
+ * | 云台转 1° 对应的画面位移 | 0.0167 | **0.1167** |
+ *
+ * 于是"该转 3°"的信算被当成"该转 3°"，而画面实际动了 21° 的量 ——
+ * 一步就把目标甩出画面，日志表现为**云台突然跳一个角度然后照准失败**。
+ * 实测反推的 8.55° 与 Pilot 上显示的 7.0X 吻合（按正切折算 8.52°）。
+ *
+ * ## 换算方式：对**半角正切**做除法，不是对角做除法
+ *
+ *     tan(DFOV_zoomed / 2) = tan(DFOV_wide / 2) / zoomFactor
+ *
+ * `zoomFactor` 是焦距之比（1.0 = 广角端）。
+ *
+ * @param wideDiagFovDeg 广角端的对角视场角（M4T 是 82°），必须落在 (0, 180)
+ * @param zoomFactor     当前变焦倍数，必须 > 0；1.0 表示广角端
+ * @return 折算后的对角视场角（度）；入参非法时返回 NAN
+ */
+double LzVision_ZoomedDiagFovDeg(double wideDiagFovDeg, double zoomFactor);
+
+/**
  * @brief 把"目标在画面里的纵向偏差"折算成"云台需要转多少度"
  *
  * ## 用法：从"现在指向哪"推到"该指向哪"
@@ -226,6 +270,34 @@ double LzVision_PixelOffsetToDeg(double vMid, double vfovDeg);
  * @return `LZ_OK`；`LZ_ERR_NO_TARGET` = 没找到红色目标
  */
 LzStatus LzVision_Detect(LzVision *vision, const LzFrame *frame, LzTargetList *targets);
+
+/**
+ * @brief 上一次 `LzVision_Detect` 未命中时，**为什么**没命中
+ *
+ * ## 为什么必须区分（2026-09-28）
+ *
+ * `LZ_ERR_NO_TARGET` 同时表示两件完全不同的事：
+ *
+ * | 原因 | 操作员该做什么 |
+ * |---|---|
+ * | 画面里没有够大的红块 | **去调整取景**（真的看不到旗） |
+ * | 有红块，但杆的证据不足 | **别动取景** —— 是检测判据的问题，报修 |
+ *
+ * 主应用原先只报"看不到红色目标（检查取景）"，于是第二种情形把操作员
+ * 引去反复调整瞄准，而真实病因在代码里。**文案把排查方向带反**——
+ * 本项目在激光 `exception` 白名单那次已经踩过一次同样的形状。
+ *
+ * `lz_vision_probe` 早就有这个区分（靠"把门槛降为 0 再跑一次"），
+ * 主应用一直没接上。
+ */
+typedef enum {
+    LZ_VISION_MISS_NONE = 0,
+    LZ_VISION_MISS_NO_RED = 1,     /*!< 没有够大的红色块 —— 场景问题 */
+    LZ_VISION_MISS_LOW_CONF = 2,   /*!< 有红块但杆的证据不足 —— 判据问题 */
+} LzVisionMiss;
+
+/** @brief 上一次检测的未命中原因（未命中时附带当时的置信度） */
+LzVisionMiss LzVision_LastMiss(const LzVision *vision, double *outConfidence);
 
 /**
  * @brief 由像素框与标定参数估算杆高与半径
