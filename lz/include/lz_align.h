@@ -110,8 +110,11 @@ typedef enum {
 
 typedef struct {
     LzAlignAction action;
-    double stepDeg;    /*!< 仅 `ROTATE` 时有效：限幅后的本步转角 */
+    double stepDeg;    /*!< 仅 `ROTATE` 时有效：限幅后的本步**俯仰**转角 */
     double targetDeg;  /*!< 仅 `ROTATE` 时有效：`curPitchDeg + stepDeg` */
+    double stepYawDeg;   /*!< 仅 `ROTATE` 时有效：限幅后的本步**偏航**转角。
+                          *   0 表示本轮不动偏航（见 `LzAlign_DecideStepXY`） */
+    double targetYawDeg; /*!< 仅 `ROTATE` 时有效：`curYawDeg + stepYawDeg` */
 } LzAlignDecision;
 
 /**
@@ -142,6 +145,61 @@ typedef struct {
 LzAlignDecision LzAlign_DecideStep(double deltaDeg, double curPitchDeg,
                                    int round, bool awaitingConfirm,
                                    const LzAlignPolicy *policy);
+
+/**
+ * @brief 决定照准的下一步 —— **横向（偏航）+ 纵向（俯仰）两个方向**
+ *
+ * ## 为什么需要它（用户 2026-09-29 指出）
+ *
+ * 原实现**只控俯仰**，横向交给绕飞里的 `towardPOI`（机头承担）。
+ * 但用户要的是**照准这一步**就把红旗锁到画面中心 —— 横向也得转。
+ * 那两件事不冲突：
+ *
+ * | | 谁负责水平方向 |
+ * |---|---|
+ * | **照准**（起飞前一次，静止观测位） | **云台 pan**（本函数） |
+ * | **绕飞**（作业中，连续） | 机头 `towardPOI`（wpml，不动） |
+ *
+ * ## ⚠️ 横向的可达性是**相对机头**的（by design，不是偷懒）
+ *
+ * M4T 的 pan 是 ±60° 的**相对机头**软限位（见 `LZ_GIMBAL_YAW_*`）。
+ * 所以这里比的是
+ *
+ *     目标偏航角 − **机头**偏航角   是否落在 [−60, +60]
+ *
+ * 而**不是**绝对方位角。不知道机头朝向就**不能**判横向可达性 ——
+ * 那种情况下本函数返回 `OUT_OF_RANGE` 并**只**说明横向（不让俯仰
+ * 跟着一起失败）：俯仰的可达性与机头朝向无关，没有理由被连坐。
+ *
+ * ## 判定顺序（与单轴版逐条对应）
+ *
+ * ```text
+ * 1. 任一测量值非法（NaN/Inf/round<0）   → BAD_MEASURE   ← 必须最先
+ * 2. **两个方向都**在死区里              → CONFIRM / DONE
+ * 3. 轮数用尽                            → ROUNDS_EXHAUSTED
+ * 4. 双轴限幅                            → step = clamp(Δ)
+ * 5. 俯仰越界                            → OUT_OF_RANGE（#if 未请求偏航）
+ *    偏航越界（相对机头）                 → OUT_OF_RANGE
+ * 6. 否则                                → ROTATE
+ * ```
+ *
+ * ⚠️ **第 2 条的"两个方向都在"是关键**：只要有一轴还没进死区，
+ * 就还没对准。原先只看俯仰 ⇒ 横向偏着也报"✓ 已对准"。
+ *
+ * @param deltaPitchDeg 纵向偏差（`LzVision_PixelOffsetToDeg` 的输出）
+ * @param deltaYawDeg   横向偏差（`LzVision_PixelOffsetToDegH` 的输出）；
+ *                      **`NaN` = 本次不做横向闭环**（退回单轴行为）
+ * @param curPitchDeg   云台当前俯仰（读回值）
+ * @param curYawDeg     云台当前偏航（读回值，绝对角）
+ * @param bodyYawDeg    机头当前偏航（绝对角）；横向可达性要拿它做基准。
+ *                      **`NaN` = 不知道机头朝向** ⇒ 若请求了横向则拒绝
+ * @param round / awaitingConfirm / policy  同单轴版
+ */
+LzAlignDecision LzAlign_DecideStepXY(double deltaPitchDeg, double deltaYawDeg,
+                                     double curPitchDeg, double curYawDeg,
+                                     double bodyYawDeg,
+                                     int round, bool awaitingConfirm,
+                                     const LzAlignPolicy *policy);
 
 /** @brief 缺省参数（与 `lz_visual_align.c` 的历史取值一致） */
 LzAlignPolicy LzAlign_DefaultPolicy(void);

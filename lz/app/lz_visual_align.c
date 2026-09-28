@@ -67,6 +67,8 @@
 #include <string.h>
 
 #include "lz_align.h"         /* 判据全在这里，零依赖 */
+#include "lz_geo.h"           /* LzGeo_NormalizeDeg */
+#include "lz_bridge_psdk.h"   /* LzBridge_GetBodyYawDeg —— 判 pan 相对机头的可达性 */
 #include "lz_plan.h"          /* LZ_GIMBAL_PITCH_MIN/MAX_DEG —— 唯一真值处 */
 #include "lz_vision.h"
 #include "lz_vision_source.h"
@@ -193,6 +195,7 @@ static bool s_awaitingConfirm = false;   /* 真：这一轮只是复核，不转
 static double s_lastDelta = 0.0;
 static double s_lastConf = 0.0;
 static double s_lastU = 0.0, s_lastV = 0.0;
+static double s_lastDeltaYaw = 0.0;
 static const char *s_failReason = "";
 
 /* ------------------------------------------------------------------ */
@@ -226,6 +229,23 @@ static T_DjiReturnCode on_gimbal_angles(const uint8_t *data, uint16_t size,
 static double read_pitch(void)
 {
     return s_gotAngles ? (double)s_angles.x : NAN;
+}
+
+/**
+ * @brief 云台当前的**偏航**角（绝对方位角，度）；读不到时返回 NAN
+ *
+ * ⚠️ 用 `s_angles.z`。这是从 `lz_gimbal_probe` 的实测标定来的：
+ * `T_DjiVector3f` 的 `x/y/z` 对应 pitch/roll/yaw（NED 参考系）——
+ * 探针里 `read_pitch()` 用的是 `.x` 且实测与下发的绝对角一致（误差 0.00°），
+ * 所以 `.z` 是 yaw。
+ *
+ * ⚠️ 读不到时返回 NAN 而**不是 0** —— 与 `read_pitch()` 同一条理由：
+ * 0 在方位角上是一个**合法且具体**的值（正北），会让"读不到"看起来像
+ * "云台正朝北"，而下游会据此算出一个毫无依据的相对角。
+ * 判据在 `LzAlign_DecideStepXY` 里（请求了横向却读不到 ⇒ BAD_MEASURE）。 */
+static double read_gimbal_yaw(void)
+{
+    return s_gotAngles ? (double)s_angles.z : NAN;
 }
 
 /**
@@ -442,9 +462,38 @@ static bool do_init(void)
     }
     s_gimbalReady = true;
 
-    /* 云台模式：用 YAW_FOLLOW —— issue #555 说 M4T 无 FREE 模式，
-     * 而我们要动的只是 pitch，YAW_FOLLOW 对它没有影响。 */
-    (void)DjiGimbalManager_SetMode(LZ_ALIGN_MOUNT, DJI_GIMBAL_MODE_YAW_FOLLOW);
+    /* ★ 云台模式：现在要**横向闭航**了，模式选择变得关键（2026-09-29）
+     *
+     * 原先只动 pitch，所以 YAW_FOLLOW 无所谓（它对 pitch 没有影响）。
+     * 现在要动 yaw —— 而 `YAW_FOLLOW` 的语义是
+     * "云台 yaw 在地面坐标系里**跟随飞机**"，那会**和我们下发的 yaw 抢**：
+     * 我们转到目标角，飞机一偏，云台又被拉回去。
+     *
+     * 要用的是 `FREE` —— 头文件原文："fix gimbal attitude in the ground
+     * coordinate, **ignoring movement of aircraft**"。
+     *
+     * ## ⚠️ issue #555 说 M4T 没有 FREE 模式 —— 但那条**未在真机上确证**
+     *
+     * `lz_gimbal_probe` 实测两个模式**都返回 SUCCESS**，而探针自己就写了：
+     * "两个都返回 SUCCESS 也**不等于**模式生效"。真正的判据是
+     * **飞机 yaw 转动时画面跟不跟着转**（需人观察，见 ONDEVICE-CHECKLIST §3.11）。
+     *
+     * ⇒ 先试 FREE，失败或行为不符再退 YAW_FOLLOW，并把实际结果打进日志 ——
+     * **不要静默假设**。这也是上机要验的第一件事。 */
+    {
+        const T_DjiReturnCode rcFree =
+            DjiGimbalManager_SetMode(LZ_ALIGN_MOUNT, DJI_GIMBAL_MODE_FREE);
+        if (rcFree == DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+            USER_LOG_INFO("云台模式设为 FREE（横向闭环需要它：忽略机身运动）");
+        } else {
+            /* 退回 YAW_FOLLOW。**如实报出**：这时横向闭环可能被机身拖动，
+             * 表现为"转过去了又被拉回来"，而日志里看得出来。 */
+            (void)DjiGimbalManager_SetMode(LZ_ALIGN_MOUNT, DJI_GIMBAL_MODE_YAW_FOLLOW);
+            USER_LOG_WARN("SetMode(FREE) 被拒 rc=0x%08llX —— 退回 YAW_FOLLOW。"
+                          "此时云台 yaw 会跟随机身，横向闭环可能被拖动",
+                          (unsigned long long)rcFree);
+        }
+    }
 
     s_round = 0;
     s_awaitingConfirm = false;
@@ -575,32 +624,56 @@ static void do_detect(void)
         s_policy.deadzoneDeg = dz;
     }
     const double delta = LzVision_PixelOffsetToDeg(vTarget, vfov);
+
+    /* ---- 横向（偏航）：用户 2026-09-29 要求照准**两个方向都锁** ----
+     *
+     * 与绕飞里的 `towardPOI` 不冲突，两者分工不同：
+     *   照准（起飞前一次、静止观测位）→ **云台 pan** 把目标拉到画面中心
+     *   绕飞（作业中、连续）        → **机头** 承担水平对准（wpml，照旧）
+     *
+     * ⚠️ 横向视场角要用 **HFOV**，不是 VFOV —— 4:3 下两者差 11°
+     * （66.2° vs 55.1°），拿 VFOV 算横向偏差会比"瞄错一根杆"还大。 */
+    const double hfov = LzVision_HorizontalFovDeg(f.width, f.height, diagFov);
+    const double deltaYaw = LzVision_PixelOffsetToDegH(t->pixel.u, hfov);
+
     const double cur = read_pitch();
+    const double curYaw = read_gimbal_yaw();
+    /* 机头朝向：判"pan 相对机头有没有超 ±60°"的基准。
+     * 拿不到时传给判据的是 NAN，由它决定是拒绝还是退回单轴。 */
+    const double bodyYaw = LzBridge_GetBodyYawDeg();
+
     s_lastDelta = delta;   /* 可能是 NaN —— 下面 DecideStep 会拦；这里只用于日志 */
+    s_lastDeltaYaw = deltaYaw;
     LzTargetList_Free(&list);
 
     /* ---- 判据全部在 lz_align.c（零依赖、桌面可测） ---- */
     const LzAlignDecision d =
-        LzAlign_DecideStep(delta, cur, s_round, s_awaitingConfirm, &s_policy);
+        LzAlign_DecideStepXY(delta, deltaYaw, cur, curYaw, bodyYaw,
+                             s_round, s_awaitingConfirm, &s_policy);
 
-    USER_LOG_INFO("照准第 %d 轮：u=%.4f v=%.4f conf=%.3f zoom=%.1f× vfov=%.2f "
-                  "Δθ=%+.2f° pitch=%.2f° → 判定 %d",
-                  s_round + 1, s_lastU, s_lastV, s_lastConf, zoom, vfov,
-                  delta, cur, (int)d.action);
+    USER_LOG_INFO("照准第 %d 轮：u=%.4f v=%.4f conf=%.3f zoom=%.1f× "
+                  "vfov=%.2f hfov=%.2f Δpitch=%+.2f° Δyaw=%+.2f° "
+                  "pitch=%.2f° yaw=%.2f° 机头=%.2f° → 判定 %d",
+                  s_round + 1, s_lastU, s_lastV, s_lastConf, zoom,
+                  vfov, hfov, delta, deltaYaw,
+                  cur, curYaw, bodyYaw, (int)d.action);
 
     switch (d.action) {
     case LZ_ALIGN_ACT_BAD_MEASURE:
         /* ⚠️ 这一条是"NaN 会穿过阈值判据"的落点。措辞要指向**数据不可信**，
          * 而不是"没对准" —— 后者的排查方向（去调瞄准）是错的。 */
-        LzWidget_PostMessage("照准停止：测量数据不可信（Δθ=%.2f°, 云台角=%.2f°）",
-                             delta, cur);
-        USER_LOG_ERROR("照准：非法测量值 Δθ=%f pitch=%f", delta, cur);
+        LzWidget_PostMessage("照准停止：测量数据不可信"
+                             "（Δpitch=%.2f°, Δyaw=%.2f°, 云台角=%.2f°/%.2f°）",
+                             delta, deltaYaw, cur, curYaw);
+        USER_LOG_ERROR("照准：非法测量值 Δpitch=%f Δyaw=%f pitch=%f yaw=%f",
+                       delta, deltaYaw, cur, curYaw);
         fail("测量数据不可信");
         return;
 
     case LZ_ALIGN_ACT_CONFIRM:
         s_awaitingConfirm = true;
-        LzWidget_PostMessage("接近对准（偏差 %+.2f°），复核一次…", delta);
+        LzWidget_PostMessage("接近对准（纵向 %+.2f°，横向 %+.2f°），复核一次…",
+                             delta, deltaYaw);
         /* ⚠️ 这是**唯一**一处留在主循环里的阻塞（300 ms），刻意的：
          * 要让云台彻底停稳才能复核，而"非阻塞地等 300 ms"要多一个状态、
          * 多一份计数，换来的只是主循环早 300 ms 响应。
@@ -619,10 +692,27 @@ static void do_detect(void)
         return;
 
     case LZ_ALIGN_ACT_OUT_OF_RANGE:
-        /* **如实拒绝**（不钳位）—— 钳位会把"物理上做不到"伪装成"做得到" */
-        LzWidget_PostMessage("照准停止：目标角 %.1f° 超出云台范围 [%.0f, %.0f]",
-                             d.targetDeg, LZ_GIMBAL_PITCH_MIN_DEG, LZ_GIMBAL_PITCH_MAX_DEG);
-        fail("目标角越界");
+        /* **如实拒绝**（不钳位）—— 钳位会把"物理上做不到"伪装成"做得到"。
+         *
+         * ⚠️ **两轴的越界病因完全不同，必须分开报**（2026-09-29 加横向之后）：
+         *   · 俯仰越界 ⇒ 云台自身限位（−90~70°），与机头朝向无关
+         *   · 偏航越界 ⇒ **pan 相对机头超 ±60°**，处置是"拨一下机头"而不是等
+         * 混成一句"目标角越界"会把操作员引向错误的动作。
+         * （与云台权限那处 `NON_CONTROL_AUTHORITY` vs `YAW_REACH_POSITIVE_LIMIT`
+         *  是同一个形状：光看"失败"会混。） */
+        if (d.targetDeg < LZ_GIMBAL_PITCH_MIN_DEG ||
+            d.targetDeg > LZ_GIMBAL_PITCH_MAX_DEG) {
+            LzWidget_PostMessage("照准停止：俯仰 %.1f° 超出云台范围 [%.0f, %.0f]",
+                                 d.targetDeg, LZ_GIMBAL_PITCH_MIN_DEG,
+                                 LZ_GIMBAL_PITCH_MAX_DEG);
+            fail("俯仰角越界");
+        } else {
+            LzWidget_PostMessage("照准停止：需要把云台相对机头转 %.0f°，超出 ±%.0f° "
+                                 "—— 请把机头朝红旗方向拨一下再试",
+                                 LzGeo_NormalizeDeg(d.targetYawDeg - bodyYaw + 180.0) - 180.0,
+                                 LZ_GIMBAL_YAW_MAX_DEG);
+            fail("偏航超出云台相对机头的范围");
+        }
         return;
 
     case LZ_ALIGN_ACT_ROTATE:
@@ -630,20 +720,25 @@ static void do_detect(void)
         break;
     }
 
-    /* ---- 下发转角 ---- */
-    USER_LOG_INFO("照准第 %d 轮：当前 %.2f° → 目标 %.2f°（步进 %+.2f°）",
-                  s_round + 1, cur, d.targetDeg, d.stepDeg);
-
     T_DjiGimbalManagerRotation rot;
     memset(&rot, 0, sizeof(rot));
     rot.rotationMode = DJI_GIMBAL_ROTATION_MODE_ABSOLUTE_ANGLE;
     rot.pitch = (dji_f32_t)d.targetDeg;
     rot.roll = 0.0f;
-    /* ⚠️ yaw 必须填**当前值**，不能填 0 —— 填 0 意为"转到正北"，
-     * 而 M4T pan 只有 ±60°，够不到 ⇒ 整条命令被拒
-     * （2026-09-27 实测踩过，报 YAW_REACH_POSITIVE_LIMIT 0x600000004） */
-    rot.yaw = s_gotAngles ? s_angles.z : 0.0f;
+    /* yaw：`LzAlign_DecideStepXY` 已经算好了目标角。
+     *
+     * ⚠️ 不做横向闭环时（`stepYawDeg == 0`，例如拿不到机头朝向的降级路径）
+     * 必须填**当前值**，不能填 0 —— `absoluteAngle` 模式下 yaw=0 意为
+     * "转到正北"，而 M4T pan 只有 ±60°，够不到 ⇒ **整条命令被拒**
+     * （2026-09-27 实测踩过，报 `YAW_REACH_POSITIVE_LIMIT` 0x600000004）。 */
+    rot.yaw = (dji_f32_t)((d.stepYawDeg != 0.0) ? d.targetYawDeg
+                                                : (s_gotAngles ? s_angles.z : 0.0f));
     rot.time = 0.0;
+
+    USER_LOG_INFO("照准第 %d 轮下发：pitch %.2f° → %.2f°（%+.2f°）｜"
+                  "yaw %.2f° → %.2f°（%+.2f°）",
+                  s_round + 1, cur, d.targetDeg, d.stepDeg,
+                  curYaw, (double)rot.yaw, d.stepYawDeg);
 
     const T_DjiReturnCode rc = DjiGimbalManager_Rotate(LZ_ALIGN_MOUNT, rot);
     if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
@@ -686,8 +781,9 @@ static void do_finish_done(void)
 {
     s_graceTicks = 0;
 
-    LzWidget_PostMessage("✓ 已对准：目标在画面中心附近（偏差 %+.2f°，置信度 %.2f）",
-                         s_lastDelta, s_lastConf);
+    LzWidget_PostMessage("✓ 已对准：目标在画面中心附近"
+                         "（纵向 %+.2f°，横向 %+.2f°，置信度 %.2f）",
+                         s_lastDelta, s_lastDeltaYaw, s_lastConf);
     LzWidget_PostMessage("（瞄的是旗面中心；杆中点需现场照片标定后才能用）");
     USER_LOG_INFO("照准完成：共 %d 轮，最终 Δθ=%+.2f°", s_round, s_lastDelta);
     s_state = LZ_ALIGN_DONE;

@@ -192,6 +192,29 @@ double LzBridge_GetHomeAltitudeM(void);
  */
 double LzBridge_GetFusedAltitudeM(void);
 
+/**
+ * @brief 机头偏航（真北 0°、顺时针为正），度；无数据时返回 **NAN**
+ *
+ * ## 为什么需要它
+ *
+ * M4T 的云台 pan 软限位 ±60° 是**相对机头**的，不是绝对方位角
+ * （见 `lz_plan.h` 的 `LZ_GIMBAL_YAW_MIN/MAX_DEG`）。所以横向照准判
+ * "够不够得到"时必须拿「目标偏航角 − 机头偏航角」来比。
+ *
+ * ## 怎么算的
+ *
+ * 订阅 `TOPIC_QUATERNION`（body FRD → ground NED 的旋转，Hamilton 约定）：
+ *
+ *     yaw = atan2( 2(q0·q3 + q1·q2), 1 − 2(q2² + q3²) )
+ *
+ * ⚠️ NED 下 `atan2(y, x)` 给出的就是"从北起向**东**为正"的角，
+ * 与 `LzGeo_BearingDeg()` **同约定**，所以不做翻转。
+ *
+ * 头文件给的精度：yaw `<3°`（校准良好的罗盘）—— 对"有没有超 ±60°"
+ * 这个粗判足够，**不足以**用来做精细的偏航闭环。
+ */
+double LzBridge_GetBodyYawDeg(void);
+
 /** @brief 航点任务的启停（转发 DjiWaypointV3_Action，避免调用方直接依赖 PSDK） */
 LzStatus LzBridge_StopMissionV3(void);
 

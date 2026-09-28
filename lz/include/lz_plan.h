@@ -137,6 +137,42 @@ typedef enum {
 /** @{ */
 #define LZ_GIMBAL_PITCH_MIN_DEG (-90.0)
 #define LZ_GIMBAL_PITCH_MAX_DEG (70.0)
+
+/**
+ * 云台**偏航（pan）**的可达范围，单位度，**相对机头**。
+ *
+ * ## ⚠️ 与 pitch 那对常量有一个根本区别：这两个是**相对**的
+ *
+ * pitch 的 −90~70° 是**绝对角**（相对水平面），取机型规格即可。
+ * 而 M4T 的 pan 在机械上是**相对机头**的软限位 ±60° —— 规格页原文：
+ *
+ * ```text
+ * Controllable Rotation Range — Pan: Not controllable
+ * Yaw Axis — Manual operation is uncontrollable;
+ *            The MSDK interface program is controllable.
+ * 机械软限位 Pan: -60° ~ +60°
+ * ```
+ *
+ * 即：**程序**可以在 ±60° 内驱动 pan，但它在机头坐标系里。
+ * ⇒ 判可达性时必须拿"目标偏航角 − 机头偏航角"来比，
+ * **不能把这两个常量直接拿去比绝对方位角** —— 那样会放过实际够不到的角，
+ * 也会拒掉实际够得到的角。
+ *
+ * ## 为什么保留 ±60 而不是取更小的值
+ *
+ * 与 pitch 那对常量同一条纪律：**误拒 = 该做的做不了且看不见；
+ * 误放 = 做不了的会被飞机拒（会报错，可观测）**。
+ * 取满量程，让飞机当最终裁判。
+ *
+ * ## 实测佐证
+ *
+ * 2026-09-27：`Rotate(absolute, yaw=0)` 被拒，报
+ * `0x600000004` = `YAW_REACH_POSITIVE_LIMIT` —— 云台当前不在正北，
+ * 而 pan 又转不到正北，于是整条命令被拒（**连带 pitch 也不动**）。
+ * 这就是"pan 是相对机头"的直接证据。
+ */
+#define LZ_GIMBAL_YAW_MIN_DEG (-60.0)
+#define LZ_GIMBAL_YAW_MAX_DEG (60.0)
 /** @} */
 
 /**

@@ -256,6 +256,45 @@ double LzVision_ZoomedDiagFovDeg(double wideDiagFovDeg, double zoomFactor);
 double LzVision_PixelOffsetToDeg(double vMid, double vfovDeg);
 
 /**
+ * @brief 由**对角**视场角算出水平视场角
+ *
+ *     tan(HFOV/2) = tan(DFOV/2) · W / √(W² + H²)
+ *
+ * 与 `LzVision_VerticalFovDeg` 完全对称，只把 `H` 换成 `W`。
+ *
+ * ⚠️ 需要它的原因：**画面横向的对准**（云台偏航）用 HFOV，
+ * 纵向（俯仰）用 VFOV。4:3 + 82° 下是 **69.63° vs 55.09°**，差 **14.5°** ——
+ * 拿 VFOV 去算横向偏差，误差近三成，比"瞄错一根杆"大得多。
+ *
+ * ⚠️ 别把 66.2° 当 HFOV：那是"把 82° 当水平 FOV 去反算纵向"的错值
+ * （见 `LzVision_VerticalFovDeg` 的实例表）。**三个视场角是同一焦距的
+ * 三个投影，不是互相换算出来的** —— 各自由 `(W|H|D)/2 / f` 给出。
+ */
+double LzVision_HorizontalFovDeg(int frameW, int frameH, double diagFovDeg);
+
+/**
+ * @brief 把"目标在画面里的**横向**偏差"折算成"云台偏航该转多少度"
+ *
+ * ## 与 `LzVision_PixelOffsetToDeg` 的区别：**符号方向相反**
+ *
+ * 那个是纵向、俯仰向下为负，所以 `v > 0.5` 要**下压** ⇒ 返回**负**值。
+ * 这个是横向、偏航**顺时针为正**（正北 0°、正东 +90°），所以
+ * `u > 0.5`（目标在画面偏**右**）要**顺时针转** ⇒ 返回**正**值。
+ *
+ *     deltaYawDeg = +atan( (u − 0.5) · 2 · tan(HFOV/2) )
+ *
+ * ⚠️ **两个方向的符号不同不是笔误**，是两套坐标系的定义不同：
+ * 画面 `v` 向下为正，而偏航角以"北为 0、顺时针为正"。写测试时要
+ * 各断言一条 —— 把符号写反了在画面上表现为"越转越远"，
+ * 而单看数值是"变小了"（看起来在收敛）。
+ *
+ * @param uMid     目标在画面里的归一化横坐标 [0,1]
+ * @param hfovDeg  水平视场角（度）
+ * @return 需要施加的偏航增量（度，**正 = 顺时针**）；入参非法时返回 NAN
+ */
+double LzVision_PixelOffsetToDegH(double uMid, double hfovDeg);
+
+/**
  * @brief 在一帧里找出候选杆
  *
  * 输出填入 `pixel`（**杆轴的像素位置**）与 `confidence`；

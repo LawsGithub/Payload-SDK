@@ -467,6 +467,133 @@ int main(void)
         }
     }
 
+    /* ============ G. 双轴（横向偏航 + 纵向俯仰） ============ */
+
+    LZ_CASE("G1 两个方向都进死区才算收敛 —— 只看一轴会误报『已对准』");
+    {
+        const LzAlignPolicy Q = pol(1.5, 30.0, 20);
+
+        /* 纵向对准了、横向还差 10° ⇒ **不能**报 CONFIRM */
+        LZ_CHECK(LzAlign_DecideStepXY(0.5, 10.0, -40.0, 5.0, 0.0, 0, false, &Q).action
+                 == LZ_ALIGN_ACT_ROTATE);
+
+        /* 横向对准了、纵向还差 10° ⇒ 同样不能 */
+        LZ_CHECK(LzAlign_DecideStepXY(10.0, 0.5, -40.0, 5.0, 0.0, 0, false, &Q).action
+                 == LZ_ALIGN_ACT_ROTATE);
+
+        /* 两个都在死区 ⇒ CONFIRM；复核后 ⇒ DONE */
+        LZ_CHECK(LzAlign_DecideStepXY(0.5, 0.5, -40.0, 5.0, 0.0, 0, false, &Q).action
+                 == LZ_ALIGN_ACT_CONFIRM);
+        LZ_CHECK(LzAlign_DecideStepXY(0.5, 0.5, -40.0, 5.0, 0.0, 0, true, &Q).action
+                 == LZ_ALIGN_ACT_DONE);
+    }
+
+    LZ_CASE("G2 双轴各自限幅，且步进量互不干扰");
+    {
+        const LzAlignPolicy Q = pol(1.5, 30.0, 20);
+        const LzAlignDecision d =
+            LzAlign_DecideStepXY(-50.0, 80.0, -40.0, 5.0, 0.0, 0, false, &Q);
+        LZ_CHECK(d.action == LZ_ALIGN_ACT_ROTATE);
+        LZ_CHECK_NEAR(d.stepDeg,    -30.0, 1e-12);   /* 俯仰限到 -30 */
+        LZ_CHECK_NEAR(d.stepYawDeg,  30.0, 1e-12);   /* 偏航限到 +30 */
+        LZ_CHECK_NEAR(d.targetDeg,   -70.0, 1e-12);
+        LZ_CHECK_NEAR(d.targetYawDeg, 35.0, 1e-12);
+    }
+
+    LZ_CASE("G3 横向可达性比的是**相对机头**的角，不是绝对方位角");
+    {
+        /* ★ 这条是 M4T 的 pan 语义（±60° 相对机头）。
+         *
+         * 机头朝东（90°），云台 yaw=90°，要把云台转到 100° ⇒ 相对 +10°，可达。
+         * 同样的绝对角若拿"距正北 100°"去比 ±60 会被**误拒** ——
+         * 那是本项目记过的"误拒 = 该做的做不了且看不见"。 */
+        const LzAlignPolicy Q = pol(1.5, 30.0, 20);
+
+        const LzAlignDecision ok =
+            LzAlign_DecideStepXY(10.0, 10.0, -40.0, 90.0, 90.0, 0, false, &Q);
+        LZ_CHECK(ok.action == LZ_ALIGN_ACT_ROTATE);   /* 相对 +10°，可达 */
+        LZ_CHECK_NEAR(ok.targetYawDeg, 100.0, 1e-12);
+
+        /* 机头朝东（90°）、云台已经相对机头 +55°（绝对方位角 145°），
+         * 请求再转 +30°（限幅后）⇒ 目标相对 +85° > +60° ⇒ **必须拒**。
+         *
+         * ⚠️ 构造要注意**限幅在包线检查之前**：直接请求一个巨大的横向偏差
+         * 会被限到 maxStepDeg(30)，于是相对角只有 +30、反而**可达**。
+         * 想让目标真的越界，起点必须已经接近限位。 */
+        const LzAlignDecision bad =
+            LzAlign_DecideStepXY(0.5, 30.0, -40.0, 145.0, 90.0, 0, false, &Q);
+        LZ_CHECK(bad.action == LZ_ALIGN_ACT_OUT_OF_RANGE);
+
+        /* 跨正北：机头 350°、云台 350°，要转到 10° ⇒ 相对 +20°，可达。
+         * ⚠️ 不折到 [-180,180] 的话这里会算成 350-10=340 而**误拒**。 */
+        const LzAlignDecision wrap =
+            LzAlign_DecideStepXY(0.5, 20.0, -40.0, 350.0, 350.0, 0, false, &Q);
+        LZ_CHECK(wrap.action == LZ_ALIGN_ACT_ROTATE);
+        LZ_CHECK_NEAR(wrap.stepYawDeg, 20.0, 1e-12);
+
+        /* 反方向跨正北：机头 10°、云台 10°，要转到 350° ⇒ 相对 -20°，可达 */
+        const LzAlignDecision wrap2 =
+            LzAlign_DecideStepXY(0.5, -20.0, -40.0, 10.0, 10.0, 0, false, &Q);
+        LZ_CHECK(wrap2.action == LZ_ALIGN_ACT_ROTATE);
+        LZ_CHECK_NEAR(wrap2.stepYawDeg, -20.0, 1e-12);
+    }
+
+    LZ_CASE("G4 两轴的可达性互相独立 —— 一轴越界不该连坐另一轴");
+    {
+        const LzAlignPolicy Q = pol(1.5, 30.0, 20);
+
+        /* 俯仰越界，横向完全在范围内 ⇒ 报 OUT_OF_RANGE，且**能看出是俯仰越界**
+         * （targetDeg 落在包线外、targetYawDeg 未被改写） */
+        const double lo = LZ_GIMBAL_PITCH_MIN_DEG;
+        const LzAlignDecision pOut =
+            LzAlign_DecideStepXY(-30.0, 5.0, lo + 5.0, 0.0, 0.0, 0, false, &Q);
+        LZ_CHECK(pOut.action == LZ_ALIGN_ACT_OUT_OF_RANGE);
+        LZ_CHECK(pOut.targetDeg < lo);
+        /* 横向那一轴**照常算出来了**（5° 偏差 → 目标相对机头 +5°，可达），
+         * 只是整体被判拒绝。这正是"两轴独立"的意思：横向没有因为俯仰
+         * 越界而被改成别的值。 */
+        LZ_CHECK_NEAR(pOut.targetYawDeg, 5.0, 1e-12);
+
+        /* 横向越界（云台已在相对 +55°，再转 30° ⇒ +85°），
+         * 俯仰完全在范围内 ⇒ 同样报 OUT_OF_RANGE，
+         * 但**俯仰那条路径本身是通的** —— targetDeg 仍是算出来的 -35° */
+        const LzAlignDecision yOut =
+            LzAlign_DecideStepXY(5.0, 30.0, -40.0, 55.0, 0.0, 0, false, &Q);
+        LZ_CHECK(yOut.action == LZ_ALIGN_ACT_OUT_OF_RANGE);
+        LZ_CHECK_NEAR(yOut.targetDeg, -35.0, 1e-12);    /* 俯仰没被影响 */
+    }
+
+    LZ_CASE("G5 NaN 的横向偏差 = 『本轮不做横向闭环』，不是坏数据");
+    {
+        /* ★ 这个区分是本项目踩过两次的形状："还不知道"与"读到坏值"是两回事。
+         * 若把 NaN 判成 BAD_MEASURE，"退回单轴闭环"这条正常路径就会
+         * 以"测量数据不可信"收场，而那个文案会把操作员引去查瞄准。 */
+        const LzAlignPolicy Q = pol(1.5, 30.0, 20);
+
+        const LzAlignDecision d =
+            LzAlign_DecideStepXY(10.0, NAN, -40.0, NAN, NAN, 0, false, &Q);
+        LZ_CHECK(d.action == LZ_ALIGN_ACT_ROTATE);
+        LZ_CHECK_NEAR(d.stepYawDeg, 0.0, 1e-12);        /* 不动横向 */
+        LZ_CHECK_NEAR(d.stepDeg, 10.0, 1e-12);          /* 纵向照常 */
+
+        /* 纵向对准 + 横向不参与 ⇒ 可以收敛 */
+        LZ_CHECK(LzAlign_DecideStepXY(0.5, NAN, -40.0, NAN, NAN, 0, false, &Q).action
+                 == LZ_ALIGN_ACT_CONFIRM);
+
+        /* 但**请求了**横向却读不到云台 yaw ⇒ 数据不可信（与上面正好相反） */
+        LZ_CHECK(LzAlign_DecideStepXY(10.0, 10.0, -40.0, NAN, 0.0, 0, false, &Q).action
+                 == LZ_ALIGN_ACT_BAD_MEASURE);
+
+        /* 请求了横向、云台角可读、但**不知道机头朝向** ⇒ OUT_OF_RANGE
+         * （数据是好的，缺的是判可达性所需的那一项） */
+        LZ_CHECK(LzAlign_DecideStepXY(10.0, 10.0, -40.0, 5.0, NAN, 0, false, &Q).action
+                 == LZ_ALIGN_ACT_OUT_OF_RANGE);
+
+        /* 纵向 NaN 仍然是 BAD_MEASURE（同单轴版） */
+        LZ_CHECK(LzAlign_DecideStepXY(NAN, 10.0, -40.0, 5.0, 0.0, 0, false, &Q).action
+                 == LZ_ALIGN_ACT_BAD_MEASURE);
+    }
+
     return LZ_TEST_SUMMARY();
 }
 

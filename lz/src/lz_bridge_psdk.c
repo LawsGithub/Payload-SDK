@@ -281,6 +281,10 @@ static volatile uint8_t s_home = 0;
  * 用它把"激光点的绝对高程"折算成"目标离地高度" —— 见 lz_pole_source.c。 */
 static volatile bool s_gotHomeAlt = false;
 static volatile T_DjiFcSubscriptionAltitudeOfHomePoint s_homeAlt = 0.0f;
+/* 机头朝向（四元数，body FRD → ground NED）—— 用来判"云台 pan 相对机头
+ * 转了多少"，因为 M4T 的 pan 限位 ±60° 是**相对机头**的，不是绝对角。 */
+static volatile bool s_gotQuat = false;
+static volatile T_DjiFcSubscriptionQuaternion s_quat = {0};
 
 /* 每个话题一个专用回调：长度校验 + 拷贝，写自己的缓存。
  * 分开写而不是用一个带 topic 参数的函数，是因为回调签名里没有 topic。 */
@@ -303,6 +307,7 @@ DEFINE_TOPIC_CB(lz_cb_gps, s_gps, s_gotGps, T_DjiFcSubscriptionGpsDetails)
 DEFINE_TOPIC_CB(lz_cb_fused, s_fused, s_gotFused, T_DjiFcSubscriptionPositionFused)
 DEFINE_TOPIC_CB(lz_cb_home, s_home, s_gotHome, T_DjiFcSubscriptionHomePointSetStatus)
 DEFINE_TOPIC_CB(lz_cb_home_alt, s_homeAlt, s_gotHomeAlt, T_DjiFcSubscriptionAltitudeOfHomePoint)
+DEFINE_TOPIC_CB(lz_cb_quat, s_quat, s_gotQuat, T_DjiFcSubscriptionQuaternion)
 
 LzStatus LzBridge_InitStartDiagnostics(void)
 {
@@ -337,6 +342,10 @@ LzStatus LzBridge_InitStartDiagnostics(void)
          * 与"起飞点状态"是**两个不同的话题**（一个是布尔、一个是高度），
          * 头文件里它们是相邻的两项，很容易看成一个。 */
         {DJI_FC_SUBSCRIPTION_TOPIC_ALTITUDE_OF_HOMEPOINT, lz_cb_home_alt, "起飞点海拔"},
+        /* ★ 机头朝向 —— 横向照准判"云台 pan 相对机头转了多少"要用它。
+         * 四元数（Hamilton 约定，body FRD → ground NED），头文件给的精度：
+         * pitch/roll <1°、yaw <3°（校准良好的罗盘 + 精细对准）。 */
+        {DJI_FC_SUBSCRIPTION_TOPIC_QUATERNION, lz_cb_quat, "机头姿态"},
     };
 
     int okCount = 0;
@@ -685,4 +694,38 @@ double LzBridge_GetFusedAltitudeM(void)
         return NAN;
     }
     return (double)s_fused.altitude;
+}
+
+/**
+ * @brief 机头偏航（真北为 0、顺时针为正），度；无数据时返回 NAN
+ *
+ * 从四元数算：`T_DjiFcSubscriptionQuaternion` 是 body FRD → ground NED 的
+ * 旋转（Hamilton 约定，q0=w）。
+ *
+ *     yaw_rad = atan2( 2(q0·q3 + q1·q2), 1 − 2(q2² + q3²) )
+ *
+ * ⚠️ **NED 与"方位角"的换算**：NED 里 `x` 指北、`y` 指东、`z` 指地，
+ * 而 `atan2(y, x)` 给出的正是"从北起、向**东**为正"的角 ——
+ * 与 `LzGeo_BearingDeg()` 的约定**一致**（正北 0°、顺时针为正）。
+ * 所以这里**不做任何翻转**。头文件对 yaw 的精度标注是 `<3°`
+ * （校准良好的罗盘），够用于"pan 相对机头有没有超 ±60°"这个粗判。
+ *
+ * ⚠️ 用四元数而不是读 `COMPASS`（磁力计原始值）：后者要自己做倾角补偿
+ * 与磁偏角修正，而四元数已经是融合结果。也没有用 `GIMBAL_ANGLES` 里的
+ * yaw —— 那是**云台**的 yaw，我们要的是**机头**的。
+ */
+double LzBridge_GetBodyYawDeg(void)
+{
+    if (!s_gotQuat) {
+        return NAN;
+    }
+    const double q0 = (double)s_quat.q0, q1 = (double)s_quat.q1;
+    const double q2 = (double)s_quat.q2, q3 = (double)s_quat.q3;
+    if (!isfinite(q0) || !isfinite(q1) || !isfinite(q2) || !isfinite(q3)) {
+        return NAN;
+    }
+    const double yawRad = atan2(2.0 * (q0 * q3 + q1 * q2),
+                                1.0 - 2.0 * (q2 * q2 + q3 * q3));
+    const double yawDeg = yawRad * 180.0 / M_PI;
+    return isfinite(yawDeg) ? yawDeg : NAN;
 }

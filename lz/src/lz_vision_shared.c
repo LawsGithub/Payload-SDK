@@ -135,6 +135,50 @@ double LzVision_ZoomedDiagFovDeg(double wideDiagFovDeg, double zoomFactor)
     return zoomedDeg;
 }
 
+double LzVision_HorizontalFovDeg(int frameW, int frameH, double diagFovDeg)
+{
+    if (frameW <= 0 || frameH <= 0) {
+        return NAN;
+    }
+    if (!isfinite(diagFovDeg) || !(diagFovDeg > 0.0) || !(diagFovDeg < 180.0)) {
+        return NAN;
+    }
+    const double w = (double)frameW;
+    const double h = (double)frameH;
+    const double diag = sqrt(w * w + h * h);
+    if (!(diag > 0.0)) {
+        return NAN;
+    }
+    /* 与 VerticalFovDeg 同一个式子，只把 (h / diag) 换成 (w / diag) */
+    const double halfDiagRad = diagFovDeg * 0.5 * (M_PI / 180.0);
+    const double tanHalfH = tan(halfDiagRad) * (w / diag);
+    const double hfovDeg = 2.0 * atan(tanHalfH) * (180.0 / M_PI);
+    if (!isfinite(hfovDeg) || !(hfovDeg > 0.0) || !(hfovDeg < 180.0)) {
+        return NAN;
+    }
+    return hfovDeg;
+}
+
+double LzVision_PixelOffsetToDegH(double uMid, double hfovDeg)
+{
+    if (!isfinite(uMid) || !isfinite(hfovDeg)) {
+        return NAN;
+    }
+    if (hfovDeg <= 0.0 || hfovDeg >= 180.0) {
+        return NAN;
+    }
+
+    /* 与纵向那个**只差符号**（见头文件：两套坐标系的定义不同）。
+     * ⚠️ 不加负号：画面 u 向右为正，偏航顺时针为正，同向。 */
+    const double halfHRad = hfovDeg * 0.5 * (M_PI / 180.0);
+    const double offset = (uMid - 0.5) * 2.0 * tan(halfHRad);
+    const double d = atan(offset) * (180.0 / M_PI);
+    if (!isfinite(d)) {
+        return NAN;
+    }
+    return d;
+}
+
 double LzVision_PixelOffsetToDeg(double vMid, double vfovDeg)
 {
     if (!isfinite(vMid) || !isfinite(vfovDeg)) {

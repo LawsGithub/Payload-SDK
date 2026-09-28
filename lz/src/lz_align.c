@@ -11,7 +11,8 @@
 
 #include <math.h>
 
-#include "lz_plan.h"   /* LZ_GIMBAL_PITCH_MIN/MAX_DEG —— 唯一真值处 */
+#include "lz_geo.h"    /* LzGeo_NormalizeDeg —— 偏航相对角折算 */
+#include "lz_plan.h"   /* LZ_GIMBAL_*_DEG —— 唯一真值处 */
 
 /* ------------------------------------------------------------------ */
 
@@ -249,4 +250,112 @@ void LzAlign_Retry_NoteDetectHit(LzAlignRetry *r)
         return;
     }
     r->detectMisses = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* 双轴版：横向（偏航）+ 纵向（俯仰）                                    */
+/* ------------------------------------------------------------------ */
+
+/** 单轴限幅 */
+static double clamp_step(double v, double maxAbs)
+{
+    if (v > maxAbs)  { return maxAbs; }
+    if (v < -maxAbs) { return -maxAbs; }
+    return v;
+}
+
+LzAlignDecision LzAlign_DecideStepXY(double deltaPitchDeg, double deltaYawDeg,
+                                     double curPitchDeg, double curYawDeg,
+                                     double bodyYawDeg,
+                                     int round, bool awaitingConfirm,
+                                     const LzAlignPolicy *policy)
+{
+    LzAlignDecision d;
+    d.action = LZ_ALIGN_ACT_ROTATE;
+    d.stepDeg = 0.0;
+    d.targetDeg = curPitchDeg;
+    d.stepYawDeg = 0.0;
+    d.targetYawDeg = curYawDeg;
+
+    const LzAlignPolicy def = LzAlign_DefaultPolicy();
+    const LzAlignPolicy *p = (policy != NULL && policy_ok(policy)) ? policy : &def;
+
+    /* 本次是否做横向闭环。NaN 是一个**有意义的哨兵**（"这一轮不算横向"），
+     * 不是"上游算错了" —— 所以它不能落进下面的 BAD_MEASURE。 */
+    const bool wantYaw = isfinite(deltaYawDeg) && isfinite(curYawDeg) && isfinite(bodyYawDeg);
+
+    /* ---- 1. 非法测量值：**必须最先拦**（同单轴版，理由见那里） ---- */
+    if (!isfinite(deltaPitchDeg) || !isfinite(curPitchDeg) || round < 0) {
+        d.action = LZ_ALIGN_ACT_BAD_MEASURE;
+        return d;
+    }
+    /* ⚠️ 请求了横向却读不到云台 yaw ⇒ 数据不可信。**但 `NaN` 的 deltaYaw
+     * 是"不做横向"，不是错** —— 两者必须分开，否则"退回单轴"这条正常路径
+     * 会被误报成"测量数据不可信"（本项目在 read_pitch 的启动竞态上踩过
+     * 同一个形状：**"还不知道"与"读到坏值"是两回事**）。 */
+    if (!isnan(deltaYawDeg)) {
+        if (!isfinite(curYawDeg)) {
+            d.action = LZ_ALIGN_ACT_BAD_MEASURE;
+            return d;
+        }
+        if (isfinite(deltaYawDeg) && !isfinite(bodyYawDeg)) {
+            /* 请求了横向、但不知道机头朝向 ⇒ 可达性无从判定。
+             * 报 OUT_OF_RANGE 而不是 BAD_MEASURE：数据是好的，
+             * 缺的是"判可达性所需的那一项"。 */
+            d.action = LZ_ALIGN_ACT_OUT_OF_RANGE;
+            return d;
+        }
+    }
+
+    /* ---- 2. 死区：**两个方向都**进死区才算收敛 ---- */
+    const bool pitchIn = fabs(deltaPitchDeg) <= p->deadzoneDeg;
+    const bool yawIn   = !wantYaw || (fabs(deltaYawDeg) <= p->deadzoneDeg);
+    if (pitchIn && yawIn) {
+        d.action = awaitingConfirm ? LZ_ALIGN_ACT_DONE : LZ_ALIGN_ACT_CONFIRM;
+        return d;
+    }
+
+    /* ---- 3. 轮数用尽 ---- */
+    if (round >= p->maxRounds) {
+        d.action = LZ_ALIGN_ACT_ROUNDS_EXHAUSTED;
+        return d;
+    }
+
+    /* ---- 4. 双轴限幅 ---- */
+    double stepP = clamp_step(deltaPitchDeg, p->maxStepDeg);
+    double stepY = wantYaw ? clamp_step(deltaYawDeg, p->maxStepDeg) : 0.0;
+
+    const double targetP = curPitchDeg + stepP;
+    const double targetY = curYawDeg + stepY;
+
+    /* ⚠️ **先填进决策再判包线**，而不是只在成功路径上填。理由是两个轴
+     * 的越界要能分辨是**哪一个**越了 —— 只报 `OUT_OF_RANGE` 而把
+     * `target*Deg` 留成初值的话，日志与测试都看不出病因
+     * （本项目在云台权限那处踩过：`NON_CONTROL_AUTHORITY` 与
+     *  `YAW_REACH_POSITIVE_LIMIT` 病因完全不同，光看"失败"会混）。 */
+    d.stepDeg = stepP;
+    d.targetDeg = targetP;
+    d.stepYawDeg = stepY;
+    d.targetYawDeg = targetY;
+
+    /* ---- 5. 包线：越界如实拒绝，**不钳位** ----
+     *
+     * 两个轴的判据**互相独立**，一个越界不该让另一个也失败：
+     * 俯仰的可达性只取决于云台自身限位，与机头朝向无关。 */
+    if (targetP < LZ_GIMBAL_PITCH_MIN_DEG || targetP > LZ_GIMBAL_PITCH_MAX_DEG) {
+        d.action = LZ_ALIGN_ACT_OUT_OF_RANGE;
+        return d;
+    }
+    if (wantYaw) {
+        /* ⚠️ 比的是**相对机头**的角，不是绝对方位角 —— 见头文件。
+         * 折到 [-180, 180] 再比，否则跨正北时会算出一个 350° 的巨大偏差。 */
+        const double rel = LzGeo_NormalizeDeg(targetY - bodyYawDeg + 180.0) - 180.0;
+        if (rel < LZ_GIMBAL_YAW_MIN_DEG || rel > LZ_GIMBAL_YAW_MAX_DEG) {
+            d.action = LZ_ALIGN_ACT_OUT_OF_RANGE;
+            return d;
+        }
+    }
+
+    d.action = LZ_ALIGN_ACT_ROTATE;
+    return d;
 }

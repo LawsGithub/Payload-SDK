@@ -304,5 +304,65 @@ int main(void)
         LZ_CHECK(isnan(LzVision_ZoomedDiagFovDeg(NAN, 7.0)));
     }
 
+    LZ_CASE("横向：HFOV 与 VFOV 不同，且横向符号与纵向**相反**");
+    {
+        /* ★ 两条都是"看起来对称、其实不同"的地方。 */
+
+        /* 1. HFOV ≠ VFOV —— 4:3 + 82° 时是 **69.63° vs 55.09°，差 14.5°**。
+         *    拿 VFOV 算横向偏差会差出将近三成，比"瞄错一根杆"大得多。
+         *
+         * ⚠️ 别把 66.2° 当成 HFOV —— 那是**把 82° 当水平 FOV 去反算纵向**
+         * 得到的错值（见 `LzVision_VerticalFovDeg` 的实例表）。
+         * 三个视场角是**同一焦距**的三个投影，不是互相换算出来的。 */
+        const double hf = LzVision_HorizontalFovDeg(1440, 1080, M4T_WIDE_DFOV_DEG);
+        const double vf = LzVision_VerticalFovDeg(1440, 1080, M4T_WIDE_DFOV_DEG);
+        LZ_CHECK_NEAR(hf, 69.63, 0.05);
+        LZ_CHECK_NEAR(vf, 55.09, 0.05);
+        LZ_CHECK_NEAR(hf - vf, 14.54, 0.1);
+        LZ_CHECK(hf > vf);
+        LZ_CHECK(hf < M4T_WIDE_DFOV_DEG);   /* 水平 < 对角，几何必然 */
+
+        /* 正方形画面下两者相等（对称性检查） */
+        LZ_CHECK_NEAR(LzVision_HorizontalFovDeg(1000, 1000, 82.0),
+                      LzVision_VerticalFovDeg(1000, 1000, 82.0), 1e-9);
+
+        /* 16:9 下 HFOV 更大（宽画面横向视野更宽） */
+        LZ_CHECK(LzVision_HorizontalFovDeg(1920, 1080, 82.0) >
+                 LzVision_HorizontalFovDeg(1440, 1080, 82.0));
+
+        /* 2. **符号**：横向用 u、偏航顺时针为正 ⇒ u > 0.5 返回**正**
+         *    （目标在右 ⇒ 顺时针转过去）。而纵向那个在 v > 0.5 时返回**负**。
+         *    这是两套坐标系定义的差别，不是笔误 —— 所以两个都断言。 */
+        LZ_CHECK(LzVision_PixelOffsetToDegH(0.8, hf) > 0.0);
+        LZ_CHECK(LzVision_PixelOffsetToDegH(0.2, hf) < 0.0);
+        LZ_CHECK_NEAR(LzVision_PixelOffsetToDegH(0.5, hf), 0.0, 1e-12);
+
+        LZ_CHECK(LzVision_PixelOffsetToDeg(0.8, vf) < 0.0);
+        LZ_CHECK(LzVision_PixelOffsetToDeg(0.2, vf) > 0.0);
+
+        /* 3. 同一个 u 偏差，**视场越宽对应的角越大**（off ∝ tan(FOV/2)）。
+         *    ⚠️ 方向容易写反 —— 第一版就写反了。 */
+        LZ_CHECK(fabs(LzVision_PixelOffsetToDegH(0.8, hf)) >
+                 fabs(LzVision_PixelOffsetToDegH(0.8, vf)));
+
+        /* 4. 横向在变焦下也按正切折算 —— 与纵向同一个公式 */
+        const double dZoom = LzVision_ZoomedDiagFovDeg(M4T_WIDE_DFOV_DEG, 7.0);
+        const double hfZoom = LzVision_HorizontalFovDeg(1440, 1080, dZoom);
+        LZ_CHECK_NEAR(hfZoom, 11.35, 0.05);
+        /* ⚠️ **方向**：变焦后视场窄 ⇒ 同一像素偏差对应的角**更小**（÷6.96）。
+         * 与纵向那条 (`gain7 < gainWide`) 同向 —— 第一版这里写反过。 */
+        LZ_CHECK(fabs(LzVision_PixelOffsetToDegH(0.6, hfZoom)) <
+                 fabs(LzVision_PixelOffsetToDegH(0.6, hf)) / 6.0);
+
+        /* 5. 退化输入 */
+        LZ_CHECK(isnan(LzVision_HorizontalFovDeg(0, 100, 82.0)));
+        LZ_CHECK(isnan(LzVision_HorizontalFovDeg(100, 0, 82.0)));
+        LZ_CHECK(isnan(LzVision_HorizontalFovDeg(100, 100, 0.0)));
+        LZ_CHECK(isnan(LzVision_HorizontalFovDeg(100, 100, 180.0)));
+        LZ_CHECK(isnan(LzVision_PixelOffsetToDegH(NAN, 60.0)));
+        LZ_CHECK(isnan(LzVision_PixelOffsetToDegH(0.5, 0.0)));
+        LZ_CHECK(isnan(LzVision_PixelOffsetToDegH(0.5, 180.0)));
+    }
+
     return LZ_TEST_SUMMARY();
 }
