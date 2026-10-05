@@ -33,6 +33,7 @@ add_library(lz_core STATIC
     src/lz_wpml.c
     src/lz_kmz.c
     src/lz_align.c
+    src/lz_gimbal_status.c
 )
 target_include_directories(lz_core PUBLIC include)
 target_link_libraries(lz_core PUBLIC m)
@@ -57,7 +58,7 @@ option(LZ_BUILD_TESTS "编译并注册 PC 侧回归测试" ON)
 
 if(LZ_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     enable_testing()
-    foreach(lz_test lz_test_geo lz_test_plan lz_test_bridge lz_test_kmz lz_test_wpml lz_test_validate lz_test_align)
+    foreach(lz_test lz_test_geo lz_test_plan lz_test_bridge lz_test_kmz lz_test_wpml lz_test_validate lz_test_align lz_test_gimbal)
         add_executable(${lz_test} tests/${lz_test}.c)
         target_include_directories(${lz_test} PRIVATE tests)
         target_link_libraries(${lz_test} PRIVATE lz_core)

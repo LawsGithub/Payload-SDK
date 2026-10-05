@@ -26,6 +26,9 @@
 #define LZ_BRIDGE_PSDK_H
 
 #include <stdbool.h>
+#include <stddef.h>   /* size_t —— LzBridge_GimbalStatusStr 用 */
+
+#include "lz_gimbal_status.h"   /* LZ_GIMBAL_STATUS_BUF —— 缓冲区尺寸的唯一真值 */
 
 #include "dji_waypoint_v2.h"
 #include "dji_waypoint_v2_type.h"
@@ -214,6 +217,40 @@ double LzBridge_GetFusedAltitudeM(void);
  * 这个粗判足够，**不足以**用来做精细的偏航闭环。
  */
 double LzBridge_GetBodyYawDeg(void);
+
+/**
+ * @brief 云台状态里**值得报警的那几位**，格式化成一行；无数据返回 false
+ *
+ * ## 为什么要有它（2026-10-01 上机实测逼出来的）
+ *
+ * 现场报的是「无人机在绕飞的时候云台显示**偏航角达到限位**，然后显示
+ * **云台电机异常**，结束绕飞航线后又正常了」。
+ *
+ * 这两件事**飞机一直在报**（`TOPIC_GIMBAL_STATUS` 的 `yawLimited` 与
+ * `escYawStatus` 位），但此前我们没订阅那条话题 —— 于是日志里一个字都没有，
+ * 排查只能靠操作员口述现象。而"偏航顶限位"与"电机异常"是**两个不同的位**，
+ * 口述里分不开，混在一起就定位不到成因。
+ *
+ * ⇒ 订阅 `GIMBAL_STATUS`（10Hz）并在日志里报出来。判据全在飞机侧，
+ * 这里只做翻译，不做判断。
+ *
+ * ## 为什么是"变化时调用"而不是"每拍调用"
+ *
+ * 调用方只在**这一行内容变了**时报一次 —— 浮窗带宽上限 2 KB/s，
+ * 每拍报一条会把它灌满（本项目已因此踩过两次：716 条刷屏堵死控件回执、
+ * 去重表发送失败也标记已发）。
+ *
+ * ⚠️ **缓冲区尺寸用 `LZ_GIMBAL_STATUS_BUF`，不要自己写数字**：七项全报警时
+ * 最长的一行是 `俯仰限位 横滚限位 偏航限位 俯仰电机异常 横滚电机异常
+ * 偏航电机异常 陀螺故障` = **108 字节 + NUL**，而 128 是留了余量的取值。
+ * 给 96 会在最坏情况下**丢掉最后一项**（`陀螺故障`）—— 而"全报警"恰恰是
+ * 最需要完整一行的时候。少一项的诊断信息同样会把人引偏。
+ *
+ * @param buf  [out] 至少 `LZ_GIMBAL_STATUS_BUF` 字节
+ * @param size 缓冲大小
+ * @return true = 填好了；false = 还没收到过云台状态（**不是**"云台正常"）
+ */
+bool LzBridge_GimbalStatusStr(char *buf, size_t size);
 
 /** @brief 航点任务的启停（转发 DjiWaypointV3_Action，避免调用方直接依赖 PSDK） */
 LzStatus LzBridge_StopMissionV3(void);

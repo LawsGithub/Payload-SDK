@@ -15,6 +15,7 @@
  */
 
 #include "lz_bridge_psdk.h"
+#include "lz_gimbal_status.h"   /* 格式化的判据在 lz_core —— 桌面可测 */
 #include "lz_types.h"
 #include "platform/lz_sdk_log_watch.h"
 
@@ -285,6 +286,18 @@ static volatile T_DjiFcSubscriptionAltitudeOfHomePoint s_homeAlt = 0.0f;
  * 转了多少"，因为 M4T 的 pan 限位 ±60° 是**相对机头**的，不是绝对角。 */
 static volatile bool s_gotQuat = false;
 static volatile T_DjiFcSubscriptionQuaternion s_quat = {0};
+/* ★ 云台状态（含**各轴是否顶到限位**与 ESC 状态）—— 2026-10-01 加的。
+ *
+ * 为什么必须订阅它：现场报的是「云台显示偏航角达到限位，然后显示云台电机
+ * 异常」，而在此之前**我们的日志里没有任何一处能看到这两件事** ——
+ * 云台角（`GIMBAL_ANGLES`）只给角度，不给"顶限位"这个布尔量。
+ * 判据在飞机上、而我们看不见它，就只能靠操作员口述现象来定位。
+ *
+ * ⚠️ **不能订阅 `TOPIC_GIMBAL_ANGLES`** —— 那条被 `lz_visual_align.c`
+ * 以 50Hz 订走了，而头文件明写 "同一订阅项不可重复订阅"。本模块只用
+ * **另一条**话题（`GIMBAL_STATUS`，编号 27），两者互不冲突。 */
+static volatile bool s_gotGimbalStatus = false;
+static volatile T_DjiFcSubscriptionGimbalStatus s_gimbalStatus = {0};
 
 /* 每个话题一个专用回调：长度校验 + 拷贝，写自己的缓存。
  * 分开写而不是用一个带 topic 参数的函数，是因为回调签名里没有 topic。 */
@@ -308,6 +321,8 @@ DEFINE_TOPIC_CB(lz_cb_fused, s_fused, s_gotFused, T_DjiFcSubscriptionPositionFus
 DEFINE_TOPIC_CB(lz_cb_home, s_home, s_gotHome, T_DjiFcSubscriptionHomePointSetStatus)
 DEFINE_TOPIC_CB(lz_cb_home_alt, s_homeAlt, s_gotHomeAlt, T_DjiFcSubscriptionAltitudeOfHomePoint)
 DEFINE_TOPIC_CB(lz_cb_quat, s_quat, s_gotQuat, T_DjiFcSubscriptionQuaternion)
+DEFINE_TOPIC_CB(lz_cb_gimbal_status, s_gimbalStatus, s_gotGimbalStatus,
+                T_DjiFcSubscriptionGimbalStatus)
 
 LzStatus LzBridge_InitStartDiagnostics(void)
 {
@@ -321,10 +336,20 @@ LzStatus LzBridge_InitStartDiagnostics(void)
         return LZ_ERR_IO;
     }
 
-    /* 5 个话题、统一 10Hz。看着少是刻意的 —— 头文件两条硬上限：
-     *   "types of subscription frequency ... less than or equal to 4"
-     *   "data length sum of all topics of the same frequency ... <= 242"
+    /* 统一 10Hz。头文件两条硬上限（`.psdk-apiref/docs/cn/20.basic-function/
+     * 50.fc-subscription.md:54-56` 原文）：
+     *   "已订阅的所有订阅项的订阅频率类型数量不得超过 4 种"
+     *   "同一订阅频率下所有订阅项的数据总长度不得超过 242 字节"
      * 同一频率既省额度，也让各值是同一时刻的快照。
+     *
+     * ⚠️ 本表的**项数会变**，别再写"5 个话题"这种硬编码数字 ——
+     * 加一项忘改就会打出一条**看起来对、实际错**的注释（下面那句
+     * `okCount` 日志的分母就是从数组长度算的，别退回去写死）。
+     *
+     * ⚠️ 242 字节的额度要**自己核**：加话题时按结构体大小累加一遍。
+     * 当前（2026-10-01，8 项）：RC 14 + GPS 详情 36 + 融合位置 24 +
+     * 飞行状态 1 + 起飞点状态 1 + 起飞点海拔 4 + 机头姿态 16 + 云台状态 4
+     * ≈ 100 字节，余量充足。
      *
      * ⚠️ 回调**必须传**（不能传 NULL）—— 我们靠它拿数据，
      * 因为 getter 不可用（见文件顶部说明）。 */
@@ -346,6 +371,15 @@ LzStatus LzBridge_InitStartDiagnostics(void)
          * 四元数（Hamilton 约定，body FRD → ground NED），头文件给的精度：
          * pitch/roll <1°、yaw <3°（校准良好的罗盘 + 精细对准）。 */
         {DJI_FC_SUBSCRIPTION_TOPIC_QUATERNION, lz_cb_quat, "机头姿态"},
+        /* ★ 云台状态 —— 用来**看见**「云台偏航顶到限位」「云台电机异常」
+         * 这两件事（2026-10-01 现场报的现象）。不订阅它，这两件事在
+         * 我们的日志里完全不可见，只能靠操作员口述。
+         *
+         * ⚠️ 频率仍取 10Hz：它只有几个位域，242 字节的额度绰绰有余；
+         * 而且**同一频率类型只算一种**（头文件："订阅频率类型数量不得超过
+         * 4 种"），与本表其余话题共用 10Hz 不额外占额度。
+         * 50Hz 那条是 `lz_visual_align.c` 的 `GIMBAL_ANGLES`，不是这一条。 */
+        {DJI_FC_SUBSCRIPTION_TOPIC_GIMBAL_STATUS, lz_cb_gimbal_status, "云台状态"},
     };
 
     int okCount = 0;
@@ -714,6 +748,8 @@ double LzBridge_GetFusedAltitudeM(void)
  * 与磁偏角修正，而四元数已经是融合结果。也没有用 `GIMBAL_ANGLES` 里的
  * yaw —— 那是**云台**的 yaw，我们要的是**机头**的。
  */
+
+
 double LzBridge_GetBodyYawDeg(void)
 {
     if (!s_gotQuat) {
@@ -728,4 +764,112 @@ double LzBridge_GetBodyYawDeg(void)
                                 1.0 - 2.0 * (q2 * q2 + q3 * q3));
     const double yawDeg = yawRad * 180.0 / M_PI;
     return isfinite(yawDeg) ? yawDeg : NAN;
+}
+
+/**
+ * @brief 云台状态里**值得报警的那几位**，格式化成一行；无数据返回 false
+ *
+ * ## 为什么单独做这个（2026-10-01 上机实测逼出来的）
+ *
+ * 现场报的是「云台显示偏航角达到限位，然后显示云台电机异常」。
+ * 这两件事**飞机一直在报**（`TOPIC_GIMBAL_STATUS`），但此前我们没订阅它，
+ * 于是日志里一个字都没有 —— 排查只能靠操作员口述现象，而"偏航顶限位"
+ * 与"电机异常"是**两个不同的位**，口述里分不开。
+ *
+ * 现在把它接出来：三轴 `*Limited`（限位）+ 三个 `esc*Status`（电机）
+ * + `gyroFalut`。判据全在飞机侧，这里只做翻译，不做判断。
+ *
+ * ## 为什么返回 false 而不是打一句"无数据"
+ *
+ * 调用方（`lz_mission.c`）只在**变化时**报一次，而"没有数据"不是一次
+ * 状态变化 —— 每拍都报一遍会把浮窗灌满（2 KB/s 上限，本项目已踩过两次）。
+ *
+ * ## 本函数只做两件事：**极性的转换** 与 **"有没有数据"的判定**
+ *
+ * 格式化的判据（极性、未挂载先判、"任何 size 下都不吐半个汉字"）
+ * **全在 `lz_core` 的 `LzGimbalStatus_Format()`**（`src/lz_gimbal_status.c`）
+ * —— 因为那是**能上桌面被测到的**，而本文件依赖 PSDK、桌面上编不了。
+ * 本项目已多次踩过"判据写在 `app/` 或 PSDK 侧 ⇒ 等于没有测试"这个形状
+ * （`LzPlan_ClampWaypointCount`、`LzPole_JudgeLaserReading`、
+ * `LzAlign_DecideStep` 都是因此抽出去的）。
+ *
+ * ⚠️ **极性转换刻意挤在这里唯一一处**（`!= 0`）：原字段名
+ * `escPitchStatus` 的注释是 "1 - Pitch data is normal, 0 - fault"，
+ * **名字里看不出极性** —— 那正是抄反的温床。`LzGimbalStatus` 按语义命名
+ * （`escPitchOk`，`true = 正常`），核心逻辑从此不必再想这件事。
+ *
+ * @param buf  [out] 建议 `LZ_GIMBAL_STATUS_BUF`（128）字节
+ * @param size 缓冲大小
+ * @return true = 填好了；false = 还没收到过云台状态（**不是**"云台正常"）
+ */
+bool LzBridge_GimbalStatusStr(char *buf, size_t size)
+{
+    if (!s_gotGimbalStatus || buf == NULL || size == 0) {
+        return false;
+    }
+    const T_DjiFcSubscriptionGimbalStatus g = s_gimbalStatus;
+    /* ★ 收到**第一帧**时把原始位图打一次（只一次）。
+     *
+     * 为什么需要它：上面那两组位域的极性（限位 1=顶限位 / ESC 1=正常）
+     * 是从头文件抄的，而**抄反了不会报错**，只会让告警恰好反过来 ——
+     * 那种缺陷在桌面上、在编译期都看不出来，只能拿飞机给的原始位去对。
+     *
+     * 判据：拿一根手指把云台**朝某个方向顶到限位**（或按 CLAUDE.md 里
+     * 那条"徒手转机头"的做法），看这一行里哪一位翻转，与下面这张表对：
+     *
+     *     bit0 mountStatus  bit1 isBusy       bit2 pitchLimited
+     *     bit3 rollLimited  bit4 yawLimited   bit5 calibrating
+     *     bit6 prevCalibResult  bit7 installedDirection
+     *     bit8 disabled_mvo bit9 gear_show_unable  bit10 gyroFalut
+     *     bit11 escPitch    bit12 escRoll     bit13 escYaw
+     *     bit14 droneDataRecv  bit15 initUnfinished  bit16 FWUpdating
+     *
+     * ⚠️ **只打一次**：它是"标定用的原始数据"，不是状态量 —— 每帧都打
+     * 会把日志淹掉（浮窗 2 KB/s 那条纪律对日志同样适用，现场要能一眼找到）。 */
+    static bool s_statusDumped = false;
+    if (!s_statusDumped) {
+        s_statusDumped = true;
+        /* ⚠️ 结构体是**单个 32 位位域**（1×17 + 15 保留 = 32 bit），
+         * 所以这里打的就是飞机给的原样。位序是编译器/ABI 决定的，
+         * 在 gcc + aarch64 小端下即按声明顺序从低位排起 —— 与上表一致。 */
+        uint32_t raw = 0;
+        /* ⚠️ 从**局部副本 `g`** 取原始位，不要再去读一次 volatile ——
+         * 那样这一行的原始位与紧随其后的解码字段可能来自两个不同时刻，
+         * 而这行日志的全部用途就是"拿原始位核对解码"，自相矛盾等于白打。 */
+        memcpy(&raw, &g, sizeof(raw));
+        USER_LOG_INFO("云台状态原始位图（首帧，仅一次）：0x%08X  "
+                      "限位[pitch=%u roll=%u yaw=%u]  "
+                      "ESC[pitch=%u roll=%u yaw=%u]  gyroFalut=%u mountStatus=%u",
+                      (unsigned)raw,
+                      (unsigned)g.pitchLimited, (unsigned)g.rollLimited,
+                      (unsigned)g.yawLimited,
+                      (unsigned)g.escPitchStatus, (unsigned)g.escRollStatus,
+                      (unsigned)g.escYawStatus,
+                      (unsigned)g.gyroFalut, (unsigned)g.mountStatus);
+    }
+
+    /* ## 极性转换：**唯一一处**读原始位的地方
+     *
+     * ⚠️ **两组位域的极性是相反的**（`dji_fc_subscription.h:1129-1140` 原文）：
+     *
+     *     pitchLimited / rollLimited / yawLimited  1 = **顶到限位**  ⇒ 直接取
+     *     escPitch/Roll/YawStatus                  1 = **正常**      ⇒ 要取反
+     *
+     * 写反了不会报错，只会让告警**恰好反过来**（正常时报异常、异常时报正常）
+     * —— 与"`useStraightLine` 语义读反"是同一个形状。
+     *
+     * 转换完就交给 `LzGimbalStatus_Format()`（零依赖、桌面可测），
+     * 本文件不再保留任何格式化判据。 */
+    const LzGimbalStatus st = {
+        .mounted      = (g.mountStatus != 0),
+        .pitchLimited = (g.pitchLimited != 0),
+        .rollLimited  = (g.rollLimited != 0),
+        .yawLimited   = (g.yawLimited != 0),
+        .escPitchOk   = (g.escPitchStatus != 0),   /* 1 = 正常，名字里看不出来 */
+        .escRollOk    = (g.escRollStatus != 0),
+        .escYawOk     = (g.escYawStatus != 0),
+        .gyroFault    = (g.gyroFalut != 0),
+    };
+    LzGimbalStatus_Format(&st, buf, size);
+    return true;
 }

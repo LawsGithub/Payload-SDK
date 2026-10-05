@@ -19,6 +19,7 @@
 
 #include "lz_mission.h"
 
+#include <dji_gimbal_manager.h>
 #include <dji_logger.h>
 #include <dji_platform.h>
 #include <dji_waypoint_v3.h>
@@ -30,6 +31,7 @@
 #include "lz_bridge.h"
 #include "lz_bridge_psdk.h"
 #include "lz_geo.h"
+#include "lz_gimbal_status.h"   /* LZ_GIMBAL_STATUS_BUF —— 缓冲区尺寸的唯一真值 */
 #include "lz_plan.h"
 #include "lz_align.h"
 #include "lz_pole_source.h"
@@ -59,6 +61,27 @@ static bool s_stopRejectReported = false;
 /** "绕飞因照准在跑而推迟"的浮窗闸 —— 理由同 s_stopRejectReported：
  *  Tick 是 100 ms 一拍，不加闸会每秒刷 10 条。 */
 static bool s_orbitDeferredReported = false;
+
+/**
+ * 上一次报过的云台状态串。空串 = 还没报过。
+ *
+ * ## 为什么要有它（2026-10-01 上机实测）
+ *
+ * 现场报的是「无人机在绕飞的时候云台显示**偏航角达到限位**，然后显示
+ * **云台电机异常**，结束绕飞航线后又正常了」。
+ *
+ * 那两件事飞机一直在报（`TOPIC_GIMBAL_STATUS` 的 `yawLimited` /
+ * `escYawStatus` 位），但**我们的日志里此前一个字都没有** —— 判据在飞机上、
+ * 而我们没订阅它，排查只能靠操作员口述现象，而"偏航顶限位"与"电机异常"
+ * 是两个不同的位，口述里分不开。
+ *
+ * ⇒ 每拍查一次（`LzBridge_GimbalStatusStr`），**只在内容变了时报**：
+ * 浮窗带宽 2 KB/s，每拍一条会把它灌满（本项目已因刷屏踩过两次）。
+ */
+/* ⚠️ 尺寸取 `LZ_GIMBAL_STATUS_BUF`，**不写死数字** —— 七项全报警时最长的
+ * 一行是 108 字节 + NUL，缓冲区常量改小了这里要跟着红（见
+ * `tests/lz_test_gimbal.c` 的 E1），两处各写一份数字就会漂移。 */
+static char s_lastGimbalStatus[LZ_GIMBAL_STATUS_BUF] = "";
 
 /* ------------------------------------------------------------------ */
 /* 航点状态回调（PSDK 工作线程）                                        */
@@ -183,11 +206,72 @@ T_DjiReturnCode LzMission_DeInit(void)
 /* ------------------------------------------------------------------ */
 
 /**
+ * @brief 启动绕飞前，把云台工作模式确保为 `YAW_FOLLOW`
+ *
+ * ## 为什么要在**这里**再设一次（2026-10-01 上机实测的缺陷）
+ *
+ * 「无人机在绕飞的时候云台显示偏航角达到限位，然后显示云台电机异常，
+ *   结束绕飞航线后又正常了。」
+ *
+ * 成因：**照准**（`LzVisualAlign`）为了横向闭环会把云台设成 `FREE`
+ * （"在地面坐标系里固定云台姿态，忽略机身运动"）。那是**飞机上的全局状态**，
+ * 不是我们进程里的变量 —— 只要有一次没还回去（进程被杀、或者跑的是还没修
+ * 这个缺陷的旧版本），它就一直留着。
+ *
+ * 而 `FREE` 恰好是绕飞的**唯一死穴**：绕飞靠 `towardPOI` 让机头绕杆连续转
+ * 360°，而 `FREE` 要求云台保持地面姿态 ⇒ pan 关节必须反向补偿这 360°，
+ * 而 M4T 的 pan 是**相对机头**的 ±60° 软限位 ⇒ 绕出去 60° 就顶到机械限位、
+ * 电机持续给力 ⇒ 报"云台电机异常"。航线一结束、遥控器拿回控制权恢复跟随，
+ * 关节松回来 ⇒ "结束后又正常了"。三个现象全部对上。
+ *
+ * ## 为什么放在启动绕飞这一刻，而不是启动应用时
+ *
+ * 1. 绕飞是 `FREE` **唯一**会出事的场景（照准自己静止观测，`FREE` 是对的），
+ *    所以在这一刻纠正它，病因与处置在同一个地方。
+ * 2. `DjiGimbalManager_*` 必须在 `DjiCore_Init` **之后**才能用，而这里
+ *    一定满足（主循环里、`ApplicationStart` 之后）。
+ * 3. **不在 `main()` 启动路径上加阻塞调用** —— `dji_app_ctl install` 会试运行
+ *    应用并要求走完 SDK 身份校验（CLAUDE.md 硬规则），启动路径越干净越好。
+ *
+ * ## 刻意**不**阻断启动
+ *
+ * 恢复失败只记日志、照常起飞：这可能是一架本来就好的飞机（从没跑过照准），
+ * 那时 `Init` 失败不该拦下一次作业。**但日志必须留下** —— 否则真出问题
+ * （飞机上仍留着 FREE）时现场没有任何线索。
+ */
+static void lz_mission_ensure_gimbal_yaw_follow(void)
+{
+    if (DjiGimbalManager_Init() != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+        USER_LOG_WARN("绕飞前：云台模块初始化失败，跳过模式纠正 —— "
+                      "若飞机上残留着 FREE，绕飞时云台偏航会撞 ±60° 限位");
+        return;
+    }
+
+    const T_DjiReturnCode rc =
+        DjiGimbalManager_SetMode(DJI_MOUNT_POSITION_PAYLOAD_PORT_NO1,
+                                 DJI_GIMBAL_MODE_YAW_FOLLOW);
+    if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+        USER_LOG_WARN("绕飞前：云台模式设 YAW_FOLLOW 被拒 rc=0x%08llX —— "
+                      "若当前是 FREE，绕飞时机头绕杆转一圈会把云台偏航顶到限位",
+                      (unsigned long long)rc);
+    } else {
+        USER_LOG_INFO("绕飞前：云台模式已确认为 YAW_FOLLOW（FREE 会撞 pan 限位）");
+    }
+
+    (void)DjiGimbalManager_Deinit();
+}
+
+/**
  * @brief 按控件上的设定生成航线并上传启动
  * @return 成功返回 true
  */
 static bool lz_mission_start_orbit(void)
 {
+    /* ★ 先把云台模式纠正回来 —— 理由见上面那个函数。
+     * 放在**最前面**：取圆心、规划、生成 KMZ 都可能失败并提前返回，
+     * 而"飞机上残留 FREE"这件事与那些步骤无关，不该被它们连带跳过。 */
+    lz_mission_ensure_gimbal_yaw_follow();
+
     /* 先取圆心 —— 这是整条链路上唯一的外部输入。取不到就不起飞。 */
     LzTarget pole;
     LzStatus st = LzPole_Acquire(&pole);
@@ -404,8 +488,61 @@ static void lz_mission_handle_record(void)
 /* 状态机                                                              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * @brief 云台状态变化时打一条日志（含浮窗）
+ *
+ * ⚠️ 只在**内容变了**时报，理由见 `s_lastGimbalStatus`。
+ * ⚠️ 用 `USER_LOG_ERROR` 而不是 INFO：这条只会在出问题时出现，
+ *    而现场是**看不到终端**的（浮窗是唯一反馈通道），所以两边都要留。
+ *    它也**不是**"每拍都打"的噪声 —— 变化才打。
+ */
+static void lz_mission_watch_gimbal(void)
+{
+    char now[LZ_GIMBAL_STATUS_BUF];   /* 与 s_lastGimbalStatus 同源，见那里 */
+    if (!LzBridge_GimbalStatusStr(now, sizeof(now))) {
+        return;   /* 还没收到过云台状态 —— 不是"云台正常" */
+    }
+    if (strcmp(now, s_lastGimbalStatus) == 0) {
+        return;
+    }
+    snprintf(s_lastGimbalStatus, sizeof(s_lastGimbalStatus), "%s", now);
+
+    /* ⚠️ 措辞要能直接对上现场看到的那句话。操作员报的是「偏航角达到限位」
+     * 与「云台电机异常」，这里就把这两个词原样用上 —— 他才能确认是同一件事。
+     *
+     * ⚠️ **两条判据分开、不合并**：它们的处置完全不同（限位是姿态问题，
+     * 电机异常是硬件报警），而本项目反复踩过的形状正是"光看失败了会混"。
+     * `LzBridge_GimbalStatusStr` 的输出格式（一项一个短词）就是为这个
+     * 匹配服务的 —— 定长表格里"偏航"会出现两次，两件事会撞在一起。
+     *
+     * ⚠️ 下面 `strstr` 匹配的那几个词，**真值在 `src/lz_gimbal_status.c`**
+     * （`kYawLimitName` 等）。改那边的措辞就必须同步改这里，否则这两条
+     * 针对性浮窗会**静默失效**（退化成下面的通用那条）—— 与控件索引、
+     * 图标文件名那类"两边各写一份、对不上也不报错"同一个形状。 */
+    /* ⚠️ 日志级别跟着内容走：`正常` 是**好事**，打成 ERROR 会让日志里
+     * 出现"错误"字样而实际一切正常 —— 那是把排查方向带反的经典形状
+     * （本项目在激光 `exception` 白名单、`LzVisionMiss` 文案上都踩过）。 */
+    if (strcmp(now, "正常") == 0) {
+        USER_LOG_INFO("云台状态：%s", now);
+    } else {
+        USER_LOG_ERROR("云台状态：%s", now);
+    }
+
+    if (strstr(now, "偏航限位") != NULL) {
+        LzWidget_PostMessage("⚠ 云台偏航顶到限位 —— %s", now);
+    } else if (strstr(now, "偏航电机异常") != NULL) {
+        LzWidget_PostMessage("⚠ 云台偏航电机异常 —— %s", now);
+    } else {
+        LzWidget_PostMessage("云台状态变化：%s", now);
+    }
+}
+
 void LzMission_Tick(void)
 {
+    /* 云台状态**最先查**：它可能在绕飞中途跳变（现场正是这个现象），
+     * 而状态机那几步会提前 return / break —— 放在后面会被跳过。 */
+    lz_mission_watch_gimbal();
+
     /* 记录请求**优先于**作业状态机处理：它与绕飞是否在跑无关
      * （操作员可以在任何时候记录圆心），而且它可能耗时 1.2 秒 ——
      * 放在状态机之前，避免被绕飞的状态转移耽误。 */

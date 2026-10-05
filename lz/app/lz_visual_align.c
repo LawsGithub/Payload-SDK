@@ -339,6 +339,28 @@ static void enter(LzAlignStep s)
  * 而 `s_failReason` 要在几拍之后（`do_finish_fail()`）才被读走。 */
 static char s_failBuf[160];
 
+/**
+ * `teardown()` 恢复云台模式失败。
+ *
+ * 由 `teardown()` 置、由 `report_mode_restore_if_failed()` 消费并清 ——
+ * 分两步是为了让**告警落在调用方自己的消息之后**（见 `teardown()` 里的说明）。
+ */
+static bool s_modeRestoreFailed = false;
+
+/** 云台模式没还回去就报一条 —— 调用点：两个 finish 与 `ST_STOP`。
+ *
+ * 幂等：报过就清标志，重复调用不会重复发（`teardown()` 本身也是幂等的，
+ * 第二次进来 `s_gimbalReady` 已是 false，压根不会再走到那一段）。 */
+static void report_mode_restore_if_failed(void)
+{
+    if (!s_modeRestoreFailed) {
+        return;
+    }
+    s_modeRestoreFailed = false;
+    LzWidget_PostMessage("⚠ 云台模式恢复被拒 —— FREE 仍在飞机上，"
+                         "下一次绕飞云台偏航可能撞限位");
+}
+
 static void fail(const char *fmt, ...)
 {
     va_list ap;
@@ -357,6 +379,62 @@ static void teardown(void)
         s_anglesSubscribed = false;
     }
     if (s_gimbalReady) {
+        /* ★ 把云台工作模式**恢复成 YAW_FOLLOW**（2026-10-01 修，上机实测的缺陷）
+         *
+         * ## 缺陷现象（用户 2026-10-01 现场）
+         *
+         * 「无人机在绕飞的时候云台显示偏航角达到限位，然后显示云台电机异常，
+         *   结束绕飞航线后又正常了。」
+         *
+         * ## 成因：`do_init()` 设的 `FREE` 是**全局状态**，用完没还
+         *
+         * `FREE` 的语义（`dji_typedef.h`）："fix gimbal attitude in the ground
+         * coordinate, **ignoring movement of aircraft**" —— 云台**死死保持
+         * 地面坐标系里的姿态**，机身怎么转它都不跟。
+         *
+         * 而 M4T 的 pan 轴是**相对机头**的机械软限位 ±60°（`LZ_GIMBAL_YAW_*`）。
+         * 于是「保持地面姿态」这件事只能靠 pan 关节**反向补偿**机身转动：
+         *
+         * ```text
+         *   绕飞（towardPOI）⇒ 机头绕杆连续转 360°
+         *   云台在 FREE 下要保持地面姿态 ⇒ pan 关节必须反向走 −360°
+         *   而关节只有 ±60°  ⇒ 绕出去 60° 就顶到机械限位，然后一直顶着
+         * ```
+         *
+         * 顶住之后电机还在往限位方向给力 ⇒ 飞机报**云台电机异常**。
+         * 航线一结束、退出航线模式，遥控器/Pilot 拿回云台控制权并恢复跟随，
+         * 关节松回来 ⇒ 「结束后又正常了」。三个现象全部对上。
+         *
+         * ## 为什么原先没发现
+         *
+         * 这段 `FREE` 是 2026-09-29 为了**横向照准**加的（`YAW_FOLLOW` 下云台
+         * yaw 跟随机身，会和我们下发的绝对方位角抢）。照准本身是**静止观测**
+         * 时用的，`FREE` 在那里是对的；错在**用完不还** —— 而绕飞恰好是
+         * 「机头连续转 360°」的场景，正是 `FREE` 唯一会出事的场景。
+         *
+         * ⚠️ **`YAW_FOLLOW` 是这台飞机的正常待机模式**（相机跟着机头走），
+         * 也是本文件在 2026-09-29 之前的取值。所以恢复它不是在"改成某个模式"，
+         * 而是**把借走的东西还回去**。
+         *
+         * ⚠️ 顺序：**必须在 `Deinit` 之前** —— 模块关掉之后 `SetMode` 无从下发。
+         *
+         * ⚠️ 失败要**报出来**：恢复不了意味着 FREE 还留在飞机上，下一次绕飞
+         * 会原样复现这个缺陷，而现场从画面上看不出来。 */
+        const T_DjiReturnCode rcMode =
+            DjiGimbalManager_SetMode(LZ_ALIGN_MOUNT, DJI_GIMBAL_MODE_YAW_FOLLOW);
+        if (rcMode != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+            USER_LOG_ERROR("照准收尾：云台模式恢复 YAW_FOLLOW 被拒 rc=0x%08llX —— "
+                           "FREE 可能仍留在飞机上，绕飞时云台偏航会撞限位",
+                           (unsigned long long)rcMode);
+            /* ⚠️ 这里**只置标志、不发浮窗**，由调用方在**它自己的消息之后**
+             * 报 —— `teardown()` 是在 `do_finish_done()` 里被调用的，若在这里
+             * 发，紧接着那句"✓ 已对准"会把它盖掉，而两条信息里**持续可见的
+             * 那条是错的**（本项目记过的「浮窗被自己的刷屏堵死」同族：
+             * 矛盾的两条消息里，最后一条才留在屏幕上）。 */
+            s_modeRestoreFailed = true;
+        } else {
+            USER_LOG_INFO("照准收尾：云台模式已恢复 YAW_FOLLOW");
+        }
         (void)DjiGimbalManager_Deinit();
         s_gimbalReady = false;
     }
@@ -781,10 +859,24 @@ static void do_finish_done(void)
 {
     s_graceTicks = 0;
 
+    /* ★ 先把云台模式还回去，**再**宣布"完成"（2026-10-01）
+     *
+     * 收尾本身在下一拍的 `ST_STOP` 里也会跑（幂等），这里提前一次是为了
+     * **消掉一个窗口**：`s_state` 一旦变成非 RUNNING，绕飞就立刻可以启动 ——
+     * 而 `main.c` 里 `LzMission_Tick()` 跑在 `LzVisualAlign_Tick()` **之前**，
+     * 于是"宣布完成的那一拍"绕飞就能被启动，而模式恢复要等下一拍。
+     *
+     * 实际上那一拍里绕飞只是上传 KMZ、飞机还没开始转，危害很小；
+     * 但"宣布完成"与"真的收尾完"之间不该有窗口 —— 这类窗口正是本项目
+     * 反复踩过的形状（`SendAiMetaToPilot` 返回 SUCCESS 而实际没生效、
+     * 去重表发送失败也标记已发）。 */
+    teardown();
+
     LzWidget_PostMessage("✓ 已对准：目标在画面中心附近"
                          "（纵向 %+.2f°，横向 %+.2f°，置信度 %.2f）",
                          s_lastDelta, s_lastDeltaYaw, s_lastConf);
     LzWidget_PostMessage("（瞄的是旗面中心；杆中点需现场照片标定后才能用）");
+    report_mode_restore_if_failed();   /* 放在自己那两条**之后**，理由见该函数 */
     USER_LOG_INFO("照准完成：共 %d 轮，最终 Δθ=%+.2f°", s_round, s_lastDelta);
     s_state = LZ_ALIGN_DONE;
     enter(ST_STOP);
@@ -794,7 +886,11 @@ static void do_finish_fail(void)
 {
     s_graceTicks = 0;
 
+    /* 同 `do_finish_done()`：先把云台模式还回去再宣布失败 —— 理由见那里。 */
+    teardown();
+
     LzWidget_PostMessage("✗ 照准失败：%s", s_failReason);
+    report_mode_restore_if_failed();   /* 同上 */
     USER_LOG_ERROR("照准失败：%s（第 %d 轮，最后 Δθ=%+.2f°）",
                    s_failReason, s_round, s_lastDelta);
     s_state = LZ_ALIGN_FAILED;
@@ -862,6 +958,10 @@ void LzVisualAlign_Tick(void)
     case ST_FINISH_FAIL: do_finish_fail(); break;
     case ST_STOP:
         teardown();
+        /* 操作员中途停止 / 失败收尾都走到这里 —— 那两条路径不经过
+         * `do_finish_*`，所以这里也要消费一次，否则告警会一直挂在标志上
+         * （直到下一次照准的收尾才冒出来，那时已经对不上现场了）。 */
+        report_mode_restore_if_failed();
         s_step = ST_IDLE;
         break;
     }

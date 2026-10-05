@@ -126,6 +126,103 @@ fi
 
 check_call lz/app/lz_mission.c 'LzWidget_TakeAlignRequest' \
     "「识别目标」按钮的请求在主循环里被消费"
+
+# ---- 云台状态的**判据必须在 lz_core**，且 PSDK 侧不得再抄一份 ----
+#
+# 2026-10-01 加的 `LzBridge_GimbalStatusStr()` 里有两处**方向性**判据
+# （限位 1=顶限位 / ESC 1=正常，极性相反；mountStatus=0 时其余位无意义），
+# 抄反了不报错、只让告警恰好反过来。⇒ 判据抽到零依赖的
+# `src/lz_gimbal_status.c`，桌面用 `lz_test_gimbal` 钉死。
+#
+# 这里守的是**抽出去之后没有被抄回来**：
+#   · 格式化必须走 lz_core（`LzGimbalStatus_Format`）
+#   · PSDK 侧不许再出现那七个报警词的**字面量**（抄回去就会各写一份）
+# 反向验证：把 `LzGimbalStatus_Format(&st, buf, size);` 换成手写 snprintf
+# 拼字面量 ⇒ 两条都变红。
+check_call lz/src/lz_bridge_psdk.c 'LzGimbalStatus_Format' \
+    "云台状态的格式化走 lz_core 的判据（不是 PSDK 侧另写一份）"
+
+# ⚠️ 上面那条 `check_call` 是**弱**的：它只问符号在不在文件里，而
+# `LzGimbalStatus_Format` 在**注释**里也出现。实测把真正的调用换成
+# `snprintf(buf, size, "%s", st.yawLimited ? "偏航限位" : "正常")` 之后
+# 它**照样绿**。真正拦得住的是下面这条"报警项文案不许出现在 PSDK 侧"
+# —— 与互斥那两条「逐方向查实参形态」同一个教训：
+# **数符号出现次数不够，要问"在哪个函数里、什么形态"。**
+# ⚠️ **必须先剥注释再数**：那七个报警词的说明文字在注释里本来就会出现
+# （"用来看见「云台电机异常」"这种），不剥的话每行注释都是假阳性 ——
+# 与第 2 项（回调里不得有阻塞调用）踩过的是同一个坑。
+#
+# ⚠️ 查的是**带引号的完整项名**（`"偏航限位"` 这种），不是"限位"两个字 ——
+# 原始位图那行日志里有 `限位[pitch=...]` 这种**标签**，它不是报警项文案，
+# 按子串查会把它误判成"抄回来了"。
+GIMBAL_DUP=$(python3 - <<'PYEOF'
+import re
+src = open('lz/src/lz_bridge_psdk.c', encoding='utf-8').read()
+src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)   # 块注释
+src = re.sub(r'//[^\n]*', '', src)                # 行注释
+names = ('俯仰限位', '横滚限位', '偏航限位', '俯仰电机异常', '横滚电机异常',
+         '偏航电机异常', '陀螺故障')
+print(sum(src.count('"%s"' % n) for n in names))
+PYEOF
+)
+if [ "$GIMBAL_DUP" -eq 0 ]; then
+    ok "PSDK 侧没有抄回报警项的文案（文案真值只在 src/lz_gimbal_status.c）"
+else
+    bad "lz_bridge_psdk.c 的**代码**里出现了 $GIMBAL_DUP 处报警项文案 —— 判据被抄回来了，两处会漂移"
+fi
+
+# ---- 浮窗上按文案分派的那几处，必须与 lz_core 的文案对得上 ----
+#
+# `lz_mission.c` 用 `strstr(now, "偏航限位")` 分派出两条针对性浮窗。
+# 文案真值在 `src/lz_gimbal_status.c`，改那边不同步改这边**不会报错**，
+# 只会让那两条浮窗静默退化成通用的那条 —— 与控件索引、图标文件名
+# 那类"两边各写一份、对不上也不报错"同一个形状。
+for W in 偏航限位 偏航电机异常; do
+    if grep -q "$W" lz/src/lz_gimbal_status.c && grep -q "$W" lz/app/lz_mission.c; then
+        ok "浮窗分派文案「$W」两边一致"
+    else
+        bad "文案「$W」在 lz_core 与 lz_mission.c 之间**对不上** —— 那条浮窗会静默失效"
+    fi
+done
+
+# ---- 照准收尾必须**把云台模式还回去** ----
+#
+# ⚠️ 2026-10-01 上机实测的缺陷：`do_init()` 把云台设成 `FREE`（横向照准需要
+# 它），而**收尾时不恢复** —— `FREE` 是飞机上的全局状态，于是它一直留着。
+# 绕飞时机头绕杆连续转 360°，而 `FREE` 要求云台保持地面姿态 ⇒ pan 关节必须
+# 反向补偿 360°，而 M4T 的 pan 只有 ±60° ⇒ 顶到限位、电机异常。
+# 航线一结束遥控器拿回控制权就“自己好了”。
+#
+# ⚠️ **必须抠 `teardown()` 的函数体来查，不能全文件搜这个符号** ——
+# `do_init()` 里也有一处 `SetMode(YAW_FOLLOW)`（FREE 被拒时的降级路径），
+# 全文件搜会让检查恒绿。这与互斥那两条「逐方向查实参形态」是同一个教训：
+# **数符号出现次数不够，要问“在哪个函数里、什么形态”。**
+# 第一版就是这么写错的，反向验证（把恢复那段整块删掉）时它照样绿。
+TEARDOWN_BODY=$(python3 - <<'PYEOF'
+import re, sys
+src = open('lz/app/lz_visual_align.c', encoding='utf-8').read()
+m = re.search(r'static void teardown\(void\)\s*\{', src)
+if not m:
+    sys.exit('找不到 teardown()')
+i = m.end(); depth = 1
+while i < len(src) and depth:
+    if src[i] == '{': depth += 1
+    elif src[i] == '}': depth -= 1
+    i += 1
+body = src[m.end():i-1]
+body = re.sub(r'/\*.*?\*/', '', body, flags=re.S)   # 块注释（说明里会提到这两个符号）
+body = re.sub(r'//[^\n]*', '', body)                # 行注释
+print(body)
+PYEOF
+)
+if [ -z "$TEARDOWN_BODY" ]; then
+    bad "抠不出 teardown() 的函数体（脚本要跟着改）"
+elif printf '%s' "$TEARDOWN_BODY" | grep -q 'DJI_GIMBAL_MODE_YAW_FOLLOW'; then
+    ok "照准收尾把云台模式恢复成 YAW_FOLLOW（FREE 用完必须还，否则绕飞撞限位）"
+else
+    bad "照准收尾**没有**恢复云台模式 —— FREE 会留在飞机上，绕飞时云台偏航撞 ±60° 限位"
+fi
+
 check_call lz/app/lz_widget.c   's_alignPending' \
     "「识别目标」按钮的回调置了待办标志"
 
