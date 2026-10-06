@@ -333,6 +333,42 @@ else
 fi
 
 # ------------------------------------------------------------------
+step "3c. aarch64 交叉编译（不是产物验证，是「设备上才会撞到的编译错误」）"
+# ------------------------------------------------------------------
+# ⚠️ 先说清楚它**不能**证明什么：产物要求 GLIBC_2.34，而设备是 2.31 ⇒
+# **交叉编译的产物在设备上跑不起来**，本项目的硬约束「绝不在本机交叉编译
+# 交付产物」**不变**（见 CLAUDE.md「硬约束 3」）。
+#
+# 那它有什么用：**把"设备上才会撞到的编译错误"提前到桌面**。设备不在线时，
+# 一个 aarch64 特有的语法/类型错误要等到能上机才发现；而本机有
+# `aarch64-linux-gnu-gcc`，整个 PSDK 应用编一遍只要 **2 秒**。
+#
+# 反向验证（2026-10-06）：往 lz_mission.c 塞一个
+# `struct { unsigned int a : 40; }` ⇒ 这里报
+# `error: width of 'a' exceeds its type` 而**桌面构建不报** —— 说明它确实
+# 在查桌面查不到的东西，不是重复第 3 步。
+if ! command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+    echo "  - 本机没有 aarch64-linux-gnu-gcc，跳过（不影响上机）"
+else
+    ARM_DIR="build-precheck-arm"
+    if cmake -S lz -B "$ARM_DIR" -DLZ_BUILD_PSDK_APP=ON -DLZ_TARGET_ARCH=aarch64 \
+             -DLZ_VISION_BACKEND=hsv -DLZ_BUILD_TESTS=OFF -DLZ_BUILD_DESKTOP_TOOLS=OFF \
+             -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+             -DPSDK_ROOT="$HOME/projects/Payload-SDK" >/tmp/precheck-arm-cfg.log 2>&1 \
+       && cmake --build "$ARM_DIR" -j4 >/tmp/precheck-arm.log 2>&1; then
+        OURS=$(grep -E 'warning:|error:' /tmp/precheck-arm.log | grep 'lz/' || true)
+        if [ -n "$OURS" ]; then
+            bad "aarch64 交叉编译：我们的代码有 warning"
+            printf '%s\n' "$OURS" | sed 's/^/      /'
+        else
+            ok "aarch64 交叉编译通过（0 warning；产物不用于交付，见 CLAUDE.md 硬约束 3）"
+        fi
+    else
+        bad "aarch64 交叉编译失败（/tmp/precheck-arm.log）—— 这类错误在桌面构建里看不到"
+    fi
+fi
+
+# ------------------------------------------------------------------
 step "4. 两条配置的必需字段（app.json 的 build_dpk.sh 前置）"
 # ------------------------------------------------------------------
 APPJSON=lz/app_json/app.json
