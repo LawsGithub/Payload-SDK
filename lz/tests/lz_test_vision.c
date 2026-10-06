@@ -828,5 +828,54 @@ int main(int argc, char **argv)
         LzVision_Deinit(vision);
     }
 
+    LZ_CASE("LastMiss / EstimateSize：主应用在用，但此前零覆盖");
+    {
+        /* `LzVision_LastMiss` 是**主应用在用**的（`lz_visual_align.c` 拿它
+         * 区分"没红块"与"置信度不足"）—— 而那两条的处置完全不同
+         * （重新瞄准 vs 查判据），混了会把操作员引偏。
+         *
+         * `LzVision_EstimateSize` 目前**没有调用方**，但它是头文件里
+         * 按"全集"声明的接口（两个后端都实现，否则切后端链接失败）。
+         * 没有调用方 ⇒ 判据没人验 ⇒ 更要补测试。 */
+        LzVisionConfig cfg = LzVision_DefaultConfig();
+        LzVision *v = NULL;
+        LZ_CHECK(LzVision_Init(&cfg, &v) == LZ_OK);
+        if (v != NULL) {
+            /* NULL 视觉对象不许崩，且返回 NONE（不是某个"未命中"） */
+            LZ_CHECK(LzVision_LastMiss(NULL, NULL) == LZ_VISION_MISS_NONE);
+            double conf = -1.0;
+            LZ_CHECK(LzVision_LastMiss(v, &conf) == LZ_VISION_MISS_NONE);
+            LZ_CHECK_NEAR(conf, 0.0, 1e-12);
+            LzVision_Deinit(v);
+        }
+
+        /* ---- EstimateSize 的入参守卫与算法 ----
+         * 构造：已知焦距（像素）与距离，像素高 0.25×画面 ⇒ 实高 = 0.25·H·d/f */
+        double hM = 0.0, rM = 0.0;
+        const LzPixelBox box = { .u = 0.5, .v = 0.7, .topV = 0.2, .bottomV = 0.45 };
+        /* 画面高 1000 px、焦距 1000 px、距离 20 m ⇒ 0.25 × 1000 × 20 / 1000 = 5 m */
+        LZ_CHECK(LzVision_EstimateSize(&box, 1000, 1000, 1000.0, 20.0, 0.0,
+                                        &hM, &rM) == LZ_OK);
+        LZ_CHECK_NEAR(hM, 5.0, 1e-9);
+        LZ_CHECK_NEAR(rM, 0.0, 1e-9);   /* 没给已知直径 ⇒ 半径未知 */
+
+        /* 给了已知直径 ⇒ 半径 = 直径的一半 */
+        LZ_CHECK(LzVision_EstimateSize(&box, 1000, 1000, 1000.0, 20.0, 0.4,
+                                        &hM, &rM) == LZ_OK);
+        LZ_CHECK_NEAR(rM, 0.2, 1e-9);
+
+        /* 入参守卫：三条都必须是 PARAM，不许算出个数 */
+        LZ_CHECK(LzVision_EstimateSize(NULL, 1000, 1000, 1000.0, 20.0, 0.0,
+                                        &hM, &rM) == LZ_ERR_PARAM);
+        LZ_CHECK(LzVision_EstimateSize(&box, 1000, 1000, 1000.0, 20.0, 0.0,
+                                        NULL, &rM) == LZ_ERR_PARAM);
+        LZ_CHECK(LzVision_EstimateSize(&box, 0, 1000, 1000.0, 20.0, 0.0,
+                                        &hM, &rM) == LZ_ERR_PARAM);
+        LZ_CHECK(LzVision_EstimateSize(&box, 1000, 1000, 0.0, 20.0, 0.0,
+                                        &hM, &rM) == LZ_ERR_PARAM);
+        LZ_CHECK(LzVision_EstimateSize(&box, 1000, 1000, 1000.0, 0.0, 0.0,
+                                        &hM, &rM) == LZ_ERR_PARAM);
+    }
+
     return LZ_TEST_SUMMARY();
 }

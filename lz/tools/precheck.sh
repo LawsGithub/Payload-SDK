@@ -433,6 +433,79 @@ else
 fi
 
 # ------------------------------------------------------------------
+step "3d. 覆盖率基线（gcov）—— 只在明显掉下来时提醒，不设硬门槛"
+# ------------------------------------------------------------------
+# 2026-10-07 加。为什么**不设硬门槛**：本项目的覆盖率本来就是"哪些判据
+# 抽到了桌面可测的位置"的副产品，而不是目标本身 —— 拿它当 KPI 会诱导
+# 写"走过场"的用例。它的用处是**发现"判据被搬回了 app 层"**：
+# 抽走判据时覆盖率会跳，搬回去时会掉。
+#
+# ⚠️ **统计口径必须先对齐**：`.gcda` 是按"哪个测试走到了它"累加的 ——
+# 单独跑某一个测试会得到偏低的值（实测 `bridge.c` 单跑 43% / 全跑 93%；
+# `vision.c` 单跑 0%）。所以这里把**全部测试目标**都跑一遍再合并。
+if ! command -v gcov >/dev/null 2>&1; then
+    echo "  - 本机没有 gcov，跳过（不影响上机）"
+else
+    COV_DIR="build-precheck-cov"
+    rm -rf "$COV_DIR" && mkdir -p "$COV_DIR"
+    CORE_SRC="types target geo plan bridge wpml kmz align gimbal_status mission_logic"
+    for f in $CORE_SRC; do
+        gcc -std=gnu99 --coverage -O0 -g -Ilz/include -Ilz/tests \
+            -c "lz/src/lz_$f.c" -o "$COV_DIR/lz_$f.o" 2>/dev/null &
+    done
+    wait
+    for t in geo plan kmz wpml validate align gimbal mission bridge; do
+        gcc -std=gnu99 --coverage -O0 -g -Ilz/include -Ilz/tests \
+            -o "$COV_DIR/t_$t" "lz/tests/lz_test_$t.c" "$COV_DIR"/lz_*.o -lm 2>/dev/null \
+          && (cd "$COV_DIR" && "./t_$t" >/dev/null 2>&1)
+    done
+    # ⚠️ **`lz_test_vision` 必须也算进来**：`target.c` 的 `LzTargetList_*`
+    # 主要由它覆盖 —— 漏了它 `target.c` 只有 19%（实测），
+    # 而那条会被误读成"判据被搬回 app 层了"。
+    # 这正是"统计口径要先对齐"那条注释的实例。
+    gcc -std=gnu99 --coverage -O0 -g -Ilz/include -Ilz/tests \
+        -o "$COV_DIR/t_vision" "lz/tests/lz_test_vision.c" "$COV_DIR"/lz_*.o \
+        lz/src/lz_vision.c lz/src/lz_vision_shared.c -lm 2>/dev/null \
+      && (cd "$COV_DIR" && LZ_VISION_TESTDATA="$ROOT/lz/tests/data" ./t_vision >/dev/null 2>&1)
+    gcc -std=gnu99 --coverage -O0 -g -Ilz/include -Ilz/tests \
+        -o "$COV_DIR/t_vm" "lz/tests/lz_test_vision_math.c" "$COV_DIR"/lz_*.o \
+        lz/src/lz_vision_shared.c -lm 2>/dev/null \
+      && (cd "$COV_DIR" && ./t_vm >/dev/null 2>&1)
+    # ⚠️ 门槛取 80%：它是"明显掉下来"的判据，不是目标。
+    # 实测基线（2026-10-07）：types 100 / mission_logic 100 / align 99 /
+    # wpml 96 / gimbal_status 95 / bridge 93 / geo 92 / kmz 90 /
+    # plan 89 / target 87 —— 最低 87%，留 7 个点余量。
+    COV_MIN=80   # 门槛的**唯一定义处**（报错文案从它取）
+    # ⚠️ gcov 的汇总行打在 **stdout**，不在 `.gcov` 文件里（实测）——
+    # 第一版去 grep `.gcov` 文件，于是永远取到空值、检查恒绿。
+    # 这是"检查看起来在跑、实际什么都没查"的又一个实例。
+    LOW=""
+    MIN=""
+    for f in $CORE_SRC; do
+        PCT=$( ( cd "$COV_DIR" && gcov -o . "lz_$f.gcda" 2>/dev/null ) \
+               | grep -m1 'Lines executed' | grep -oE '[0-9]+\.[0-9]+' )
+        if [ -z "$PCT" ]; then
+            bad "取不到 $f.c 的覆盖率（gcov 输出格式变了？脚本要跟着改）"
+            LOW="yes"
+            continue
+        fi
+        # ⚠️ 门槛只在**一个**变量里，文案从它取 —— 写死两处会漂移
+        # （第一版就是这么写的，把门槛临时改成 88% 时文案仍报"< 80%"）。
+        if awk -v p="$PCT" -v t="$COV_MIN" 'BEGIN{ exit !(p+0 < t+0) }'; then
+            bad "$f.c 覆盖率 ${PCT}%（< ${COV_MIN}%）—— 判据可能被搬回 app 层了"
+            LOW="yes"
+        fi
+        # ⚠️ 第一版写成 `printf '%s\n%s\n' "$MIN" "$PCT" | sort -n | head -1`
+        # —— 那是**给 MIN 赋一个含两行的字符串**，下一轮再拼进去越滚越长。
+        # 正确做法：用 `sort -n` 比大小后**只取一个数**。
+        if [ -z "$MIN" ] || awk -v a="$PCT" -v b="$MIN" 'BEGIN{ exit !(a+0 < b+0) }'; then
+            MIN="$PCT"
+        fi
+    done
+    [ -z "$LOW" ] && ok "lz_core 各文件覆盖率均 ≥ ${COV_MIN}%（最低 ${MIN}%）"
+fi
+
+# ------------------------------------------------------------------
 step "4. 两条配置的必需字段（app.json 的 build_dpk.sh 前置）"
 # ------------------------------------------------------------------
 APPJSON=lz/app_json/app.json
