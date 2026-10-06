@@ -127,6 +127,69 @@ fi
 check_call lz/app/lz_mission.c 'LzWidget_TakeAlignRequest' \
     "「识别目标」按钮的请求在主循环里被消费"
 
+# ---- 状态机的**转移判据必须在 lz_core**，且 app 侧不得再抄一份 ----
+#
+# 2026-10-07 抽的。此前整张转移表在 `app/lz_mission.c` 里 ⇒ 桌面测不到 ⇒
+# **一条断言都没有**，而走错的后果是安全相关的谎话
+# （"飞机还在绕而界面说停了"）。
+#
+# 这里守的是**抽出去之后没有被抄回来**：
+#   · 两相式必须真的被调用（`LzMission_Decide` / `LzMission_Apply`）
+#   · app 侧不许再出现那两句关键判断的字面形态
+#     （`s_state == LZ_MISSION_STATE_RUNNING` 之外的结束判定、
+#      以及"停止失败也置 IDLE"）
+#
+# ⚠️ 与云台那两条同一个教训：`check_call` 只问符号在不在文件里，
+# 真正拦得住"抄回来"的是**查关键形态**。
+check_call lz/app/lz_mission.c 'LzMission_Decide' \
+    "状态机第一相走 lz_core 的判据（不是 app 里另写一份 if/else）"
+check_call lz/app/lz_mission.c 'LzMission_Apply' \
+    "状态机第二相走 lz_core 的判据（新状态与要报哪条消息都由它给）"
+check_call lz/app/lz_mission.c 'LzMission_ShouldReportWaypoint' \
+    "航点号去重走 lz_core（旧写法在回调里手比 s_lastReportedWaypoint）"
+check_call lz/app/lz_mission.c 'LzMission_ShouldNoteEnded' \
+    "「收到 IDLE 该不该置结束标志」走 lz_core（旧写法手判 s_state == RUNNING）"
+
+# ⚠️ **"停止失败也置 IDLE"这个缺陷形态不许回来**。
+#
+# 原缺陷的写法是：`(void)LzBridge_StopMissionV3();` 然后**无条件**
+# `s_state = LZ_MISSION_STATE_IDLE;` —— 飞机还在绕而界面说停了。
+#
+# ⚠️ 第一版这条检查写错了：它数"全文有几处 `s_state = IDLE`"，
+# 而 `Init` / `DeInit` 里本来就有两处合法的 ⇒ **恒红**。
+# 改成查**Tick 那个函数体里**有没有裸的 IDLE 赋值 ——
+# 与「`teardown()` 要抠函数体再查」是同一个教训：
+# **数全文出现次数不够，要问"在哪个函数里"。**
+STRAY_IDLE=$(python3 - <<'PYEOF'
+import re
+src = open('lz/app/lz_mission.c', encoding='utf-8').read()
+src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+src = re.sub(r'//[^\n]*', '', src)
+m = re.search(r'void LzMission_Tick\(void\)\s*\{', src)
+if not m:
+    print(-1); raise SystemExit
+i = m.end(); depth = 1
+while i < len(src) and depth:
+    if src[i] == '{': depth += 1
+    elif src[i] == '}': depth -= 1
+    i += 1
+body = src[m.end():i-1]
+# Tick 里合法的那一处：飞机侧结束的收尾（紧跟 s_missionEnded = false）
+bad = 0
+for mm in re.finditer(r's_state\s*=\s*LZ_MISSION_STATE_IDLE\s*;', body):
+    if 's_missionEnded = false;' not in body[mm.end():mm.end()+120]:
+        bad += 1
+print(bad)
+PYEOF
+)
+if [ "$STRAY_IDLE" = "0" ]; then
+    ok "Tick 里没有裸的 s_state = IDLE（新状态一律由 Apply 给）"
+elif [ "$STRAY_IDLE" = "-1" ]; then
+    bad "抠不出 LzMission_Tick() 的函数体（脚本要跟着改）"
+else
+    bad "LzMission_Tick 里有 $STRAY_IDLE 处裸的 s_state = IDLE —— 状态转移判据被抄回 app 层了"
+fi
+
 # ---- 云台状态的**判据必须在 lz_core**，且 PSDK 侧不得再抄一份 ----
 #
 # 2026-10-01 加的 `LzBridge_GimbalStatusStr()` 里有两处**方向性**判据

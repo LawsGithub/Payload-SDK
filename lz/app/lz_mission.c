@@ -19,6 +19,8 @@
 
 #include "lz_mission.h"
 
+#include "lz_mission_logic.h"   /* 状态转移判据（零依赖，lz_test_mission 守着） */
+
 #include <dji_gimbal_manager.h>
 #include <dji_logger.h>
 #include <dji_platform.h>
@@ -38,11 +40,8 @@
 #include "lz_visual_align.h"
 #include "lz_widget.h"
 
-typedef enum {
-    LZ_MISSION_STATE_IDLE = 0,
-    LZ_MISSION_STATE_RUNNING,
-} LzMissionState;
-
+/* 状态枚举与转移判据都在 `lz_mission_logic.h`（零依赖、桌面可测）。
+ * 本文件只剩"读输入 → 调 Decide → 调 SDK → 调 Apply → 呈现"。 */
 static LzMissionState s_state = LZ_MISSION_STATE_IDLE;
 static volatile bool s_missionEnded = false;
 static char s_endReason[64];
@@ -125,8 +124,10 @@ static T_DjiReturnCode LzMission_OnWaypointState(T_DjiWaypointV3MissionState sta
          * ⚠️ 这个回调**在 PSDK 工作线程上**，而这里只比一个整数 + 一次
          * 定长拷贝，不是阻塞调用，符合"回调不做耗时动作"的纪律。 */
         const int idx = (int)state.currentWaypointIndex;
-        if (idx != s_lastReportedWaypoint) {
-            s_lastReportedWaypoint = idx;
+        /* 判据在 lz_core（`lz_test_mission` 的 F1/F2/F3 守着"变了才报"）——
+         * 实测不加去重一次 3 分钟绕飞发 716 条，把浮窗 2 KB/s 灌满，
+         * 控件回执被挤掉、操作员看到"点了没反应"。 */
+        if (LzMission_ShouldReportWaypoint(idx, &s_lastReportedWaypoint)) {
             LzWidget_PostMessage("绕飞中：航点 %d", idx);
         }
         break;
@@ -136,7 +137,9 @@ static T_DjiReturnCode LzMission_OnWaypointState(T_DjiWaypointV3MissionState sta
         /* 回到空闲 = 任务结束（正常跑完或被打断）。
          * 注意这个回调在 RUNNING 期间也可能收到 IDLE，所以用标志位
          * 而不是直接改状态 —— 由主循环统一裁决。 */
-        if (s_state == LZ_MISSION_STATE_RUNNING) {
+        /* ⚠️ **RUNNING 期间也会收到 IDLE** —— 见到就置标志的话，
+         * 任务刚启动就会被判成结束。判据在 `lz_mission_logic.c`。 */
+        if (LzMission_ShouldNoteEnded(s_state)) {
             s_missionEnded = true;
             snprintf(s_endReason, sizeof(s_endReason), "已结束（回到 IDLE）");
         }
@@ -572,90 +575,94 @@ void LzMission_Tick(void)
         }
     }
 
-    switch (s_state) {
-    case LZ_MISSION_STATE_IDLE: {
-        if (!LzWidget_IsOrbitRequested()) {
-            break;   /* 操作员没请求，什么都不做 */
-        }
-        /* ⚠️ **互斥的反方向**（上面那条是"照准"方向）：
-         * 照准正在转云台时不许启动航线 —— 航线里的 `gimbalRotate` 与
-         * 手动云台控制会抢同一个云台，而"抢"的表现是命令被拒或姿态诡异，
-         * 都不指向真实病因。
-         *
-         * 刻意**不在这里把开关清掉**（不调 `LzWidget_ReportOrbitFinished`）：
-         * 操作员的意思很可能是"先识别、再绕飞"，此刻清掉开关会让他在照准
-         * 结束后**还得再拨一次 ON** —— 而他记得自己已经拨过了。
-         * 所以状态停在 IDLE、开关保持 ON：照准一结束，下一拍就自然启动。 */
-        const LzConflict c = LzAlign_CheckConflict(
-            false, LzVisualAlign_State() == LZ_ALIGN_RUNNING);
-        if (c == LZ_CONFLICT_ALIGN_ACTIVE) {
-            if (!s_orbitDeferredReported) {
-                s_orbitDeferredReported = true;
-                LzWidget_PostMessage("%s（开关保持 ON，照准结束后会自动启动）",
-                                     LzAlign_ConflictStr(c));
-            }
-            break;
-        }
-        s_orbitDeferredReported = false;
-        if (lz_mission_start_orbit()) {
-            s_state = LZ_MISSION_STATE_RUNNING;
-            s_missionEnded = false;
-            s_stopRejectReported = false;   /* 新一轮作业，告警闸归零 */
-            s_lastReportedWaypoint = -1;    /* 新一轮的第一个航点必须报 */
-        } else {
-            /* 启动失败：清本地意图并发结束消息。
-             * ⚠️ 注意这**不会**把 Pilot 上的开关拨回去（PSDK 没有那个接口，
-             * 详见 lz_widget.h 的 LzWidget_ReportOrbitFinished 说明）——
-             * 实际是"开关保持 ON 而浮窗说启动失败"，所以消息里带上
-             * "请手动拨回"，不假装界面已经一致了。 */
-            LzWidget_ReportOrbitFinished("启动失败");
-        }
-        break;
+    /* ★ 决策全在 `LzMission_Decide()`（零依赖，`lz_test_mission` 守着）。
+     *
+     * 本函数只剩：**读输入 → 决策 → 调 SDK → 按结果定状态 → 呈现**。
+     * 抽出去的理由与 `LzAlign_DecideStep()` 完全相同：状态机在 app 层
+     * ⇒ 桌面测不到 ⇒ 整张转移表一条断言都没有，而走错的后果是
+     * **安全相关的谎话**（"飞机还在绕而界面说停了"）。
+     *
+     * 两相式（`Decide` → SDK → `Apply`）是因为 SDK 调用夹在中间：
+     * 一次完整的判断要等 SDK 返回才知道新状态。 */
+    const LzConflict conflict = LzAlign_CheckConflict(
+        LzMission_IsRunning(), LzVisualAlign_State() == LZ_ALIGN_RUNNING);
+
+    LzMissionInput in;
+    memset(&in, 0, sizeof(in));
+    in.state = s_state;
+    in.orbitRequested = LzWidget_IsOrbitRequested();
+    in.missionEnded = s_missionEnded;
+    /* ⚠️ 传 `conflict` 的判定结果，不传 `alignRunning` ——
+     * 判据的唯一真值在 `LzAlign_CheckConflict()`，在这里重算就是两份判据。 */
+    in.conflictAlignActive = (conflict == LZ_CONFLICT_ALIGN_ACTIVE);
+    in.orbitDeferredReported = s_orbitDeferredReported;
+
+    const LzMissionDecision decision = LzMission_Decide(&in);
+    s_orbitDeferredReported = decision.orbitDeferredReported;
+
+    /* ---- 第一相与第二相之间的 SDK 调用 ---- */
+    LzStatus sdkResult = LZ_OK;
+    if (decision.step == LZ_MISSION_STEP_START_ORBIT) {
+        sdkResult = lz_mission_start_orbit() ? LZ_OK : LZ_ERR_UPLOAD;
+    } else if (decision.step == LZ_MISSION_STEP_STOP_MISSION) {
+        /* ⚠️ **返回值不能丢** —— 见 `LzMission_Apply()` 里 D 组那几条。
+         * 早先写成 `(void)LzBridge_StopMissionV3();` 然后无条件置 IDLE、
+         * 无条件报"绕飞结束" ⇒ 飞机还在杆旁边绕，而日志与界面都说停了。 */
+        sdkResult = LzBridge_StopMissionV3();
     }
 
-    case LZ_MISSION_STATE_RUNNING: {
-        /* 操作员中途拨 OFF → 立即停（见 lz_widget.h 的安全语义） */
-        if (!LzWidget_IsOrbitRequested()) {
-            /* ⚠️ 这里**不能**丢弃返回值。
-             *
-             * 早先写成 `(void)LzBridge_StopMissionV3();` 然后无条件置 IDLE、
-             * 无条件报"绕飞结束：操作员停止" —— 于是 STOP 被拒时，
-             * 飞机还在杆旁边绕，而日志与界面都说已经停了。
-             * **静默的失败等于假装成功**，而在飞控语境里这直接关系到安全。
-             *
-             * 停止失败时**保持 RUNNING**：让状态与事实一致
-             * （任务确实还在跑），操作员再拨一次 OFF 就能重试。
-             * 若在这里置 IDLE，开关还在 ON 位而状态机认为空闲 ——
-             * 那个组合会让下一次 Tick 把它当成"新的绕飞请求"重新上传启动。 */
-            const LzStatus st = LzBridge_StopMissionV3();
-            if (st != LZ_OK) {
-                /* 只报一次：Tick 是 100 ms 一拍，而开关会一直保持 OFF，
-                 * 不加闸就会每秒刷 10 条浮窗。 */
-                if (!s_stopRejectReported) {
-                    s_stopRejectReported = true;
-                    /* 措辞要准确：此刻开关**已经在 OFF 位**，只拨 OFF 不会再
-                     * 触发回调（值没变化）。要重试必须走 OFF→ON→OFF，
-                     * 让控件值产生变化 —— 所以提示里要写清楚。 */
-                    LzWidget_PostMessage("停止指令被拒（%s）—— 任务可能仍在执行。"
-                                         "重试需把开关拨回 ON 再拨 OFF，"
-                                         "或直接用遥控器接管",
-                                         LzStatus_Str(st));
-                }
-                break;   /* 状态不动，留在 RUNNING */
-            }
-            s_stopRejectReported = false;
-            s_state = LZ_MISSION_STATE_IDLE;
-            LzWidget_ReportOrbitFinished("操作员停止");
-            break;
-        }
-        /* 飞机侧报告结束 */
-        if (s_missionEnded) {
-            s_missionEnded = false;
-            s_state = LZ_MISSION_STATE_IDLE;
-            LzWidget_ReportOrbitFinished(s_endReason);
-        }
-        break;
+    LzMissionApplyInput ai;
+    memset(&ai, 0, sizeof(ai));
+    ai.decision = decision;
+    ai.state = s_state;
+    ai.sdkResult = sdkResult;
+    ai.stopRejectReported = s_stopRejectReported;
+
+    const LzMissionApplyOutput out = LzMission_Apply(&ai);
+    s_state = out.state;
+    s_stopRejectReported = out.stopRejectReported;
+
+    /* ---- 呈现：按输出报消息（消息的**文案**留在这一层，判据在 lz_core）---- */
+    if (out.reportOrbitDeferred) {
+        LzWidget_PostMessage("%s（开关保持 ON，照准结束后会自动启动）",
+                             LzAlign_ConflictStr(LZ_CONFLICT_ALIGN_ACTIVE));
     }
+    if (out.reportStartFailed) {
+        /* 启动失败：清本地意图并发结束消息。
+         * ⚠️ 注意这**不会**把 Pilot 上的开关拨回去（PSDK 没有那个接口，
+         * 详见 lz_widget.h 的 LzWidget_ReportOrbitFinished 说明）——
+         * 实际是"开关保持 ON 而浮窗说启动失败"，所以消息里带上
+         * "请手动拨回"，不假装界面已经一致了。 */
+        LzWidget_ReportOrbitFinished("启动失败");
+    }
+    if (out.reportStopRejected) {
+        /* 措辞要准确：此刻开关**已经在 OFF 位**，只拨 OFF 不会再触发回调
+         * （值没变化）。要重试必须走 OFF→ON→OFF，让控件值产生变化。 */
+        LzWidget_PostMessage("停止指令被拒（%s）—— 任务可能仍在执行。"
+                             "重试需把开关拨回 ON 再拨 OFF，"
+                             "或直接用遥控器接管",
+                             LzStatus_Str(sdkResult));
+    }
+    if (out.reportOperatorStop) {
+        /* ⚠️ 这里只清 `s_missionEnded`（防御：万一回调在停机过程中置了它），
+         * **不**重置 `s_lastReportedWaypoint` / `s_stopRejectReported` ——
+         * 那两个在**启动成功**那一刻重置就够了，多一个重置点只是多一处
+         * 与回调线程的共享写入。原实现也只在启动时重置它们。 */
+        s_missionEnded = false;
+        LzWidget_ReportOrbitFinished("操作员停止");
+    }
+    /* 启动成功 ⇒ 清掉上一轮的残留（原实现的三个重置点，一处不少） */
+    if (decision.step == LZ_MISSION_STEP_START_ORBIT && sdkResult == LZ_OK) {
+        s_missionEnded = false;
+        s_stopRejectReported = false;
+        s_lastReportedWaypoint = -1;
+    }
+    if (out.reportMissionEnded) {
+        /* 判据（"RUNNING + ended ⇒ 收尾"）在 `LzMission_Apply()`；
+         * 这里只负责把**原因文本**补上 —— `s_endReason` 是回调写的静态缓冲，
+         * 不进纯函数。 */
+        s_missionEnded = false;
+        LzWidget_ReportOrbitFinished(s_endReason);
     }
 }
 
