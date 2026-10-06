@@ -458,7 +458,6 @@ static int lz_detect_pole_column(const LzVision *vision, const LzFrame *frame,
     }
 
     *outVotes = bestVotes;
-    free(votesHist);
     if (outMedianVotes != NULL) {
         /* 中位票 = ROI 内**一半列**都不超过的那个票数。
          *
@@ -475,6 +474,16 @@ static int lz_detect_pole_column(const LzVision *vision, const LzFrame *frame,
             if (acc > half) { *outMedianVotes = v; break; }
         }
     }
+    /* ⚠️ **`free` 必须在最后**（2026-10-06 由 ASan 抓到）：
+     * 原先这一句写在 `*outVotes = bestVotes;` 之后、中位数那段**之前**，
+     * 而那段紧接着就读 `votesHist[v]` —— **use-after-free**。
+     * 它一直没暴露是因为被释放的 1252 字节刚 free 完通常还没被复用，
+     * 读到的仍是原值；换分配器、换负载、或换个优化等级就会读到垃圾，
+     * 表现为**置信度莫名其妙地偏低**（中位票算错 ⇒ 判别比算错），
+     * 而不是崩溃 —— 这种"不崩只错"的缺陷最难查。
+     *
+     * ⇒ 与「`(void)f()` 丢掉的是停止失败」同族：**看不出来 ≠ 没发生。** */
+    free(votesHist);
     return bestX;
 }
 
