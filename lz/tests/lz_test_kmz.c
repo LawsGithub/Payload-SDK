@@ -88,6 +88,37 @@ int main(void)
         LZ_CHECK(LzKmz_Write(e, 1, "/no/such/dir/x.kmz") == LZ_ERR_IO);
     }
 
+    LZ_CASE("CRC-32 的 NULL 守卫与条目数上限（两处此前零覆盖）");
+    {
+        /* ⚠️ 这两条都是"挡住比写错强"那类守卫，而**守卫本身没有测试**
+         * 就等于没人知道它还在不在。 */
+
+        /* ① `LzKmz_Crc32(NULL, 0)` 合法（空数据的 CRC 就是 0），
+         *    `(NULL, n>0)` 非法（返回 0 作为"拒绝"）。
+         *    写成 `data == NULL` 一刀切会让"空条目"被判成错误。 */
+        LZ_CHECK(LzKmz_Crc32(NULL, 0) == 0u);   /* 空数据的 CRC-32 就是 0 */
+        /* ⚠️ 这一条**没有守卫时会段错误**（实测 rc=139）——
+         * 所以它同时是"守卫在不在"的判据，也是"ctest 抓得到崩溃"的演示。 */
+        LZ_CHECK(LzKmz_Crc32(NULL, 5) == 0u);   /* 拒绝 */
+        const uint8_t one[] = { 0x00 };
+        LZ_CHECK(LzKmz_Crc32(one, 1) == 0xD202EF8Du);  /* 标准值 */
+
+        /* ② 条目数超 0xFFFF ⇒ 必须**明确拒绝**而不是写出一个坏的 zip。
+         *    中央目录里的条目数是 16 位；超了就得 zip64，本项目不做。
+         *    ⚠️ 这条构造不需要真的分配 65536 个条目 —— `LzKmz_Build`
+         *    在**分配之前**就查了 `count`，所以传一个"骗人的大 count"
+         *    会先撞上入参校验。用 `LzKmz_Build` 的返回值区分：
+         *    我们断言的是"不是 LZ_OK"，且**没有写出任何数据**。 */
+        uint8_t *d = NULL;
+        size_t sz = 0;
+        const LzKmzEntry e[] = { { "a", "x", 1 } };
+        /* ⚠️ 拆掉这个守卫会**段错误**（实测 rc=139）—— 不是干净的 FAIL。
+         * 换句话说：这条用例的价值不在于"断言对"，而在于
+         * **没有它，崩溃会发生在别人身上**（`LzKmz_Build` 的调用方）。 */
+        LZ_CHECK(LzKmz_Build(e, 0x10000u, &d, &sz) != LZ_OK);
+        LZ_CHECK(d == NULL);   /* 被拒时不许留下半成品缓冲 */
+    }
+
     LZ_CASE("KMZ 导出：含云台 yaw 且指向杆心");
     {
         LzTarget pole = {
