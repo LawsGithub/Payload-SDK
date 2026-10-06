@@ -56,6 +56,31 @@ endif()
 # ---- PC 侧回归测试 ----
 option(LZ_BUILD_TESTS "编译并注册 PC 侧回归测试" ON)
 
+# ---- 消毒器（ASan + UBSan）----
+#
+# 为什么要有这个开关：本项目的判据大量是"数值算错但**不崩**"的形状，
+# 而内存类缺陷恰恰也是"不崩只错" —— 两者叠在一起，普通构建根本看不出来。
+#
+# 实测（2026-10-06）：第一次跑就抓到 `lz_detect_pole_column()` 里一处
+# **use-after-free** —— `free(votesHist)` 写在中位数那段**之前**，
+# 而那段紧接着就读它。被释放的 1252 字节在 free 之后通常还没被复用，
+# 于是读到的仍是原值，测试全绿、黄金值全对；换个分配器/负载/优化等级
+# 就会变成错值或崩溃。**这类缺陷只有消毒器抓得到。**
+#
+# 用法（**必须换一个构建目录**，不能与普通构建共用 —— 编译选项不同）：
+#     cmake -S lz -B build-asan -DLZ_VISION_BACKEND=hsv -DLZ_SANITIZE=ON
+#     cmake --build build-asan -j4
+#     LZ_VISION_TESTDATA=$PWD/lz/tests/data ctest --test-dir build-asan
+#
+# ⚠️ `LZ_VISION_TESTDATA` 那一步不能省：`lz_test_vision` 的黄金值文件
+# 走环境变量传绝对路径（相对路径在 ctest 的工作目录下找不到）。
+option(LZ_SANITIZE "用 ASan + UBSan 编译（内存类缺陷只有它能抓）" OFF)
+if(LZ_SANITIZE)
+    message(STATUS "消毒器已开启：ASan + UBSan")
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
 if(LZ_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     enable_testing()
     foreach(lz_test lz_test_geo lz_test_plan lz_test_bridge lz_test_kmz lz_test_wpml lz_test_validate lz_test_align lz_test_gimbal)

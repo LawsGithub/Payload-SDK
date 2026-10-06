@@ -307,6 +307,32 @@ for backend in stub hsv; do
 done
 
 # ------------------------------------------------------------------
+step "3b. 消毒器（ASan + UBSan）—— 内存类缺陷只有它能抓"
+# ------------------------------------------------------------------
+# 2026-10-06 加的。第一次跑就抓到 `lz_detect_pole_column()` 里一处
+# **use-after-free**：`free(votesHist)` 写在中位数那段**之前**，而那段
+# 紧接着就读它。被释放的内存通常还没被复用 ⇒ 读到原值 ⇒ 测试全绿、
+# 黄金值全对，换个分配器/负载就会变成错值或崩溃。
+#
+# ⚠️ 它慢（约 0.3 s vs 0.06 s），所以**不放进第 3 项**、单独一步；
+# 失败时的日志指向 ASan 报告，而那份报告会直接给出读/写与 free 的
+# 两个栈 —— 比任何人工排查都快。
+ASAN_DIR="build-precheck-asan"
+cmake -S lz -B "$ASAN_DIR" -DLZ_VISION_BACKEND=hsv -DLZ_SANITIZE=ON >/dev/null 2>&1
+if cmake --build "$ASAN_DIR" -j4 >/tmp/precheck-asan.log 2>&1; then
+    # ⚠️ 黄金值文件走环境变量传**绝对路径** —— ctest 的工作目录是构建目录，
+    # 相对路径 `tests/data/...` 在那里找不到（本项目踩过）。
+    if LZ_VISION_TESTDATA="$PWD/lz/tests/data" \
+       ctest --test-dir "$ASAN_DIR" >/tmp/precheck-asan-ctest.log 2>&1; then
+        ok "ASan+UBSan：$(grep -oE '[0-9]+% tests passed[^,]*' /tmp/precheck-asan-ctest.log | head -1)"
+    else
+        bad "ASan+UBSan 有失败（/tmp/precheck-asan-ctest.log）—— 内存类缺陷，先看 ASan 报告"
+    fi
+else
+    bad "消毒器构建失败（/tmp/precheck-asan.log）"
+fi
+
+# ------------------------------------------------------------------
 step "4. 两条配置的必需字段（app.json 的 build_dpk.sh 前置）"
 # ------------------------------------------------------------------
 APPJSON=lz/app_json/app.json
