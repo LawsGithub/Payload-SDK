@@ -353,6 +353,7 @@ else
     ARM_DIR="build-precheck-arm"
     if cmake -S lz -B "$ARM_DIR" -DLZ_BUILD_PSDK_APP=ON -DLZ_TARGET_ARCH=aarch64 \
              -DLZ_VISION_BACKEND=hsv -DLZ_BUILD_TESTS=OFF -DLZ_BUILD_DESKTOP_TOOLS=OFF \
+             -DLZ_POLE_SOURCE_LASER=ON \
              -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
              -DPSDK_ROOT="$HOME/projects/Payload-SDK" >/tmp/precheck-arm-cfg.log 2>&1 \
        && cmake --build "$ARM_DIR" -j4 >/tmp/precheck-arm.log 2>&1; then

@@ -127,10 +127,15 @@ int main(void)
         /* 换成激光来源，同样必须是 0 —— 两个来源记录的**都是一个点**，
          * 语义相同。若将来视觉（识别到**杆**）接进来，这里会多一条
          * "填实测杆高"的分支，而那时本条应当跟着改。 */
-#ifdef LZ_POLE_SOURCE_LASER
-        LZ_CHECK(LzPole_RecordLaser(&pos) == LZ_OK ||
-                 LzPole_RecordLaser(&pos) == LZ_ERR_NOT_READY);   /* 需相机，桌面上可能不可用 */
-#endif
+        /* ⚠️ 这里曾有一段 `#ifdef LZ_POLE_SOURCE_LASER` 包着的
+         * `LzPole_RecordLaser(&pos)` —— **它是死代码，从未被编译过**
+         * （2026-10-06 发现）：`LzPole_RecordLaser` 的签名是 `(void)`，
+         * 传 `&pos` 会编译失败。之所以一直没暴露，是因为桌面构建
+         * **从不定义** `LZ_POLE_SOURCE_LASER`，那个块整个被预处理掉了。
+         *
+         * ⇒ 已删除。激光那条路现在由下面的
+         * 「原始读数 → 该记什么」一组用例覆盖（走 `LzPole_PrepareLaserRecord()`，
+         * 那个函数**在 ifdef 之外**，桌面编得到）。 */
     }
 
     LZ_CASE("落盘：文件应可被外部工具直接 cat 出来核对");
@@ -351,20 +356,16 @@ int main(void)
 
     LZ_CASE("目标高度要能落盘并读回（th= 字段；旧文件缺它时按 0）");
     {
-        /* ⚠️ **本条只覆盖"读"这一侧，写那一侧在桌面上测不到。**
+        /* ⚠️ **本条只覆盖"读"这一侧** —— 写那一侧由下面
+         * 「原始读数 → 该记什么」一组用例覆盖（走
+         * `LzPole_PrepareLaserRecord()`，它在 `#ifdef` 之外）。
          *
-         * 写路径是 `LzPole_RecordLaser()` → `lz_record_common()`，而整个
-         * 函数在 `#ifdef LZ_POLE_SOURCE_LASER` 内 —— 桌面构建不编它。
-         * 实测过：把 `lz_record_common()` 里那行赋值改成写死 0，
-         * **本条照样全绿**。所以这里**不声称**守住了写路径。
+         * 本条 2026-10-06 之前写的是"写侧在桌面上测不到，只能靠上机看日志"。
+         * 那句话**当时是对的**（判据全在 `#ifdef` 里），现在**不再成立** ——
+         * 单位换算、三道闸、目标高分类都已抽出来。
          *
-         * 写路径的验证手段是另一条：`LzPole_RecordLaser()` 会把
-         * 「激光海拔 / 起飞点海拔 / 飞机椭球高 / 反算目标高」四个值
-         * 打进日志，上机按一次就能看出算得对不对 —— 靠观测，不靠断言。
-         *
-         * （这是"判据在 ifdef 里就测不到"的又一个实例。判据本身已经抽到
-         * `#ifdef` 之外了，但**赋值**这一步没法抽 —— 它是取数与落盘之间的
-         * 接线。至少要在这里说清楚，别让下一个人以为这条用例守住了写侧。） */
+         * 仍然留在设备上验的只剩：SDK 的取数本身（`GetLaserRangingInfo`
+         * 返回什么）与两个海拔话题就绪与否。那是观测，不是判据。 */
         /* ⚠️ `th=` 是**后加的**字段。旧文件（现场设备上那份）没有它 ——
          * 读旧文件必须**当作目标高 0**，而不是判成坏文件。
          * 判错会让操作员莫名其妙地丢掉一条本来可用的记录。 */
@@ -388,6 +389,217 @@ int main(void)
         LZ_CHECK(LzPole_LoadRecorded() == LZ_OK);
         LZ_CHECK(LzPole_Acquire(&t) == LZ_OK);
         LZ_CHECK_NEAR(t.heightM, 0.0, 1e-9);
+    }
+
+    /* ================================================================
+     * 「原始读数 → 该记什么」—— 2026-10-06 新增
+     *
+     * 这一段此前**一行都测不到**：单位换算、三道闸、目标高分类全在
+     * `#ifdef LZ_POLE_SOURCE_LASER` 里，桌面构建不编它。实测确认把
+     * `distanceDm / 10.0` 写成 `/ 100.0`，**没有任何测试变红** ——
+     * 而表现是"距离小十倍"，看起来仍像个合理的读数。
+     *
+     * ⇒ 判据抽到 `LzPole_PrepareLaserRecord()`（在 `#ifdef` 之外），
+     * 本组用例直接打它。
+     * ================================================================ */
+
+    LZ_CASE("单位换算：SDK 的 altitude / distance 是 0.1 m，必须除 10 而不是 100");
+    {
+        /* ⚠️ **这条用例的存在本身就是修法**：它守的是"换算发生在
+         * 桌面上能测到的地方"。
+         *
+         * 构造：SDK 给 distance=44（= 4.4 m，2026-09-22 实测过的真实读数）、
+         * altitude=504（= 50.4 m，现场 pole.txt 里那个值）。
+         * 断言**具体米数**而不是"大于 0" —— 后者在除错十倍时也通过。 */
+        const LzLaserRawReading raw = {
+            .latitudeDeg = 28.1788176, .longitudeDeg = 112.9210889,
+            .altitudeDm = 504.0,        /* 50.4 m */
+            .distanceDm = 44.0,         /* 4.4 m */
+        };
+        LzPoleLaserRecord rec;
+        LZ_CHECK(LzPole_PrepareLaserRecord(&raw, 40.4, &rec) == LZ_OK);
+        LZ_CHECK_NEAR(rec.distanceM, 4.4, 1e-9);
+        LZ_CHECK_NEAR(rec.laserAltM, 50.4, 1e-9);
+        LZ_CHECK_NEAR(rec.geo.altitudeM, 50.4, 1e-9);   /* geo 里也必须是米 */
+
+        /* 经纬度**不换算** —— 它们是度，SDK 直出。
+         * 这是踩过的坑（头文件注释专门写了"不是 rad"），所以显式断言。 */
+        LZ_CHECK_NEAR(rec.geo.latitudeDeg, 28.1788176, 1e-12);
+        LZ_CHECK_NEAR(rec.geo.longitudeDeg, 112.9210889, 1e-12);
+    }
+
+    LZ_CASE("三道闸的**分类**：三种成因必须分得开，不是一个 NO_TARGET");
+    {
+        /* 为什么这条重要：三种成因的处置完全不同 ——
+         *   无距离   ⇒ 重新瞄准
+         *   坐标越界 ⇒ 报 bug（飞机给了非法值）
+         *   零解     ⇒ 等定位，**别调瞄准**
+         * 合并成一个错误码、只靠日志文案区分的话，"分得开"这件事
+         * 本身就没有断言守着 —— 文案改一个字就静默退化了。
+         * 本项目在 `LzVisionMiss` 上踩过同一个形状。 */
+        LzPoleLaserRecord rec;
+        const LzLaserRawReading base = {
+            .latitudeDeg = 28.1788176, .longitudeDeg = 112.9210889,
+            .altitudeDm = 504.0, .distanceDm = 44.0,
+        };
+
+        /* ① 无回波：distance == 0 */
+        LzLaserRawReading r = base;
+        r.distanceDm = 0.0;
+        LZ_CHECK(LzPole_PrepareLaserRecord(&r, 40.0, &rec) == LZ_ERR_NO_TARGET);
+        LZ_CHECK(rec.miss == LZ_LASER_MISS_NO_DISTANCE);
+
+        /* ② 坐标越界 */
+        r = base;
+        r.latitudeDeg = 95.0;      /* 纬度合法域 ±90 */
+        LZ_CHECK(LzPole_PrepareLaserRecord(&r, 40.0, &rec) == LZ_ERR_NO_TARGET);
+        LZ_CHECK(rec.miss == LZ_LASER_MISS_BAD_COORD);
+
+        /* ③ 零解邻域：飞机没定位时瞄准点解算退化。
+         *    ⚠️ 用**带残差**的值，不是精确 (0,0) —— 实测给的是
+         *    `lon=0.0000004, lat=0.0000003`，写 `== 0.0` 的判据会放行它。 */
+        r = base;
+        r.latitudeDeg = 0.0000003;
+        r.longitudeDeg = 0.0000004;
+        LZ_CHECK(LzPole_PrepareLaserRecord(&r, 40.0, &rec) == LZ_ERR_NO_TARGET);
+        LZ_CHECK(rec.miss == LZ_LASER_MISS_NULL_SOLUTION);
+
+        /* ④ 可用的那一条：miss 必须是 NONE（否则"分得开"没有对照） */
+        LZ_CHECK(LzPole_PrepareLaserRecord(&base, 40.0, &rec) == LZ_OK);
+        LZ_CHECK(rec.miss == LZ_LASER_MISS_NONE);
+
+        /* ⑤ **顺序**也要对：距离为 0 且坐标也非法时，报的是"无距离"。
+         *    这不是吹毛求疵 —— 距离为 0 时坐标必然退化成机身位置，
+         *    先报"坐标非法"会把操作员引去查飞机定位，而实际该做的是瞄准。 */
+        r = base;
+        r.distanceDm = 0.0;
+        r.latitudeDeg = 95.0;
+        (void)LzPole_PrepareLaserRecord(&r, 40.0, &rec);
+        LZ_CHECK(rec.miss == LZ_LASER_MISS_NO_DISTANCE);
+    }
+
+    LZ_CASE("目标高的四个出口必须分得开 —— 「打地面」是合法用法，不是失败");
+    {
+        /* 处置不同：
+         *   打地面   ⇒ INFO，**正常**（点目标，瞄它自身）
+         *   超上限   ⇒ WARN，请核对参考面 / 激光是否打到远处地面
+         *   无起飞点 ⇒ WARN，按 0 处理
+         * 全合并成"算出来是 0"就分不开了。 */
+        LzPoleLaserRecord rec;
+        const LzLaserRawReading raw = {
+            .latitudeDeg = 28.1788176, .longitudeDeg = 112.9210889,
+            .altitudeDm = 504.0,       /* 50.4 m */
+            .distanceDm = 44.0,
+        };
+
+        /* 正常：旗面在 10 m 高（起飞点 40.4 m） */
+        LZ_CHECK(LzPole_PrepareLaserRecord(&raw, 40.4, &rec) == LZ_OK);
+        LZ_CHECK(rec.heightDiag == LZ_LASER_TH_NORMAL);
+        LZ_CHECK_NEAR(rec.targetHeightM, 10.0, 1e-9);
+
+        /* 打地面：差 ≤ 0 ⇒ 0，且分类是 GROUND（**不是** OVER_MAX） */
+        LZ_CHECK(LzPole_PrepareLaserRecord(&raw, 50.4, &rec) == LZ_OK);
+        LZ_CHECK(rec.heightDiag == LZ_LASER_TH_GROUND);
+        LZ_CHECK_NEAR(rec.targetHeightM, 0.0, 1e-9);
+
+        /* 超上限：差 100 m > LZ_POLE_TARGET_HEIGHT_MAX_M ⇒ 0，分类是 OVER_MAX。
+         * ⚠️ 这条与上一条**都返回 0** —— 若只断言返回值，两条一模一样，
+         * 用例就退化成测了个寂寞。断言的是 `heightDiag`。 */
+        LZ_CHECK(LzPole_PrepareLaserRecord(&raw, -49.6, &rec) == LZ_OK);
+        LZ_CHECK(rec.heightDiag == LZ_LASER_TH_OVER_MAX);
+        LZ_CHECK_NEAR(rec.targetHeightM, 0.0, 1e-9);
+
+        /* 拿不到起飞点海拔 ⇒ 分类是 NO_HOME（与"打地面"同样返回 0） */
+        LZ_CHECK(LzPole_PrepareLaserRecord(&raw, 0.0 / 0.0, &rec) == LZ_OK);
+        LZ_CHECK(rec.heightDiag == LZ_LASER_TH_NO_HOME);
+        LZ_CHECK_NEAR(rec.targetHeightM, 0.0, 1e-9);
+
+        /* 边界：正好等于上限 ⇒ 0（开区间下端）；差一点点 ⇒ 正常。
+         * 这一对来自 `LzPole_ComputeTargetHeight` 的规格，这里复核分类没走偏。 */
+        LZ_CHECK(LzPole_PrepareLaserRecord(&raw, 50.4 - LZ_POLE_TARGET_HEIGHT_MAX_M,
+                                           &rec) == LZ_OK);
+        LZ_CHECK(rec.heightDiag == LZ_LASER_TH_OVER_MAX);
+        LZ_CHECK(LzPole_PrepareLaserRecord(&raw, 50.4 - LZ_POLE_TARGET_HEIGHT_MAX_M + 0.01,
+                                           &rec) == LZ_OK);
+        LZ_CHECK(rec.heightDiag == LZ_LASER_TH_NORMAL);
+    }
+
+    LZ_CASE("PrepareLaserRecord 的入参校验：NULL 必须被拒，不写半个结果");
+    {
+        LzPoleLaserRecord rec;
+        const LzLaserRawReading raw = {
+            .latitudeDeg = 28.0, .longitudeDeg = 112.0,
+            .altitudeDm = 500.0, .distanceDm = 40.0,
+        };
+        LZ_CHECK(LzPole_PrepareLaserRecord(NULL, 40.0, &rec) == LZ_ERR_PARAM);
+        LZ_CHECK(LzPole_PrepareLaserRecord(&raw, 40.0, NULL) == LZ_ERR_PARAM);
+
+        /* `Acquire` / `GetRecorded` 的 NULL 校验也要有断言 ——
+         * 它们此前从未被覆盖过（gcov 实测）。 */
+        LZ_CHECK(LzPole_Acquire(NULL) == LZ_ERR_PARAM);
+        LZ_CHECK(LzPole_GetRecorded(NULL) == LZ_ERR_PARAM);
+    }
+
+    LZ_CASE("读数不可用时 heightDiag 必须是 NA —— 不能读成「算过了，正常」");
+    {
+        /* ⚠️ 这条是被**实测**逼出来的：`altitudeDm = NaN` 时，
+         * `LzGeo_IsValid()` 的**有限性检查**在更前面就把它拦成
+         * `LZ_LASER_MISS_BAD_COORD`，函数早退。
+         *
+         * 于是问题变成：早退时 `heightDiag` 是什么？原先枚举里 0 是 NORMAL，
+         * 而 `memset` 之后它就是 0 —— **读起来像"目标高算过了，正常"**。
+         * 那是一句假话：根本没算。
+         *
+         * ⇒ 枚举改成 `LZ_LASER_TH_NA = 0`，并在早退路径上显式置它。
+         * 与"`LzVisionMiss` 要分得开"同一条纪律：**返回值不许含糊。** */
+        LzPoleLaserRecord rec;
+        const LzLaserRawReading raw = {
+            .latitudeDeg = 28.1788176, .longitudeDeg = 112.9210889,
+            .altitudeDm = 0.0 / 0.0,   /* NaN ⇒ 被有限性检查拦下 */
+            .distanceDm = 44.0,
+        };
+        LZ_CHECK(LzPole_PrepareLaserRecord(&raw, 40.4, &rec) == LZ_ERR_NO_TARGET);
+        LZ_CHECK(rec.miss == LZ_LASER_MISS_BAD_COORD);
+        LZ_CHECK(rec.heightDiag == LZ_LASER_TH_NA);
+        LZ_CHECK(rec.heightDiag != LZ_LASER_TH_NORMAL);
+    }
+
+    LZ_CASE("落盘失败时记录仍留在内存 —— 一次磁盘问题不该毁掉当下的绕飞");
+    {
+        /* 这条守的是 `lz_record_common()` 的**降级策略**：
+         * 落盘失败 → WARN，但内存里的记录**保留**（本次绕飞照常能用），
+         * 而不是让整个记录失败。
+         *
+         * 构造：把 `data/` 目录**去掉**（`remove` 对目录无效，用改名），
+         * 于是 fopen("data/pole.txt","w") 失败。 */
+        remove(LZ_TEST_POLE_FILE);
+        LZ_CHECK(rename(LZ_TEST_POLE_DIR, LZ_TEST_POLE_DIR ".hidden") == 0);
+
+        const LzGeo pos = {
+            .latitudeDeg = 28.1888000, .longitudeDeg = 112.9333000, .altitudeM = 62.0,
+        };
+        LZ_CHECK(LzPole_RecordAircraft(&pos) == LZ_OK);   /* 记录本身成功 */
+        LzGeo back;
+        LZ_CHECK(LzPole_GetRecorded(&back) == LZ_OK);     /* 内存里在 */
+        LZ_CHECK_NEAR(back.latitudeDeg, 28.1888000, 1e-7);
+
+        /* 恢复目录，否则后面所有用例都写不了盘 */
+        LZ_CHECK(rename(LZ_TEST_POLE_DIR ".hidden", LZ_TEST_POLE_DIR) == 0);
+    }
+
+    LZ_CASE("读文件：空文件 / 只有表头之外的垃圾，都当作未记录");
+    {
+        /* `fgets` 返回 NULL 那一条（空文件）与"字段数不对"是两个不同的出口，
+         * gcov 实测前者此前从未被走到过。 */
+        remove(LZ_TEST_POLE_FILE);
+        write_file("");                       /* 空文件 ⇒ fgets 返回 NULL */
+        LZ_CHECK(LzPole_LoadRecorded() != LZ_OK);
+        LzTarget t2;
+        LZ_CHECK(LzPole_Acquire(&t2) == LZ_ERR_NOT_READY);
+
+        write_file("garbage without any fields\n");
+        LZ_CHECK(LzPole_LoadRecorded() != LZ_OK);
+        LZ_CHECK(LzPole_Acquire(&t2) == LZ_ERR_NOT_READY);
     }
 
     return LZ_TEST_SUMMARY();

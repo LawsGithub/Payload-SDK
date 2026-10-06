@@ -107,6 +107,127 @@ LzStatus LzPole_JudgeLaserReading(double latDeg, double lonDeg, double altM,
                                   double distanceM);
 
 /**
+ * @brief 一次激光读数**为什么**不可用
+ *
+ * ## 为什么要有它（而不是只返回一个 `LZ_ERR_NO_TARGET`）
+ *
+ * 三种成因的**处置完全不同**：
+ *
+ * | 值 | 成因 | 操作员该做什么 |
+ * |---|---|---|
+ * | `LZ_LASER_MISS_NO_DISTANCE` | 无回波 | **重新瞄准** |
+ * | `LZ_LASER_MISS_BAD_COORD` | 坐标越界 | 报 bug（飞机给了非法值） |
+ * | `LZ_LASER_MISS_NULL_SOLUTION` | 零解（飞机没定位） | **等定位**，别调瞄准 |
+ *
+ * 合并成一个错误码、只靠日志文案区分的话，**"分得开"这件事本身没有断言
+ * 守着** —— 文案改一个字就静默退化了。本项目在 `LzVisionMiss` 上踩过
+ * 同一个形状（"没红块"与"置信度不足"混在一起，主应用只报了后者，
+ * 把操作员引去反复调瞄准而病因在代码里）。
+ *
+ * ⇒ 与 `LzVisionMiss` 同一条纪律：**返回值要能区分病因，文案只是它的呈现。**
+ */
+typedef enum {
+    LZ_LASER_MISS_NONE = 0,      /*!< 可用 */
+    LZ_LASER_MISS_NO_DISTANCE,   /*!< `distance == 0`，无回波 */
+    LZ_LASER_MISS_BAD_COORD,     /*!< 经纬度超出合法范围 */
+    LZ_LASER_MISS_NULL_SOLUTION, /*!< 零解邻域 —— 飞机自身没有定位 */
+} LzLaserMiss;
+
+/**
+ * @brief 目标高度那一步走到了哪个出口
+ *
+ * 与 `LzLaserMiss` 同一个理由：四个出口的处置不同（"打地面"是**合法用法**，
+ * 而"超上限"要操作员核对参考面），合并成"算出来是 0"就分不开了。
+ */
+typedef enum {
+    /* ⚠️ 0 是"这次读数不可用、目标高没算" —— **不是** NORMAL。
+     * 原先 0 是 NORMAL，于是"miss 非 NONE"的早退路径会把
+     * `heightDiag` 留成 NORMAL，读起来像"算过了，正常"。 */
+    LZ_LASER_TH_NA = 0,      /*!< 不适用：读数不可用，目标高没算 */
+    LZ_LASER_TH_NORMAL,      /*!< 差落在 (0, MAX]，正常 */
+    LZ_LASER_TH_GROUND,      /*!< 差 ≤ 0 —— 打的是地面，**合法** */
+    LZ_LASER_TH_OVER_MAX,    /*!< 差 > MAX —— 参考面不一致 / 打到远处 */
+    LZ_LASER_TH_NO_HOME,     /*!< 拿不到起飞点海拔 */
+    /* ⚠️ **刻意没有"激光海拔拿不到"这一项**：它不可达。
+     * 实测（2026-10-06）`altitudeDm = NaN` 时 `LzGeo_IsValid()` 的
+     * **有限性检查**在更前面就把它拦成 `LZ_LASER_MISS_BAD_COORD`，
+     * 函数早退，根本走不到算目标高那一步。
+     * 加一个到不了的分支 = 加一段没人能验的代码 —— 删掉。 */
+} LzLaserHeightDiag;
+
+/**
+ * @brief 激光测距的**原始读数**（单位照 SDK，未换算）
+ *
+ * 单独一个结构体是为了让"原始读数 → 该记什么"这段判据**能上桌面**：
+ * PSDK 的 `T_DjiCameraManagerLaserRangingInfo` 在桌面上找不到，
+ * 而这个结构体只依赖 `double`。
+ */
+typedef struct {
+    double latitudeDeg;  /*!< 度，SDK 直出 */
+    double longitudeDeg; /*!< 度 */
+    double altitudeDm;   /*!< **0.1 m** —— 与 SDK 一致，不在这里换算 */
+    double distanceDm;   /*!< **0.1 m** */
+} LzLaserRawReading;
+
+/** @brief 一次激光记录该记什么（判据的输出） */
+typedef struct {
+    LzGeo  geo;             /*!< 圆心坐标（海拔已换算成米） */
+    double targetHeightM;   /*!< 目标离地高；0 = 点目标 */
+    double distanceM;       /*!< 距离（米），供日志 */
+    double laserAltM;       /*!< 激光点海拔（米），供日志 */
+    LzLaserMiss miss;       /*!< 为什么不可用（`LZ_OK` 时是 `_NONE`） */
+    LzLaserHeightDiag heightDiag; /*!< 目标高走到了哪个出口 */
+} LzPoleLaserRecord;
+
+/**
+ * @brief 三道闸的**分类**结果 —— 纯逻辑，不打日志
+ *
+ * 抽出来是为了让 `LzPole_JudgeLaserReading()`（打日志）与
+ * `LzPole_PrepareLaserRecord()`（填结果）**共用同一份判据**。
+ * 两处各写一遍的话，改了一处另一处不变，而两者都不报错 ——
+ * 这正是本项目反复记的"两边各写一份、对不上也不报错"。
+ *
+ * ⚠️ 调用方传进来的 `altM`/`distanceM` **必须是米**（调用方负责换算）。
+ * 换算本身在 `LzPole_PrepareLaserRecord()` 里，那是它存在的理由之一。
+ */
+LzLaserMiss LzPole_ClassifyLaserReading(double latDeg, double lonDeg,
+                                        double altM, double distanceM);
+
+/**
+ * @brief 把一次激光原始读数变成"该记什么" —— **纯逻辑，零依赖**
+ *
+ * 这一步包含的全部内容（此前散在 `LzPole_RecordLaser()` 里，**一行都测不到**）：
+ *
+ * 1. **单位换算**：`altitude` / `distance` 是 **0.1 m**（结构体注释明写）
+ * 2. **三道闸**：无距离 / 坐标非法 / 零解 —— 分类结果进 `miss`
+ * 3. **目标高**：激光海拔 − 起飞点海拔 —— 分类结果进 `heightDiag`
+ *
+ * ## 为什么必须抽出来
+ *
+ * 这三样此前全在 `#ifdef LZ_POLE_SOURCE_LASER` 里面 —— 桌面构建不编它，
+ * 于是**写成 `distance / 100.0` 也不会有任何测试变红**（实测确认）。
+ * 而单位写错的表现是"距离小十倍"，看起来像个合理的读数。
+ *
+ * ⚠️ 抽出来之后，`LzPole_RecordLaser()` 只剩两件事：**取数**与**打日志** ——
+ * 一个 SDK 调用 + 一个按 `miss`/`heightDiag` 分派的 switch。判据全在这里。
+ *
+ * ⚠️ **本函数不做任何 I/O、不落盘、不打日志**（`USER_LOG_*` 都不调）——
+ * 它的输出全在返回值里，调用方负责呈现。这样测试才断言得到"分得开"。
+ *
+ * ⚠️ **刻意不接收「飞机融合海拔」** —— 那个量只进日志、不参与任何判定。
+ * 传进来却不用的参数会让下一个读代码的人以为它参与判定，
+ * 进而以为"改了它会影响结果"。日志由调用方自己打。
+ *
+ * @param raw       原始读数（单位 0.1 m）
+ * @param homeAltM  起飞点海拔（米）；NaN = 拿不到
+ * @param out       [out] 结果；`NULL` 时返回 `LZ_ERR_PARAM`
+ * @return `LZ_OK` = 可用；`LZ_ERR_NO_TARGET` = 不可用（**成因看 `out->miss`**）；
+ *         `LZ_ERR_PARAM` = `out == NULL`
+ */
+LzStatus LzPole_PrepareLaserRecord(const LzLaserRawReading *raw,
+                                   double homeAltM, LzPoleLaserRecord *out);
+
+/**
  * @brief 由「激光点海拔 − 起飞点海拔」算**目标离地高度**（**纯逻辑，零依赖**）
  *
  * ## 用法与来历（用户 2026-09-28 的方案）

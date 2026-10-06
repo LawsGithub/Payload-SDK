@@ -257,34 +257,66 @@ LzStatus LzPole_RecordAircraft(const LzGeo *curPos)
  * @param distanceM           激光距离（**米**，调用方已从 0.1m 换算）
  * @return `LZ_OK` = 可用；`LZ_ERR_NO_TARGET` = 不可用（三种成因，日志里区分）
  */
-LzStatus LzPole_JudgeLaserReading(double latDeg, double lonDeg, double altM,
-                                  double distanceM)
+LzLaserMiss LzPole_ClassifyLaserReading(double latDeg, double lonDeg,
+                                        double altM, double distanceM)
 {
     /* 闸门 1：必须有距离。
      * 距离为 0 时坐标会退化成机身自身的位置 —— 不是垃圾值，
      * 是个精确可预测的退化情形（实测模拟器上给出飞机初始位置）。 */
     if (!(distanceM > 0.0)) {
-        USER_LOG_WARN("激光测不到距离（distance=%.1f m）—— 请对准目标再按", distanceM);
-        return LZ_ERR_NO_TARGET;
+        return LZ_LASER_MISS_NO_DISTANCE;
     }
 
     const LzGeo g = { .latitudeDeg = latDeg, .longitudeDeg = lonDeg, .altitudeM = altM };
 
     /* 闸门 2：坐标必须合法 */
     if (!LzGeo_IsValid(&g)) {
-        USER_LOG_WARN("激光给出的坐标非法（%.7f, %.7f，距离 %.1f m）",
-                      latDeg, lonDeg, distanceM);
-        return LZ_ERR_NO_TARGET;
+        return LZ_LASER_MISS_BAD_COORD;
     }
 
     /* 闸门 3：坐标不能是零解 —— 见本函数上方关于"三闸独立"的说明 */
     if (LzGeo_IsNullSolution(&g)) {
+        return LZ_LASER_MISS_NULL_SOLUTION;
+    }
+
+    return LZ_LASER_MISS_NONE;
+}
+
+/** 把分类结果翻成操作员看得懂的一句话 —— **文案的唯一定义处**。
+ *
+ * 三种成因的处置不同（重新瞄准 / 报 bug / 等定位），所以文案必须分开。
+ * 放在一个函数里而不是散在调用点：`LzPole_RecordLaser()` 与将来别的
+ * 调用方都要说同一句话，各写一份就会漂移。 */
+static void lz_laser_miss_report(LzLaserMiss miss, double latDeg, double lonDeg,
+                                 double distanceM)
+{
+    switch (miss) {
+    case LZ_LASER_MISS_NO_DISTANCE:
+        USER_LOG_WARN("激光测不到距离（distance=%.1f m）—— 请对准目标再按", distanceM);
+        break;
+    case LZ_LASER_MISS_BAD_COORD:
+        USER_LOG_WARN("激光给出的坐标非法（%.7f, %.7f，距离 %.1f m）",
+                      latDeg, lonDeg, distanceM);
+        break;
+    case LZ_LASER_MISS_NULL_SOLUTION:
         USER_LOG_WARN("激光坐标是零解（%.7f, %.7f，距离 %.1f m）—— "
                       "瞄准点要靠飞机自身定位解算，当前飞机没有定位",
                       latDeg, lonDeg, distanceM);
+        break;
+    case LZ_LASER_MISS_NONE:
+    default:
+        break;
+    }
+}
+
+LzStatus LzPole_JudgeLaserReading(double latDeg, double lonDeg, double altM,
+                                  double distanceM)
+{
+    const LzLaserMiss miss = LzPole_ClassifyLaserReading(latDeg, lonDeg, altM, distanceM);
+    if (miss != LZ_LASER_MISS_NONE) {
+        lz_laser_miss_report(miss, latDeg, lonDeg, distanceM);
         return LZ_ERR_NO_TARGET;
     }
-
     return LZ_OK;
 }
 
@@ -335,6 +367,70 @@ double LzPole_ComputeTargetHeight(double laserAltM, double homeAltM)
     return raw;
 }
 
+/**
+ * @brief 把一次激光原始读数变成"该记什么" —— 纯逻辑，零依赖
+ *
+ * 见头文件里的说明。**这里不做 I/O、不打日志**：输出全在返回值里，
+ * 调用方负责呈现 —— 测试才断言得到"三种成因分得开"。
+ */
+LzStatus LzPole_PrepareLaserRecord(const LzLaserRawReading *raw,
+                                   double homeAltM, LzPoleLaserRecord *out)
+{
+    if (raw == NULL || out == NULL) {
+        return LZ_ERR_PARAM;
+    }
+    memset(out, 0, sizeof(*out));
+
+    /* ---- ① 单位换算：SDK 的 `altitude` / `distance` 都是 **0.1 m** ----
+     *
+     * ⚠️ **这一步此前在 `#ifdef` 里，一行都测不到** —— 实测确认过：
+     * 写成 `/ 100.0` 不会有任何测试变红，而表现是"距离小十倍"，
+     * 看起来仍像个合理的读数。抽出来之后 `lz_test_pole` 直接钉住它。
+     *
+     * 经度/纬度是**度**，SDK 直出，不换算（`LzPole_JudgeLaserReading()`
+     * 的头文件注释专门写了"不是 rad"，那是踩过的坑）。 */
+    const double altM = raw->altitudeDm / 10.0;
+    const double distanceM = raw->distanceDm / 10.0;
+
+    out->laserAltM = altM;
+    out->distanceM = distanceM;
+    out->geo.latitudeDeg = raw->latitudeDeg;
+    out->geo.longitudeDeg = raw->longitudeDeg;
+    out->geo.altitudeM = altM;
+
+    /* ---- ② 三道闸 ---- */
+    out->miss = LzPole_ClassifyLaserReading(raw->latitudeDeg, raw->longitudeDeg,
+                                            altM, distanceM);
+    if (out->miss != LZ_LASER_MISS_NONE) {
+        /* 读数不可用 ⇒ 目标高**没算**。显式置 NA 而不是让它留着 memset 的 0
+         * —— 那个 0 曾经等于 NORMAL，读起来像"算过了，正常"。 */
+        out->heightDiag = LZ_LASER_TH_NA;
+        return LZ_ERR_NO_TARGET;
+    }
+
+    /* ---- ③ 目标高：激光海拔 − 起飞点海拔 ----
+     *
+     * 判据在 `LzPole_ComputeTargetHeight()`（同样零依赖）。这里**只做分类**，
+     * 让调用方能按出口说不同的话 —— "打地面"是合法用法（INFO），
+     * 而"超上限"要操作员核对参考面（WARN），两者不能合并成同一句。 */
+    out->targetHeightM = LzPole_ComputeTargetHeight(altM, homeAltM);
+
+    if (!isfinite(homeAltM)) {
+        out->heightDiag = LZ_LASER_TH_NO_HOME;
+    } else {
+        const double rawDiff = altM - homeAltM;
+        if (rawDiff <= 0.0) {
+            out->heightDiag = LZ_LASER_TH_GROUND;
+        } else if (out->targetHeightM <= 0.0) {
+            /* 差为正却被判 0 ⇒ 必然是超上限那一条 */
+            out->heightDiag = LZ_LASER_TH_OVER_MAX;
+        } else {
+            out->heightDiag = LZ_LASER_TH_NORMAL;
+        }
+    }
+    return LZ_OK;
+}
+
 #ifdef LZ_POLE_SOURCE_LASER
 
 /* `[V]` 实测：M4T 的激光测距在位置 1（E1，自带云台相机那一路） */
@@ -379,17 +475,34 @@ LzStatus LzPole_RecordLaser(void)
         return LZ_ERR_IO;
     }
 
-    /* 判定逻辑在 `LzPole_JudgeLaserReading()` 里 —— 它是纯逻辑、零依赖，
-     * 所以那条路能在桌面上被测到。这里只负责取数与落盘。
-     * 拆分的理由见该函数的注释（一次"空转的测试"逼出来的）。 */
-    const double distanceM = info.distance / 10.0;   /* 结构体注释：unit 0.1m */
-    const double altM = info.altitude / 10.0;
+    /* ★ 判据全部在 `LzPole_PrepareLaserRecord()` 里（纯逻辑、零依赖、
+     * 在 `#ifdef` 之外）—— 单位换算、三道闸、目标高分类都在那边，
+     * 所以那条路能在桌面上被测到。本函数只剩**取数**与**呈现**。
+     *
+     * ⚠️ 这个拆分是被"一行都测不到"逼出来的：原先换算与判定都在这个
+     * `#ifdef` 里，实测确认把 `distance / 10.0` 写成 `/ 100.0`
+     * **不会有任何测试变红** —— 而表现是"距离小十倍"，看着仍像个合理读数。 */
+    const LzLaserRawReading raw = {
+        .latitudeDeg = info.latitude,
+        .longitudeDeg = info.longitude,
+        .altitudeDm = (double)info.altitude,
+        .distanceDm = (double)info.distance,
+    };
+    const double homeAlt = LzBridge_GetHomeAltitudeM();
 
-    const LzStatus st = LzPole_JudgeLaserReading(info.latitude, info.longitude,
-                                                altM, distanceM);
+    LzPoleLaserRecord rec;
+    const LzStatus st = LzPole_PrepareLaserRecord(&raw, homeAlt, &rec);
     if (st != LZ_OK) {
+        /* 成因由 `rec.miss` 给 —— 三种处置不同（重新瞄准 / 报 bug / 等定位），
+         * 文案的唯一定义处在 `lz_laser_miss_report()` 里。 */
+        lz_laser_miss_report(rec.miss, raw.latitudeDeg, raw.longitudeDeg,
+                             rec.distanceM);
         return st;
     }
+
+    const double altM = rec.laserAltM;
+    const double distanceM = rec.distanceM;
+    const double targetH = rec.targetHeightM;
 
     /* ---- 目标高度：激光海拔 − 起飞点海拔（用户 2026-09-28 的方案）----
      *
@@ -417,26 +530,34 @@ LzStatus LzPole_RecordLaser(void)
      * 于是量到的是地面高度而不是旗面。这里不试图自动判它 ——
      * 判据不足（旗面飘动 0.5 m 与"打到地面"之间没有干净的分界），
      * 硬判会把正常读数误拒。⇒ 只**如实报出量到的值**，由操作员核对。 */
-    /* 判据在 `LzPole_ComputeTargetHeight()`（纯函数，在 #ifdef 之外，
-     * 桌面上被 lz_test_pole 打得到）。这里只负责取数与**说清楚发生了什么**。 */
-    const double homeAlt = LzBridge_GetHomeAltitudeM();
+    /* ★ 目标高那一步的**分类**已经由 `LzPole_PrepareLaserRecord()` 给在
+     * `rec.heightDiag` 里 —— 这里只负责**按出口说不同的话**。
+     *
+     * 为什么不在这里重算：四个出口的处置不同（"打地面"是合法用法、
+     * "超上限"要核对参考面），重算一遍就等于**判据有两份**，
+     * 改一处另一处不变，而两者都不报错。 */
     const double fusedAlt = LzBridge_GetFusedAltitudeM();
-    const double rawDiff = isfinite(homeAlt) && isfinite(altM) ? (altM - homeAlt) : NAN;
-    const double targetH = LzPole_ComputeTargetHeight(altM, homeAlt);
 
-    if (!isfinite(homeAlt)) {
+    switch (rec.heightDiag) {
+    case LZ_LASER_TH_NO_HOME:
         USER_LOG_WARN("拿不到起飞点海拔 —— 目标高按 0 处理，"
                       "俯仰将瞄地面那一层而不是旗面。"
                       "若本次要打旗面，请等起飞点话题就绪后再记");
-    } else if (isfinite(rawDiff) && rawDiff > 0.0 && targetH <= 0.0) {
-        /* 差为正但被判 0 ⇒ 必然是超上限那一条 */
+        break;
+    case LZ_LASER_TH_OVER_MAX:
         USER_LOG_WARN("激光目标高算出来 %.2f m（激光海拔 %.2f − 起飞点海拔 %.2f）"
                       "—— 超出 %.0f m 上限，按点目标（0）处理。"
                       "请核对参考面，或激光是不是打到远处地面上去了",
-                      rawDiff, altM, homeAlt, LZ_POLE_TARGET_HEIGHT_MAX_M);
-    } else if (isfinite(rawDiff) && rawDiff <= 0.0) {
+                      altM - homeAlt, altM, homeAlt, LZ_POLE_TARGET_HEIGHT_MAX_M);
+        break;
+    case LZ_LASER_TH_GROUND:
         USER_LOG_INFO("激光目标高 %.2f m ≤ 0 —— 按点目标处理（打的是地面）",
-                      rawDiff);
+                      altM - homeAlt);
+        break;
+    case LZ_LASER_TH_NORMAL:
+    case LZ_LASER_TH_NA:   /* 走不到这里：miss 非 NONE 时上面已经 return 了 */
+    default:
+        break;
     }
 
     /* 自洽校验：三个高程同框。飞机融合高是**椭球高**（头文件明写），
