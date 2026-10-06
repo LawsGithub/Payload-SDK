@@ -84,6 +84,22 @@ int main(void)
 {
     /* ---------- 半径 ---------- */
 
+    LZ_CASE("NULL 入参：校验入口必须被拒，且不许崩");
+    {
+        /* 这处守卫此前**零覆盖**（gcov 实测）—— 而它是"谁调用都安全"的
+         * 唯一保证。**校验层的判据不该取决于谁在调用。**
+         *
+         * ⚠️ 拆掉它会**段错误**（实测 rc=139），不是干净的 FAIL ——
+         * 与 `lz_kmz.c` 那两处守卫同形：**守卫没有测试 = 没人知道它还在不在**，
+         * 而崩溃会发生在调用方身上。 */
+        LzOrbitProfile pr = base_profile();
+        LzRoute r;
+        LzRoute_Init(&r);
+        LZ_CHECK(LzPlan_Validate(NULL, &pr) == LZ_ERR_PARAM);
+        LZ_CHECK(LzPlan_Validate(&r, NULL) == LZ_ERR_PARAM);
+        LZ_CHECK(LzPlan_Validate(NULL, NULL) == LZ_ERR_PARAM);
+    }
+
     LZ_CASE("半径：区间内通过");
     {
         LzOrbitProfile pr = base_profile();
