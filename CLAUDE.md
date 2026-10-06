@@ -777,10 +777,22 @@ LzStatus LzPole_Acquire(LzTarget *out);   // 取不到就不起飞
 `hsv` 后端额外注册 `lz_test_vision`（拿 6 张真实照片跑回归），stub 后端不注册
 —— 它刻意不看画面，比对了也证明不了什么。
 
-⚠️ **视觉层仍未接进主链路** `[V]`（2026-09-25 grep 确认）：
-`app/lz_vision_source.c` 里 `LzVisionSource_Start/Stop()` 只有声明、没有实现，
-也没有任何地方调用。所以**程序不看图，也感知不到"有没有红旗"**。
-本轮做的是**算法层**（`lz_core` 侧的 `lz_vision` 库），取图那一环还空着。
+⚠️ **这条已过时** `[V]`（2026-10-06 复核并更正）：
+
+原文写的是「`app/lz_vision_source.c` 里 `LzVisionSource_Start/Stop()` 只有
+声明、没有实现，也没有任何地方调用。所以**程序不看图**」——**那是 2026-09-25
+当时的状态，现在不成立**：
+
+- 实现早已补齐：`lz_vision_source.c` 里有 `LzVisionSource_Init` /
+  `InitWith` / `Stop` / `IsReady` / `LatestFrame` / `GetStats`（grep 可核）。
+- **已经接进主链路**：`lz_visual_align.c`（「识别目标」按钮那条路）
+  与 `lz_vision_probe.c` 都在调它，2026-09-28 已上机跑通完整闭环
+  （见「视觉照准闭环」一节的三轮日志）。
+
+⇒ **程序是看图的。** 引这一条时别再说"视觉没接进去"。
+
+（更正方式是**保留原文并标注**，不是删掉 —— 本项目已经因为"引文与推论混在
+一起"踩过一次（wpml 机型列那条），留痕才能看出当时判断的边界在哪。）
 
 ### ⚠️ 检测的是**杆**，不是旗面中心 `[V]`（2026-09-25 实测，重要）
 
