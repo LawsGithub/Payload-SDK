@@ -85,5 +85,54 @@ int main(void)
         LZ_CHECK(LzGeo_NormalizeDeg(360.0) < 360.0);
     }
 
+    /* ---------------- lz_types：返回值文案与零解判据 ---------------- */
+
+    LZ_CASE("LzStatus_Str：每个枚举都要有非空文案，且互不相同");
+    {
+        /* ⚠️ 这条守的是"文案表漏了一项"这个形状：漏了会落到 `default`
+         * 返回"未知状态"，而**调用方照样能编译能跑** ——
+         * 只是操作员在浮窗上看到一句没有信息量的话。
+         * 本项目在 `LzVisionMiss` 的文案上踩过同源的一次
+         * （"没红块"与"置信度不足"混在一起，把操作员引去调瞄准）。
+         *
+         * 逐个枚举断言**非空**且**不等于兜底那句** —— 后者是"漏了"的判据。 */
+        const LzStatus all[] = {
+            LZ_OK, LZ_ERR_PARAM, LZ_ERR_RANGE, LZ_ERR_UNSAFE, LZ_ERR_NO_TARGET,
+            LZ_ERR_IO, LZ_ERR_UNSUPPORTED, LZ_ERR_UPLOAD, LZ_ERR_START,
+            LZ_ERR_NOT_READY,
+        };
+        for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); ++i) {
+            const char *s = LzStatus_Str(all[i]);
+            LZ_CHECK(s != NULL);
+            LZ_CHECK(s[0] != '\0');
+            LZ_CHECK(strcmp(s, LzStatus_Str((LzStatus)9999)) != 0);
+        }
+        /* 兜底那句本身也要在（越界枚举不能返回 NULL） */
+        LZ_CHECK(LzStatus_Str((LzStatus)9999) != NULL);
+        /* 两条文案不许撞车 —— 撞了就等于少了一项 */
+        LZ_CHECK(strcmp(LzStatus_Str(LZ_ERR_UPLOAD),
+                        LzStatus_Str(LZ_ERR_START)) != 0);
+    }
+
+    LZ_CASE("零解判据：邻域而非精确 0，且 NULL 也算「拿不到定位」");
+    {
+        /* 实测（2026-09-22，室内无 GPS）融合位置给的是
+         * `lon=0.0000004, lat=0.0000003` —— **不是精确的 (0,0)**。
+         * 写 `== 0.0` 的判据会放行它，于是"记录圆心"成功返回一个
+         * 几内亚湾附近的坐标。 */
+        const LzGeo residual = { .latitudeDeg = 0.0000003, .longitudeDeg = 0.0000004 };
+        LZ_CHECK(LzGeo_IsNullSolution(&residual));
+
+        const LzGeo exact = { .latitudeDeg = 0.0, .longitudeDeg = 0.0 };
+        LZ_CHECK(LzGeo_IsNullSolution(&exact));
+
+        /* 邻域**之外**的必须放行 —— 否则判据会把正常坐标也拒掉 */
+        const LzGeo real = { .latitudeDeg = 28.1788, .longitudeDeg = 112.9210 };
+        LZ_CHECK(!LzGeo_IsNullSolution(&real));
+
+        /* NULL 算"拿不到有效定位"（与 `LzGeo_IsValid(NULL) == false` 一致） */
+        LZ_CHECK(LzGeo_IsNullSolution(NULL));
+    }
+
     return LZ_TEST_SUMMARY();
 }
