@@ -1,127 +1,95 @@
 # HANDOFF — 读全文再开始干活
 
-生成时间: 2026-10-05T22:4x+0800 · Git HEAD: `1fb4cd4`
+生成时间: 2026-10-08T01:02+0800 · Git HEAD: `21cf273`
 信任规则: [V] = 交接时已用命令验证；[?] = 仅记忆未复核，当线索对待；[X] = 已证伪，别用。
 
 ## 0. 复核（下一会话先做）
 
-- 锚点: `feature/liangzhourenwu` @ `1fb4cd4`（2026-10-05 22:4x）
-- 漂移检查: **代码快照锚点 = `1fb4cd4`**。⚠️ 本轮 handoff 用了**两个** docs
-  提交（正文 + 锚点修正），所以判据是 `git rev-parse HEAD~2` = `1fb4cd4`
-  —— 而不是惯常的 `HEAD~1`。
-  **这是本轮的一处失手，记在这里以免下次再犯**：handoff 应当一次写对、
-  **一个提交**落盘（或在推之前 `--amend`；一旦推过就只能再加一个提交，
-  而多加的那个会把 `HEAD~1` 判据顶掉）。
-  权威以 `git log --oneline -5` 实际输出为准。
-- **远端已同步到 `1fb4cd4`** `[V]`。推送**必须走代理**，直连挂起：
+- 锚点: `feature/liangzhourenwu` @ `21cf273`（2026-10-08 01:02）
+- 漂移检查: `git rev-parse HEAD~1` 应 = `21cf273`（本次 handoff 是**一个**提交）。
+  ⚠️ **上一份 HANDOFF 的判据在这里失效了** —— 它写 `HEAD~2`，因为它自己是
+  两个提交；而它落盘之后**又来了 6 个提交**（10-06/07），锚点从未更新。
+  **教训：判据要写"用 `git log --oneline -5` 的实际输出比对"，别写死 `HEAD~N`。**
+- **远端已同步到 `21cf273`** `[V]`。推送**必须走代理**，直连挂起：
   ```bash
   GIT_SSH_COMMAND="ssh -o ProxyCommand='nc -X connect -x 127.0.0.1:7890 %h %p'" \
     git push fork feature/liangzhourenwu
   ```
-- **⚠️ 设备当前不在线** `[V]`（2026-10-05 22:1x 与 22:4x 两次实测）：
-  `192.168.1.180` 报 `No route to host`，`ping` 100% 丢包，ARP 表里是
-  `FAILED`。本机 `eth1` 是 `192.168.1.46/24`（有线，网段对）。
-  ⇒ **先确认设备/扩展坞通电**，再谈下面的上机步骤。
+- **⚠️ 设备不在线** `[V]`（2026-10-08 01:02 实测）：`192.168.1.180` ping 100%
+  丢包、ARP `INCOMPLETE`。本机 `eth1` = `192.168.1.46/24`（网段对），
+  **网关 `192.168.1.1` 通（2.3 ms）⇒ 网线没问题，是设备侧没响应**。
+  扫过整个 `192.168.1.0/24`：活着 5 台（`.58/.173/.79/.194/.214`），
+  **22 端口全部拒绝，没有一台是妙算3**。⇒ 先确认扩展坞/设备通电。
   ```bash
-  ip -4 -br addr          # 看哪个接口有线
-  ping -c 2 192.168.1.180 # 再 ip neigh 看 ARP
+  ip -4 -br addr && ping -c2 192.168.1.180 && ip neigh show dev eth1
   ```
-- 上次交接（2026-09-29）时设备在线且**时钟与本机同步**；**但 `tar --mtime`
-  仍必须从设备取时间再减 60 秒**，不要按本机时间算。
 - 先读: [`lz/doc/ONDEVICE-CHECKLIST.md`](lz/doc/ONDEVICE-CHECKLIST.md)
-  （上机执行单，§3.13 是本次新增的复验项）+ `CLAUDE.md`
-  的「云台模式是飞机上的全局状态」与「判据抽进 lz_core」两节。
+  （现场操作单，**§1 控件表本轮刚按界面重排过**）+ `CLAUDE.md` 的
+  「云台模式是飞机上的全局状态」「本机自检的三条新武器」两节。
 
 ## 1. 当前目标
 
-**把 2026-10-01 现场报的「绕飞时云台偏航顶限位 + 云台电机异常」修掉，
-并让这一类问题下次能自己浮出日志。** 代码已改完、桌面已验，
-**完成定义 = 上机按 §6 走一遍，绕飞全程不再出现那两条告警。**
+**把 2026-10-01 现场报的「绕飞时云台偏航顶限位 + 云台电机异常」修掉。**
+
+代码已改完（`1fb4cd4`）、桌面已验、`precheck` 全绿，
+**完成定义 = 上机按清单 §6 走一遍，绕飞全程不再出现那两条告警。**
 
 ## 2. 已验证状态 — 工作实际停在哪
 
-### 本轮（2026-10-05）做了什么
+### 本会话（2026-10-08）只做了文档更正，**没碰代码**
 
-上一个会话（2026-10-01）已经把**根因**修了（`FREE` 用完不还 ⇒ 绕飞时
-pan 关节反向补偿 360° 而它只有 ±60° ⇒ 顶限位 + 电机异常），改动留在
-工作区没提交。本次做的是**收尾 + 把它做成可观测的**：
+`21cf273` 修正两处**与代码矛盾**的控件陈述 —— 现场照着做会找错地方：
 
-| 提交 | 内容 |
-|---|---|
-| `1fb4cd4` | 云台状态判据抽进 `lz_core` + 修三处会误导操作员的缺陷 + 新增 `lz_test_gimbal`（33 项断言）+ `precheck` 四条新检查 |
+| 文件 | 原文 | 实际 |
+|---|---|---|
+| `CLAUDE.md` | "实测 3 个控件 / 控件 5 = 航点数" | **7 个**；航点数是 **6**，半径/高度是 **4/5** |
+| `ONDEVICE-CHECKLIST.md` §1 | 7 个控件平铺成一张表，标题写「PSDK 菜单」 | 分两个界面：`main` 0–3、`config` 4–6 |
 
-⚠️ **`1fb4cd4` 把 2026-10-01 那批未提交的工作一并入库了**（`teardown()`
-恢复 `YAW_FOLLOW`、`lz_mission_start_orbit()` 开头防御性再设一次、
-订阅 `TOPIC_GIMBAL_STATUS`）。它们是**同一件事**，没有拆成两个提交。
+⇒ 同一个事实抄了两份、只有一份跟着改。改法是**删掉重复的那份**、指向唯一真值表。
 
-### 桌面验证 `[V]`（本次交接实跑，真实退出码）
+### 桌面验证 `[V]`（本会话实跑，真实退出码）
 
 ```
-hsv  后端：cmake rc=0，build rc=0，0 warning，ctest 11/11 passed
-stub 后端：cmake rc=0，build rc=0，0 warning，ctest 10/10 passed
-x86_64 PSDK 侧（-DLZ_TARGET_ARCH=x86_64）：build rc=0，本项目文件 0 warning
-          （全部 0 warning —— 连 PSDK 官方 hal/osal 那几个都没出，因为增量构建）
-bash lz/tools/precheck.sh：rc=0，全部通过
-lz_test_gimbal 单跑：33 项检查，0 项失败
+hsv  后端: ctest --test-dir lz/build            → 12/12 passed, rc=0
+stub 后端: cmake -DLZ_VISION_BACKEND=stub + ctest → 11/11 passed, rc=0
+bash lz/tools/precheck.sh                       → rc=0，全部通过
+  3b ASan+UBSan ✓ / 3c aarch64 交叉编译 ✓ / 3d 覆盖率最低 87.10% ✓
 ```
 
-⚠️ **注意目标数变了**：`hsv` 现在是 **11** 个 ctest 目标（多了
-`lz_test_gimbal`），`stub` 是 **10**（stub 不注册 `lz_test_vision`）。
-别再按"10 个"记。
+⚠️ **目标数是 hsv 12 / stub 11** —— 上一份 HANDOFF 写的 "11/10" 已过期
+（多了 `lz_test_mission`）。
 
-### 反向验证 `[V]`（逐条回退，全部实测变红）
+### ⚠️ 设备侧编译打包：**从未做过**
 
-| 回退的改动 | 结果 |
-|---|---|
-| ESC 三个 `!st->escXxxOk` 改成 `st->escXxxOk`（极性抄反） | **8 项失败** |
-| 去掉 `if (!st->mounted)` 先判 | **4 项失败** |
-| `append_item` 退回"写完再看 `snprintf` 返回值" | **2 项失败**，D1 报「= 3280」 |
-| `put_whole` 退回直接 `snprintf` | **2 项失败**，D1 报「= 3840」 |
-| `LZ_GIMBAL_STATUS_BUF` 128 → 96 | **2 项失败** |
-| 删掉 `teardown()` 里恢复 `YAW_FOLLOW` 那一段 | `precheck` 第 2b 项变红 |
-| PSDK 侧手写拼报警文案（不走 `lz_core`） | `precheck`「抄回报警项」变红 |
-| 改 `lz_core` 的 `kYawLimitName` 不同步改 `lz_mission.c` | `precheck`「浮窗分派文案」变红 |
+`1fb4cd4` 的新文件（`lz_gimbal_status.{h,c}`、`lz_test_gimbal.c`、
+`lz_mission_logic.{h,c}`）**从未在 aarch64 上编译过**。
+（precheck 3c 在本机交叉编译过，风险比之前小，但**不等于设备上编得过**。）
+设备上那个旧 dpk 落后得比想象中多 —— `lz_mission.c` 改了 185 行、
+`lz_pole_source.c` 改了 173 行、还多两个新文件。**别直接装旧的。**
 
-### ⚠️ 设备侧编译打包：**本轮没做**（设备不在线）
+### git 状态（事实快照，非待办）
 
-`1fb4cd4` 的**新增源文件**（`lz_gimbal_status.{h,c}`、`lz_test_gimbal.c`）
-**从未在 aarch64 上编译过**。上机前必须先做 §6 第 1 步。
-
-⚠️ 上一轮（2026-09-29）的 dpk 在设备上**已经过时** —— 它不含本次改动。
-**别直接 `dji_app_ctl install` 那个旧的**。
-
-### 现场状态（2026-10-01 记，可能已变）
-
-- 记录的圆心仍在 `/open_app/liangzhourenwu/data/pole.txt`：
-  `lon=112.9263555 lat=28.1712038 alt=50.4 src=laser`
-- 备份在 `/tmp/lz_data_backup_1790623015`（**设备重启会清 `/tmp`**）
-- ⚠️ 上次安装**失败**，报误导性的
-  `Error, verify app user_app_id or version info error` ——
-  真因是**飞机没通电**（`.dpk` 安装器会试运行应用并要求走完 SDK 身份校验）。
-  判据：应用日志里有 `dji_identity_verify.c:654 Update dji sdk policy file
-  successfully`。**所以 §6 第 1 步要求飞机通电。**
+```
+feature/liangzhourenwu @ 21cf273，工作区干净，本地与远端一致
+```
 
 ## 3. 决策与理由
 
-- **判据一律抽进 `lz_core`** `[V]` —— 本轮把云台状态的格式化整块搬走。
-  与 `LzPlan_ClampWaypointCount` / `LzPole_JudgeLaserReading` /
-  `LzAlign_DecideStep` 同一条理由：**判据写在 PSDK 侧 = 桌面测不到 = 没有测试**。
-- **`LzGimbalStatus` 按语义命名（`escPitchOk`，`true = 正常`）** `[V]` ——
-  SDK 的 `escPitchStatus` 名字里**看不出极性**，正是抄反的温床。
-  极性换算挤到边界上唯一一处（`!= 0`）。
-- **`mountStatus=0` 时只报"未挂载"，其余位一概不报** `[V]` ——
-  ESC 位默认 0，取反会翻出"三轴电机全异常"这条**完全错误**的告警。
-  与激光 `exception` 白名单同一个教训的两面：**判据要挂在能自证的量上**。
-- **"整项放不下就整项不写"** `[V]` —— 不能写完再看 `snprintf` 返回值，
-  那时截断已经发生。少一项 ≠ 半个汉字，但两者都不可接受。
-- **首帧原始位图转储** `[V]` —— 极性是从头文件抄的，抄反了不报错、
-  只让告警恰好反过来。**这一条是上机首验项之一**（见 §6 第 4 步）。
-- **不做**：把 `isBusy` / `calibrating` 放进输出串 —— `isBusy` 顶着限位时
-  反复翻转，会让这条告警刷屏（浮窗 2 KB/s，已踩过两次）。
+- **控件的界面归属由语义定** `[V]`（2026-09-28）—— 飞行中操作的（绕飞/记录/识别）
+  放 `main_interface`；起飞前配置的（半径/高度/航点数）放 `config_interface`。
+  索引 0–6 是**跨界面连续序列**，SDK 的 handler 表是扁平的、不区分界面。
+- **`int_input_box` 只能放 `config_interface`** `[V]` —— 放 `main_interface` 时
+  SDK 收下但不渲染成可编辑控件（判据：回调全历史零命中）。**"看得见但改不了"。**
+- **判据一律抽进 `lz_core`** `[V]` —— 云台状态格式化、绕飞状态机转移表、
+  激光判据、`LzAlign_DecideStep` 都搬走了。**判据写在 PSDK 侧 = 桌面测不到 = 没有测试。**
+- **同一事实只留一处真值** `[V]` —— 本会话又踩一次（控件索引抄了两份）。
+  与「安全包线唯一真值在 `lz_plan.h`」是同一条。
+- **覆盖率基线刻意不当 KPI** `[V]` —— 它是"判据抽到桌面"的副产品，
+  用处是**发现判据被搬回 app 层**（抽走会跳、搬回会掉），不是考核指标。
 
 ## 4. 失败的尝试 — 不要再试
 
-（沿上一轮，未变）
+（沿上一份，**全部前向搬运**。上一份说"沿上一轮未变"，本轮同样。）
 
 - **`DjiFcSubscription_GetLatestValueOfTopic`** `[?]` —— SIGSEGV，栈在
   `DjiDataSubscriptionDds_v3_GetLastValueOfTopic` 内部。一律走回调缓存。
@@ -129,73 +97,58 @@ lz_test_gimbal 单跑：33 项检查，0 项失败
   返回 SUCCESS 但随后 SIGSEGV。**返回成功不代表调用合法。**
 - **在控件回调里调任何阻塞接口** `[?]` —— 进程闪退。
 - **`DjiLiveview_Deinit()` 在常驻应用里调** `[V]` —— 黑屏且不自恢复。
-- **同一订阅项重复订阅** `[V]` —— 头文件明写不可。
-  `GIMBAL_ANGLES` 被 `lz_visual_align.c` 以 50Hz 订走，所以新订阅走的是
-  `GIMBAL_STATUS`（10Hz）。
+- **同一订阅项重复订阅** `[V]` —— 头文件明写不可。`GIMBAL_ANGLES` 被
+  `lz_visual_align.c` 以 50Hz 订走，新订阅走 `GIMBAL_STATUS`（10Hz）。
 - **用「整图等比放大」构造变焦用例** `[V]` —— 票数与分母同比例增长，
   退回旧规则照样全绿。必须**画幅定死 + 只缩放目标**。
 - **用 `fscanf` 读"不定字段数"的行** `[V]` —— 返回值会撞车。用 `fgets` + 两次 `sscanf`。
 - **拿 18:32:49 那一轮反推俯仰增益** `[V]` —— 检测框换到别的红色物体上了。
 - **拿 66.2° 当 HFOV** `[V]` —— 正确值 69.63°（4:3 + 82°）。
-- **「PSDK 不能转自带云台」** `[X]` —— `dji_gimbal.h` 与 `dji_gimbal_manager.h` 是两回事。
-- **「让 Pilot 2 显示红旗」** `[X]` —— 三处独立失败，`SendAiMetaToPilot`
-  返回 SUCCESS 是**假阳性**。
-- **`exception` 白名单** `[X]` —— 实测 `0` 也是有效读数。
-- **零解判据写 `== 0.0`** `[X]` —— 用 `LzGeo_IsNullSolution`。
-- **`(unsigned)rc` 打 PSDK 返回码** `[X]` —— `uint64_t`，用 `%llX`。
-- **`-DPSDK_ROOT=~/path`** `[X]` —— `~` 不被展开（用 `$HOME`）；改了必须重跑 cmake。
-- **"模拟器不实现航点启动"** `[X]` —— 已撤回（证据不足）。
 - **给宏体里的一行加 `//` 注释** `[V]` —— 宏展开成语法垃圾。
 - **交叉编译** `[V]` —— 产物要求 GLIBC 2.34，设备 2.31。
-- **`tar --mtime='@0'`** `[V]` —— 让 make 静默跳过编译。用设备时间 −60 s。
+- **`tar --mtime='@0'`** `[V]` —— 让 make 静默跳过编译。用**设备时间 −60 s**。
 - **不排除 `lz/build*` 就打 tar** `[V]` —— x86 产物混进 aarch64 构建。
 - **在仓库根建 `build-native`** `[V]` —— 必须是 **`lz/build-native`**。
 - **`app.json` 缺 `description_jp/fr`** `[V]` —— `build_dpk.sh` 报 `KeyError`。
-- **用 `/dev/tcp` 扫网段找设备** `[X]` —— 254 个假阳性，用 `ping` + `ip neigh`。
 - **在 ctest 里给测试传相对路径数据目录** `[V]` —— 用 `LZ_VISION_TESTDATA`。
-- **`DjiWidget_DeInit()` 不存在** `[X]`。
-- **Waypoint V2 用于 M4T** `[X]` —— 官方只支持 M300/M350。
-- **兴趣点环绕（`DjiInterestPoint_*`）可控半径** `[X]`。
-- **在妙算3 应用管理面板里找控件** `[X]` —— 在 Pilot 相机视图左侧「PSDK」菜单。
-- **`precheck` 里用 `check_call` 查"判据有没有被抄回来"** `[V]`（本轮实测）——
-  它只问符号在不在文件里，而符号在注释里也出现。实测替换掉真正的调用，
-  它**照样绿**。拦得住的是"文案不许出现在 PSDK 侧"那条。两条都留，分工写在注释里。
+- **`precheck` 里用 `check_call` 查"判据有没有被抄回来"** `[V]` ——
+  它只问符号在不在文件里，而注释里也算。实测替换掉真正的调用它**照样绿**。
+  拦得住的是"文案不许出现在 PSDK 侧"那条。两条都留，分工写在注释里。
+- **`[X]` 类（已证伪，别用）**：`exception` 白名单 / 零解判据写 `== 0.0` /
+  `(unsigned)rc` 打返回码 / `-DPSDK_ROOT=~/path` / "模拟器不实现航点启动" /
+  "PSDK 不能转自带云台" / "让 Pilot 2 显示红旗"（`SendAiMetaToPilot` 返回
+  SUCCESS 是假阳性）/ `DjiWidget_DeInit()` 不存在 / Waypoint V2 用于 M4T /
+  兴趣点环绕可控半径 / 在妙算3 应用管理面板里找控件 / 用 `/dev/tcp` 扫网段。
 
 ## 5. 已知坑
 
 - **`.dpk` 安装器会试运行应用并要求走完 SDK 身份校验** `[V]` ——
-  **飞机不通电就装不上**，而报的是误导性的 `verify app user_app_id or
-  version info error`。判据：应用日志里有
-  `dji_identity_verify.c:654 Update dji sdk policy file successfully`。
+  **飞机不通电就装不上**，报误导性的 `verify app user_app_id or version
+  info error`。判据：日志里有 `dji_identity_verify.c:654 Update dji sdk
+  policy file successfully`。
 - **`Smart3DExplore` 会自启占 PSDK 通道** `[V]` —— 跑程序前先
   `pgrep -x Smart3DExplore >/dev/null || /system/bin/dji_app_ctl stop Smart3DExplore`。
-- **`systemctl restart dji_sdk_agent` 需要 root** `[V]`。
+- **改了源码却是旧行为** `[V]` —— 传完源码必须 `rm -rf lz/build-native` 全量重编。
 - **`CMakeCache.txt` 会记住旧开关** `[V]` —— 传新源码后要显式重配。
-- **改了源码却是旧行为** `[V]` —— 两个来源：`tar --mtime='@0'` 与设备时钟跳变。
-  ⇒ 传完源码必须 `rm -rf lz/build-native` 全量重编，光 `--build` 不可靠。
+- **`hsv` 12 个 ctest 目标、stub 11 个** `[V]`（2026-10-08 实测）——
+  stub 不注册 `lz_test_vision`。**别按旧数字（11/10）记。**
 - **`SetMode(FREE)` 在 M4T 上是否生效未知** `[?]` —— issue #555 说没有 FREE
-  模式，而 `lz_gimbal_probe` 实测两个模式都返回 SUCCESS，"返回 SUCCESS ≠ 生效"。
-- **云台 `.z` 是不是 yaw 未单独验过** `[?]` —— `.x` = pitch 已实测标定。
-- **`GetOpticalZoomParam().currentOpticalZoomFactor` 可能只报光学倍率** `[?]` ——
-  判据：日志 `zoom=` 与 Pilot 界面显示对照。
-- **激光海拔与起飞点海拔的参考面可能不一致** `[?]` —— 已用"三个高程同框"暴露。
-- **`hsv` 后端 11 个 ctest 目标、stub 10 个** `[V]` —— stub 不注册 `lz_test_vision`
-  与 `lz_test_gimbal` 无关（后者两个后端都跑）。别按旧数字记。
-- **加"人造图形"用例必须先验证"拆掉被测逻辑它会红"** `[V]`。
-- **注释里不能写 `*/`** `[V]`。
-- **`-1` 会满足 `<= 1`** `[V]` —— 负值哨兵与正数阈值共用变量时判断顺序决定成败。
-- **管道下 stdio 全缓冲** `[V]` —— 实时监视类程序每行 `fflush(stdout)`。
-- **gdb 抓 PSDK 进程要先 `handle SIG32 nostop noprint pass`** `[V]`。
-- **`/blackbox/system/app_temp_files/` 是 root:root 0755** `[?]` —— 删不掉。
-- **Probe 退出时 SDK 在 deinit 段报一堆错并 dump core** `[V]` —— 不影响前面的功能。
-- **Pilot 会攥着缓存的控件会话不刷新** `[V]` —— 控件全无响应时**先查
-  `0x3C1A`**（有 = 应用侧正常；心跳 `0x2105` 在而它为 0 = Pilot 没发按键），
-  **别一上来就改代码**。
+  模式，而探针实测两个模式都返回 SUCCESS，"返回 SUCCESS ≠ 生效"。
+- **云台 `.z` 是不是 yaw 未单独验过** `[?]`；**`GetOpticalZoomParam` 可能只报
+  光学倍率** `[?]`；**激光海拔与起飞点海拔参考面可能不一致** `[?]`。
+- **Pilot 会攥着缓存的控件会话不刷新** `[V]` —— 控件全无响应时**先查 `0x3C1A`**
+  （有 = 应用侧正常；心跳 `0x2105` 在而它为 0 = Pilot 没发按键），**别一上来改代码**。
+- **`-1` 会满足 `<= 1`** / **注释里不能写 `*/`** / **管道下 stdio 全缓冲** /
+  **gdb 抓 PSDK 进程要先 `handle SIG32 nostop noprint pass`** /
+  **`/blackbox/system/app_temp_files/` 是 root:root 0755**（删不掉）/
+  **Probe 退出时 SDK 在 deinit 段 dump core**（不影响前面的功能）——
+  均 `[V]`，细节见 CLAUDE.md「已知坑（本项目特有）」。
 
 ## 6. 下一步（有序）
 
-1. **让设备上线**（本次交接时它不在线）。确认后先做设备侧编译打包
-   —— **`1fb4cd4` 的新文件从未在 aarch64 上编译过**：
+1. **让设备上线**（本会话两次实测都不通）。判据：`ping 192.168.1.180` 通
+   且 `ip neigh` 有 ARP 条目。**不要用 `/dev/tcp` 扫网段。**
+2. **设备侧编译打包**（新文件从未在 aarch64 上编过）：
    ```bash
    DEVT=$(sshpass -p 'dji' ssh dji@192.168.1.180 'date +%s')
    tar czf /tmp/lzbuild.tar.gz --mtime="@$((DEVT - 60))" \
@@ -205,52 +158,31 @@ lz_test_gimbal 单跑：33 项检查，0 项失败
    scp /tmp/lzbuild.tar.gz dji@192.168.1.180:/tmp/lzsrc.tar.gz
    # 设备上：解包 → rm -rf lz/build-native → cmake（hsv + LASER=ON）→ build → ctest
    ```
-   判据：`ctest` 上 **11/11 passed**（aarch64 侧与桌面 hsv 同数）。
-2. **飞机通电并连接，装新 dpk**：
-   ```bash
-   pgrep -x Smart3DExplore >/dev/null || /system/bin/dji_app_ctl stop Smart3DExplore
-   /system/bin/dji_app_ctl install -i ~/dpk/liangzhourenwu_v01.00.00.00.dpk
-   ```
-   判据：日志出现 `Update dji sdk policy file successfully`。
-3. **验修复（本次的主目标）**：跑一次「识别目标」再跑一次绕飞。
-   - 日志应出现 `绕飞前：云台模式已确认为 YAW_FOLLOW`
-   - 照准收尾应出现 `照准收尾：云台模式已恢复 YAW_FOLLOW`
-   - **绕飞全程不再出现 `云台状态：偏航限位` / `偏航电机异常`**，
-     云台也不再报"电机异常"。
-   - ⚠️ 若这一行**没有**而是 `云台模块初始化失败`，说明 `Init` 被别处占着
-     —— 记下来发回来。
-4. **核对首帧原始位图**（新增，§3.13）：日志里那行
-   `云台状态原始位图（首帧，仅一次）：0x…` 与 `限位[pitch=… ] ESC[…]`。
-   徒手把云台顶到某个轴的限位，看**哪一位翻转**，与 `lz_bridge_psdk.c`
-   里那张 bit 表对一遍（bit2/3/4 = 三轴限位、bit11/12/13 = 三轴 ESC、
-   bit10 = gyroFalut、bit0 = mountStatus）。
-   **这是唯一能验"极性没抄反"的办法。**
-5. **验变焦（上一轮修的，仍未验）**：Pilot 变焦到 **7.0X**，按「识别目标」。
-   日志应出现 `zoom=7.0×` 且 `vfov≈8.5`。
-   ⚠️ **若 `zoom` 显示 3.0 而非 7.0** ⇒ `GetOpticalZoomParam` 只报光学倍率，
-   **告诉用户**（需换有效倍率来源）。
-6. **验 `SetMode(FREE)` + 云台 yaw 轴**（不需飞行）：**不按按钮**，
-   徒手把机头转 30° 左右，看日志 `yaw=` 是否**不变**。
-7. **验横向闭环**：按「识别目标」，看红旗水平位置是否被拉到中央。
-   机头离红旗超过 ±60° 会报"请把机头朝红旗方向拨一下" —— **预期行为**。
-8. **验绕飞弧线**：拨开关，看航迹回放是不是弧、到点瞬间云台还跳不跳。
-9. **回填 `[?]`**：把 §5 里四条 `[?]` 按实测结果升级，更新 `CLAUDE.md`
-   与 `lz/doc/ONDEVICE-CHECKLIST.md`。
+   判据：`ctest` 上 **12/12 passed**（aarch64 侧与桌面 hsv 同数）。
+3. **飞机通电并连接，装新 dpk**：判据是日志出现
+   `Update dji sdk policy file successfully`。
+4. **验修复（主目标）**：跑一次「识别目标」再跑一次绕飞。
+   日志应有 `绕飞前：云台模式已确认为 YAW_FOLLOW` 与
+   `照准收尾：云台模式已恢复 YAW_FOLLOW`，且**绕飞全程不再出现
+   `云台状态：偏航限位` / `偏航电机异常`**。
+5. **核对首帧原始位图**（清单 §3.13）—— **这是唯一能验"极性没抄反"的办法**。
+   徒手把云台顶到某轴限位，看哪一位翻转，与 `lz_bridge_psdk.c` 的 bit 表对照。
+6. **按清单 §3.1–§3.8 逐条走**（航点数输入框 → 绕飞链路 → `towardPOI` →
+   弧线 → `gotoFirstWaypoint` → 云台 yaw → 机型枚举 → POI 备选）。
+   ⚠️ **航点数在 Payload Settings 里，不在 PSDK 菜单** —— 见清单 §1b。
+7. **回填 `[?]`**：把 §5 里四条按实测结果升级，同步 `CLAUDE.md` 与清单。
 
 ## 7. 留给用户的开放问题
 
-- **设备为什么不在线？** 上次交接（2026-09-29）还通，本次两次实测都不通
-  （`No route to host` + ARP `FAILED`）。是扩展坞没插、设备没通电、
-  还是网段变了（本机 `eth1` = `192.168.1.46/24`，网段是对的）？
-- **激光飘走打到后方地面**没有自动判据（旗面飘动 ±0.5 m 与"打到地面"之间
-  没有干净分界，硬判会误拒）。目前只如实报出量到的值由操作员核对 ——
-  用户当初指出过这个风险，**是否需要更主动的检测**？
-- **检测框换目标时不察觉**：若另一个红色物体恰好也在 v≈0.5 附近，照准会报
-  "已对准"。要根治得加"身份连续性"判据 —— **那是新功能，不是修 bug**。
+- **设备为什么不在线？** 2026-10-05 与本次两次实测都不通，网关却通。
+  扩展坞没插？设备没通电？还是又换网段了？
 - **急停后没有返航按钮** —— 拨 OFF 只是 STOP；`finishAction=gotoFirstWaypoint`
   正常飞完也停在杆旁不返航。建议加独立 button 调
   `DjiFlightController_StartGoHome()`。**未实现。**
+- **激光飘走打到后方地面**没有自动判据（旗面飘动 ±0.5 m 与"打到地面"之间
+  没有干净分界，硬判会误拒）。是否需要更主动的检测？
+- **检测框换目标时不察觉** —— 另一个红色物体恰在 v≈0.5 附近时，照准会报"已对准"。
+  根治要加"身份连续性"判据，**那是新功能不是修 bug**。
 - **半径上限 20 m** —— 用户提过后期会变大，需先确认新场地约束。
-- **`Smart3DExplore` 要不要卸载** —— 它占通道且会自启，但是 DJI 预装的。
-- **`gimbalEvenlyRotate` 要不要用** —— 规范里它是"航段间均匀转动云台"的
-  正解，与逐点 `gimbalRotate` 是两套互斥机制。本次只关掉了逐点 yaw。
+- **`gimbalEvenlyRotate` 要不要用** —— 规范里它是"航段间均匀转动云台"的正解，
+  与逐点 `gimbalRotate` 是两套互斥机制。本次只关掉了逐点 yaw。
