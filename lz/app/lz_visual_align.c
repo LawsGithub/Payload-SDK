@@ -74,7 +74,7 @@
 #include "lz_vision_source.h"
 #include "lz_widget.h"        /* 浮窗消息 */
 
-/* M4T 原生相机（含激光、含云台）实测在位置 1 —— 见 CLAUDE.md */
+/* M4T 原生相机（含激光、含云台）实测在位置 1 —— 见 lz/doc/LASER-AND-POLE.md */
 #define LZ_ALIGN_MOUNT DJI_MOUNT_POSITION_PAYLOAD_PORT_NO1
 
 /**
@@ -302,7 +302,7 @@ static double read_zoom(void)
  * 验证不了**（2026-10-06 复核：**不是**"没验过"，是"验不了" —— 见下）：
  * 现有 6 张测试图的裁剪窗口恰好等于整幅图（旗都在 minY=20，裁剪取
  * `旗top-20 .. 旗top+300`），于是杆的上下端在图上**全贴着图边**
- * —— 量到的是"裁到哪儿"，不是"杆在哪儿"。见 CLAUDE.md「步骤 3 卡在测试数据上」。
+ * —— 量到的是"裁到哪儿"，不是"杆在哪儿"。见 lz/doc/VISION.md「步骤 3」。
  *
  * ⇒ **这是降级方案**：现场"旗在杆顶"，旗中点比杆中点高，
  *   15 m 杆、旗占顶上 1.5 m ⇒ 差 6.75 m，12.5 m 外约 28°。

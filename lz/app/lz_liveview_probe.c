@@ -65,8 +65,8 @@ static uint8_t s_frame[LZ_VISION_SOURCE_MAX_PIXELS * 3];
 /**
  * @brief 打印并立刻刷出去
  *
- * ⚠️ **这不是多此一举，是本项目踩过两次的坑**（见 CLAUDE.md
- * 「输出重定向到管道/文件时 stdio 是全缓冲」）：
+ * ⚠️ **这不是多此一举，是本项目踩过两次的坑**（见
+ * lz/doc/BUILD-DEPLOY.md「输出重定向到管道/文件时 stdio 是全缓冲」）：
  *
  * 探针的输出被 `>` 到文件、或经 sshd 转发时，stdio 变成**全缓冲**，
  * 攒够 4 KB 才可见。而探针最需要输出的恰恰是**卡住之前**那几行

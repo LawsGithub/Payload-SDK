@@ -28,9 +28,9 @@ lz_app       机载应用，依赖 PSDK（-DLZ_BUILD_PSDK_APP=ON）← 默认关
 **视觉刻意不用 OpenCV**：国旗是高饱和红色块，HSV 双区间阈值足够。
 好处是 WSL 与妙算3 都不必装 OpenCV，且视觉层能在桌面上直接跑测试。
 
-**视觉后端为什么默认 `stub`**：`hsv` 后端已实现，但**还没接进主链路**
-（取图那一环空着，见 CLAUDE.md）。默认 stub 是为了让「拨开关 → 飞机绕一圈」
-这条链路先能整体跑通。
+**视觉后端为什么默认 `stub`**：`hsv` 后端已实现且**已接进主链路**
+（见 [`lz/doc/VISION.md`](doc/VISION.md)）；默认 stub 是为了让「拨开关 →
+飞机绕一圈」这条链路在无图环境下也能整体跑通。
 
 **`hsv` 后端怎么验证**（6 张真实俯拍照片的回归测试，约 1.6 MB 数据入库）：
 
@@ -41,7 +41,8 @@ node tools/render_vision_check.js tests/data /tmp/check.png   # 人工核对图
 ```
 
 ⚠️ 检测的是**杆**（`LzTarget.pixel.u` = 杆列），**不是旗面中心** ——
-实测两者相差 −3.7% ~ +4.1% 画面宽且**随风向变号**，标定不掉。详见 CLAUDE.md。
+实测两者相差 −3.7% ~ +4.1% 画面宽且**随风向变号**，标定不掉。详见
+[`lz/doc/VISION.md`](doc/VISION.md)「检测的是**杆**，不是旗面中心」。
 
 ## 桌面自检（秒级，零依赖）
 
@@ -68,7 +69,7 @@ tar czf /tmp/lzbuild.tar.gz --mtime="$(date -d '+30 seconds' '+%Y-%m-%d %H:%M:%S
      lz psdk_lib/include psdk_lib/lib/aarch64-linux-gnu-gcc \
      samples/sample_c/platform/linux/{manifold3,common}
 
-# 设备：解包后（时间戳必须是设备当前时间附近，见 CLAUDE.md 的坑）
+# 设备：解包后（时间戳必须是设备当前时间附近，见 lz/doc/BUILD-DEPLOY.md）
 cmake -S lz -B build-native -DLZ_BUILD_PSDK_APP=ON -DPSDK_ROOT=<包根>
 make -C build-native -j4
 

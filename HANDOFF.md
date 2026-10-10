@@ -24,8 +24,9 @@
   ip -4 -br addr && ping -c2 192.168.1.180 && ip neigh show dev eth1
   ```
 - 先读: [`lz/doc/ONDEVICE-CHECKLIST.md`](lz/doc/ONDEVICE-CHECKLIST.md)
-  （现场操作单，**§1 控件表本轮刚按界面重排过**）+ `CLAUDE.md` 的
-  「云台模式是飞机上的全局状态」「本机自检的三条新武器」两节。
+  （现场操作单，§1 控件表按界面分两张）+ `CLAUDE.md`（已瘦身，含文档导航）
+  + [`lz/doc/GIMBAL.md`](lz/doc/GIMBAL.md) 的「云台模式是飞机上的全局状态」
+  与 [`lz/doc/CORE-TESTING.md`](lz/doc/CORE-TESTING.md) 的「本机自检三条新武器」。
 
 ## 1. 当前目标
 
@@ -142,7 +143,7 @@ feature/liangzhourenwu @ 21cf273，工作区干净，本地与远端一致
   **gdb 抓 PSDK 进程要先 `handle SIG32 nostop noprint pass`** /
   **`/blackbox/system/app_temp_files/` 是 root:root 0755**（删不掉）/
   **Probe 退出时 SDK 在 deinit 段 dump core**（不影响前面的功能）——
-  均 `[V]`，细节见 CLAUDE.md「已知坑（本项目特有）」。
+  均 `[V]`，细节见 [`lz/doc/BUILD-DEPLOY.md`](lz/doc/BUILD-DEPLOY.md)「已知坑（本项目特有）」。
 
 ## 6. 下一步（有序）
 

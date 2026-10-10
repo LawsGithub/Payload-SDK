@@ -251,7 +251,7 @@ int main(int argc, char **argv)
                  * `LzGeo_IsValid` 取反** —— 实测（2026-09-24 写这条时踩到）：
                  * 未填的 `geo` 是 memset 出来的全 0，而 `(0, 0)` 在经纬度
                  * 范围内**完全合法**，`LzGeo_IsValid` 会放行。这正是
-                 * CLAUDE.md 里记的那个坑："零解在经纬度范围内合法"。
+                 * lz/doc/BUILD-DEPLOY.md 记的那个坑："零解在经纬度范围内合法"。
                  * 用错的判据会让这条断言永远为真 —— 而"恒真的断言"
                  * 与"没写断言"是同一件事。 */
                 LZ_CHECK(t->heightM <= 0.0);

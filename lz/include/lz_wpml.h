@@ -111,7 +111,7 @@
  *    逐点写 yaw 是错的路子。
  *
  * ⇒ 只保留 pitch：云台 yaw 由 `towardPOI` 的机头跟随带着走（M4T 的 pan
- * 轴本来就不能独立于机头偏转，见 CLAUDE.md「绕飞怎么让相机盯着杆」）。
+ * 轴本来就不能独立于机头偏转，见 lz/doc/WPML-ORBIT.md「绕飞怎么让相机盯着杆」）。
  *
  * ⚠️ `gimbalYawRotateAngle` 元素**仍然照写**（规范标为必需元素），
  * 只是 `Enable` 置 0 —— 它的值仍是该点看向杆心的方位角，

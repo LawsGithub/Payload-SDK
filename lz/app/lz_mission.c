@@ -234,7 +234,7 @@ T_DjiReturnCode LzMission_DeInit(void)
  * 2. `DjiGimbalManager_*` 必须在 `DjiCore_Init` **之后**才能用，而这里
  *    一定满足（主循环里、`ApplicationStart` 之后）。
  * 3. **不在 `main()` 启动路径上加阻塞调用** —— `dji_app_ctl install` 会试运行
- *    应用并要求走完 SDK 身份校验（CLAUDE.md 硬规则），启动路径越干净越好。
+ *    应用并要求走完 SDK 身份校验（lz/doc/BUILD-DEPLOY.md），启动路径越干净越好。
  *
  * ## 刻意**不**阻断启动
  *

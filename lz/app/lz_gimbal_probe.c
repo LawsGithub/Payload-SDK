@@ -20,7 +20,8 @@
  * 1. **`DjiGimbalManager_Init()` 能不能成功** —— 不能就全完了
  * 2. **云台角度读得回来吗** —— 订阅 `GIMBAL_ANGLES` 走**回调缓存**
  *    （⚠️ `DjiFcSubscription_GetLatestValueOfTopic` 在本 SDK 版本上**必崩**，
- *    见 CLAUDE.md；官方样例用的正是那个会崩的接口，**照抄样例会崩**）
+ *    见 lz/doc/BUILD-DEPLOY.md 的「已证伪的路」；官方样例用的正是那个
+ *    会崩的接口，**照抄样例会崩**）
  * 3. **`SetMode` 接受哪些模式** —— 逐个试 FREE / YAW_FOLLOW，各自读回
  * 4. **`Rotate` 转到指定角度要多久、准不准** —— 下发后用**轮询读回**等它收敛，
  *    报告「实际到位值 / 耗时 / 是否稳定」。⚠️ 因为 #563 说速度对不上，
@@ -59,7 +60,7 @@
 #include "platform/lz_platform.h"
 #include "platform/lz_user_info.h"
 
-/* M4T 原生相机（含激光、含云台）实测在位置 1 —— 见 CLAUDE.md */
+/* M4T 原生相机（含激光、含云台）实测在位置 1 —— 见 lz/doc/LASER-AND-POLE.md */
 #define LZ_GIMBAL_MOUNT DJI_MOUNT_POSITION_PAYLOAD_PORT_NO1
 
 static void say(const char *fmt, ...)

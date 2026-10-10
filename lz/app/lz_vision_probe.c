@@ -171,7 +171,7 @@ static bool detect_once(double *outU, double *outV, double *outConf,
          *
          * 为什么不是杆中点：杆的上下端要 `lz_pole_extent` 的结果，而它
          * **还没验证过**（现有 6 张测试图的裁剪窗口恰好等于整幅图，
-         * 量到的是图边而不是杆端 —— 见 CLAUDE.md「步骤 3 卡在测试数据上」）。
+         * 量到的是图边而不是杆端 —— 见 lz/doc/VISION.md「步骤 3」）。
          * 在拿到现场杆的近景照片之前，用旗中心是**唯一有依据**的选择；
          * 但它是**降级方案**，所以这里显式打出来，不假装等价。 */
         *outV = (t->pixel.topV + t->pixel.bottomV) * 0.5;

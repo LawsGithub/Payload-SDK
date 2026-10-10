@@ -328,7 +328,8 @@ LzStatus LzPole_JudgeLaserReading(double latDeg, double lonDeg, double altM,
  * 与 `LzPole_JudgeLaserReading()` 完全同一个理由（那条注释写得更细）：
  * 判定是纯逻辑、取数才依赖相机接口。放在 `#ifdef` 里面的话，
  * 桌面测试**根本编不到它** —— 于是"改了判定逻辑，测试照样绿"，
- * 而本项目已经在完全相同的地方踩过一次（激光零解闸门，见 CLAUDE.md）。
+ * 而本项目已经在完全相同的地方踩过一次（激光零解闸门，
+ * 见 lz/doc/CORE-TESTING.md「判据对 ≠ 接线对」）。
  *
  * ## 量的是什么
  *
@@ -663,7 +664,7 @@ static double lz_pole_target_height(void)
      * **把激光打在旗面上** —— 那时靶子不是"地面上的一个点"，而是
      * **离地 h 米的一个点**，`-h/2` 那一项必须真的用上。
      *
-     * 现场实测的差距（CLAUDE.md 记过同一形状）：打地面点当圆心时，
+     * 现场实测的差距（lz/doc/LASER-AND-POLE.md 记过同一形状）：打地面点当圆心时，
      * 写死 15 m 会让俯仰偏 5.04°（20 m 外 1.76 m，画面里 118 px）；
      * 反过来，打旗面时按 0 处理也会偏 —— 而且偏的方向相反。
      *
