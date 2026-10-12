@@ -178,10 +178,21 @@ double LzPlan_ComputeGimbalPitchDeg(double radiusM, double altAboveTargetM,
      * 理由见头文件。 */
     const double h = (isfinite(targetHeightM) && targetHeightM > 0.0) ? targetHeightM : 0.0;
 
-    /* 瞄目标**中点**：竖直方向上的居中，与机头瞄杆心（水平方向居中）对称。
+    /* 瞄目标**顶端**（用户 2026-10-12 指定）：现场要的是"红旗落在画面中心"，
+     * 而旗挂在杆顶 —— 瞄杆顶 = 让旗居中。
+     *
+     * ⚠️ **早先是瞄中点（`h * 0.5`）**，理由是"让整根杆落在画面中央、上下留余量"。
+     * 那个理由预设了"观测对象是整根杆"，与"看旗"的实际用途不符：
+     * 半径 20 m / 高度 20 m / 杆高 15 m 时两者差 **18°**（-32.0° vs -14.0°），
+     * 20 m 外 6.5 m —— 杆会明显偏出画面。
+     *
+     * ⚠️ **代价（已与用户确认并接受）**：改瞄杆顶后，**低高度 + 大半径时
+     * 杆的中下段会落到画面下缘之外**。高高度时两者差别很小（12.5 m/80.9 m
+     * 下只差 1.1°），所以这个代价只在小半径/低高度组合下显现。
+     *
      * atan2 的参数次序是 (纵向差, 横向) —— 写反了得到的是余角，
      * 而余角在 45° 附近看起来"差不多"，正是那种改错了不容易发现的地方。 */
-    return -atan2(altAboveTargetM - h * 0.5, radiusM) * 180.0 / M_PI;
+    return -atan2(altAboveTargetM - h, radiusM) * 180.0 / M_PI;
 }
 
 LzStatus LzPlan_BuildOrbit(const LzTarget *target,
