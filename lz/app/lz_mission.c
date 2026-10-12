@@ -449,7 +449,7 @@ static void lz_mission_handle_record(void)
         LzTarget tgt;
         if (LzPole_Acquire(&tgt) == LZ_OK && tgt.heightM > 0.0) {
             LzWidget_PostMessage("✓ 已记录激光点为圆心：%.7f, %.7f（目标高 %.1f m "
-                                 "—— 俯仰将瞄它的中点）",
+                                 "—— 俯仰将瞄杆顶）",
                                  recorded.latitudeDeg, recorded.longitudeDeg,
                                  tgt.heightM);
         } else {

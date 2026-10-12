@@ -542,7 +542,7 @@ LzStatus LzPole_RecordLaser(void)
     switch (rec.heightDiag) {
     case LZ_LASER_TH_NO_HOME:
         USER_LOG_WARN("拿不到起飞点海拔 —— 目标高按 0 处理，"
-                      "俯仰将瞄地面那一层而不是旗面。"
+                      "俯仰将瞄地面那一层而不是杆顶。"
                       "若本次要打旗面，请等起飞点话题就绪后再记");
         break;
     case LZ_LASER_TH_OVER_MAX:
@@ -725,7 +725,7 @@ LzStatus LzPole_Acquire(LzTarget *out)
      *
      * ⚠️ **两个来源当前都是"点"**，所以都填 0。写成本函数而不是常量，
      * 是为了将来视觉那条路（识别到**杆**）接进来时**只改这一处**：
-     * 那时它会填实测杆高，而"瞄中点"的语义自动生效。
+     * 那时它会填实测杆高，而"瞄杆顶"的语义自动生效。
      *
      * ⚠️ `heightM = 0` 在 `LzPlan_ComputeGimbalPitchDeg` 里走的是
      * "高度未知按 0 处理"分支 —— 语义正确（瞄目标所在的那层水平面），
@@ -736,7 +736,7 @@ LzStatus LzPole_Acquire(LzTarget *out)
                   LzPole_SourceName(),
                   out->geo.latitudeDeg, out->geo.longitudeDeg,
                   out->heightM,
-                  (out->heightM > 0.0) ? "瞄中点" : "点目标，瞄它自身");
+                  (out->heightM > 0.0) ? "瞄杆顶" : "点目标，瞄它自身");
     return LZ_OK;
 }
 
