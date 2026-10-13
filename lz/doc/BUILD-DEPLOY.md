@@ -12,6 +12,12 @@ tools/build_dpk/build_dpk.sh -i lz/app_json/app.json -o ~/dpk
 dji_app_ctl install -i ~/dpk/liangzhourenwu_v01.00.00.00.dpk
 ```
 
+⚠️ **编译那一步的完整命令见
+[`ONDEVICE-CHECKLIST.md`](ONDEVICE-CHECKLIST.md) §0b** `[V]`（2026-10-12 实测）——
+它需要**三个 `-D`**（`LZ_BUILD_PSDK_APP=ON` / `PSDK_ROOT` /
+`LZ_VISION_BACKEND=hsv`），少一个都**不报错**，只是静默产出错的东西
+（不生成 `lz_app`，或产出 stub 后端）。别照记忆敲。
+
 - 构建目录名必须是 `build-native`（`app.json` 的 `bin` 指向 `../build-native/bin/lz_app`）。
 - `app.json` 的 `userconfig` 必须是 `["../app/widget_file"]` —— `build_dpk.sh` 会
   `cp -r` 到**包根**，产出 `/open_app/<app>/widget_file/`，与运行时 CWD（包根）一致。
@@ -143,3 +149,16 @@ tar czf /tmp/lzbuild.tar.gz --mtime="@$((DEVT - 60))" \
   `gdb -batch -ex "handle SIG32 nostop noprint pass" -ex run -ex bt --args <bin> <args>`
 - **诊断程序必须在读之前就打印并 flush** `[V]`（2026-09-20）——崩溃会吞掉
   stdio 缓冲区里没刷出去的内容，而那几行恰恰是定位崩溃点的关键。
+- **`/blackbox/system/app_temp_files/<app>_*.log` 不是应用日志** `[V]`
+  （2026-10-12 实测）—— 那个文件只有一行，内容是
+  `'data/logs/latest.log' -> 'DJI_0015_...log'`（**字符串**，不是软链）。
+  真日志在 **`/open_app/<app>/data/logs/`**。两者前缀相同、都叫"日志"，极易找错。
+- **设备 cmake 是 3.16，`ctest --test-dir` 不存在** `[V]`（2026-10-12 实测）——
+  该选项是 CMake **3.20** 才加的。传了它 3.16 **不报错**，只打一句
+  `No tests were found!!!`（**看起来像"没编测试"，实际是参数被忽略**）。
+  必须 `cd <builddir> && ctest --output-on-failure`。
+- **`dji_app_ctl stop <app>` 之后 `Smart3DExplore` 会自启** `[V]`
+  （2026-10-12 实测）—— 紧接着跑探针会撞
+  `local channel bind failed, Address already in use` +
+  `Identify device error`（误导性地像"机型不匹配"）。
+  **每跑一次探针前都要重新 `stop Smart3DExplore`。**
