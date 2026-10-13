@@ -33,10 +33,24 @@ bash lz/tools/precheck.sh
 pgrep -x Smart3DExplore >/dev/null || /system/bin/dji_app_ctl stop Smart3DExplore
 
 # 设备本机编译（绝不交叉编译）
-cd ~/lzbuild && cmake -S lz -B build-native && cmake --build build-native -j4
+# ⚠️ 三个 -D 一个都不能少 —— 漏了不会报错，只会**静默**产出错的东西：
+#   LZ_BUILD_PSDK_APP 默认 OFF ⇒ 只编 lz_core 测试，**不生成 lz_app**
+#   PSDK_ROOT 没有默认值 ⇒ 上面那个打开后不加它就 FATAL_ERROR
+#   LZ_VISION_BACKEND 默认 stub ⇒ 「识别目标」永远报"已对准"（见 §0c）
+# 构建目录必须是 lz/build-native（app.json 的 bin 相对 app_json 解析）
+cd ~/lzbuild && cmake -S lz -B lz/build-native \
+    -DLZ_BUILD_PSDK_APP=ON -DPSDK_ROOT=$HOME/lzbuild \
+    -DLZ_VISION_BACKEND=hsv -DLZ_POLE_SOURCE_LASER=ON \
+  && cmake --build lz/build-native -j4
+
+# 判据：配置阶段必须出现这一行（没有 = 凭据没读进去）
+#   已从 .../lz_credentials.ini 载入机载应用凭据（App ID 184842）
+
+# 验证（设备 cmake 是 3.16，**没有** --test-dir 选项，必须 cd 进去）
+cd lz/build-native && ctest --output-on-failure    # 判据：12/12 passed
 
 # 打包安装（装包需要飞机通电并连接）
-tools/build_dpk/build_dpk.sh -i lz/app_json/app.json -o ~/dpk
+cd ~/lzbuild && tools/build_dpk/build_dpk.sh -i lz/app_json/app.json -o ~/dpk
 dji_app_ctl install -i ~/dpk/liangzhourenwu_v01.00.00.00.dpk
 ```
 
@@ -44,13 +58,69 @@ dji_app_ctl install -i ~/dpk/liangzhourenwu_v01.00.00.00.dpk
 且不能用 `--mtime='@0'`（会让 make 静默跳过编译）。完整命令见 `lz/doc/BUILD-DEPLOY.md`
 「设备侧打包清单」。
 
-**装完先确认它真的起来了**：应用日志里应出现
-`Update dji sdk policy file successfully`（`dji_identity_verify.c:654`）——
-没有这行说明身份校验没走完，安装器会把它误报成
-`Error, verify app user_app_id or version info error`。
+**装完先确认身份校验走完了**（`[V]` 2026-10-12 实测）：
 
-日志位置：`/blackbox/system/app_temp_files/liangzhourenwu_*.log` `[?]`
-（文件名前缀按 `app.json` 的 `name_en`，**未实测**；找不到就 `ls` 该目录看实际名）。
+日志在 **`/open_app/liangzhourenwu/data/logs/`**，按应用名分目录，不是
+`/blackbox/...`。判据（文件名是 `DJI_NNNN_<日期>_<时间>.log`，`latest.log` 软链）：
+
+```bash
+L=/open_app/liangzhourenwu/data/logs/$(readlink /open_app/liangzhourenwu/data/logs/latest.log)
+grep -c "dji_identity_verify.c:654" $L      # 判据：≥ 1
+```
+
+⚠️ **`/blackbox/system/app_temp_files/liangzhourenwu_*.log` 是误导** `[V]` ——
+那个文件只有一行，内容是 `'data/logs/latest.log' -> 'DJI_0015_...log'`
+（一个**字符串**，不是软链，且 `root:root` 写不了）。真正的日志在上面那个路径。
+两者前缀相同、都叫"日志"，极易找错。
+
+⚠️ **`[lz] 启动` 这类 `printf` 不进日志文件** —— 它们走 stdout，而应用由
+`dji_app_ctl` 拉起时 stdout 没有落到这个文件里。日志里能看到的只有
+`USER_LOG_*` 的行（带 `lz_widget.c:NNN` 那种）。别把"看不到 `[lz]`"当成没启动。
+
+### 0c. ⚠️ 云台状态话题在 M4T 上订不上 —— **主目标的观测手段失效** `[V]`
+
+**2026-10-12 上机实测**：应用启动后日志里恒定出现
+
+```text
+lz_bridge_psdk.c:394  订阅 云台状态 失败 rc=0x00000100（诊断会缺这一项）
+lz_bridge_psdk.c:402  启动诊断已就绪（7/8 个飞机状态话题订阅成功，10Hz，走回调缓存）
+```
+
+`0x00000100` = `DJI_ERROR_SYSTEM_MODULE_RAW_CODE_NOT_FOUND`。SDK 自己给出的
+病因在同一时刻的日志里，只有一行：
+
+```text
+sub [Error] dji_data_subscription_dds_v3.c:363  Get dds string info error
+```
+
+⇒ **是飞机固件没把 `TOPIC_GIMBAL_STATUS`（话题 27）挂到 DDS 总线上**，
+不是我们的代码写错（话题号、结构体、频率、字节额度都核过，全对）。
+
+**对照实验（同一次上机，`lz_gimbal_probe`）**：
+
+| 项 | 结果 |
+|---|---|
+| 飞机识别 | `Matrice 4T, MountPosition = Extension Port` ✅ |
+| 话题 **26** `GIMBAL_ANGLES` 订阅 | `rc=0x00000000` ✅ 50 条/秒 |
+| 话题 **27** `GIMBAL_STATUS` 订阅 | `rc=0x00000100` ❌ NOT_FOUND |
+| 云台 Rotate −30/−60/−90/0 | **误差全 0.00°** ✅ 完全可控可读 |
+
+⇒ 云台本身没问题，**只有 27 号这一条话题不可用**。头文件对 27 号的说明里
+没有"仅部分机型"的限制，官方样例也从未订阅过它 —— 这是首次在真机上试。
+
+**为什么这条卡住主目标**：2026-10-01 修「绕飞云台偏航顶限位」时新增的
+**唯一可观测性**就是这条订阅（见 `lz/doc/GIMBAL.md`）。它订不上 ⇒ §3.13
+的判据「绕飞全程不再报云台电机异常」**无法从日志读出来**，只剩操作员目视。
+
+**可用替代**：`TOPIC_GIMBAL_ANGLES`（26）已证可用，且能给出 `pitch/roll/yaw`
+的**角度**——「偏航角达到限位」这个现象**可以从 yaw 角顶到边界看出来**。
+但它给不出 `yawLimited` / `escYawStatus` 那两个布尔位（「云台电机异常」完全没有
+替代）。**替代方案尚未实现，先记录事实。**
+
+**试的时候注意**：`dji_app_ctl stop liangzhourenwu` 之后 **`Smart3DExplore`
+会自启抢通道**（实测），紧接着跑探针会报
+`local channel bind failed, Address already in use` + `Identify device error`。
+**每跑一次探针前都要重新 `stop Smart3DExplore`。**
 
 ---
 
@@ -436,6 +506,10 @@ pan 只有 ±60°  ⇒ 绕出去 60° 就顶到机械限位，然后一直顶着
 | `lz_mission.c` 的 `lz_mission_start_orbit()` 开头 | **防御性**再设一次 `YAW_FOLLOW` —— 进程被杀、或飞机上残留着旧版本留下的 `FREE` 时兜底 |
 
 ### 新增的可观测性（此前这两件事**日志里一个字都没有**）
+
+> 🚨 **2026-10-12 实测：这条订阅在 M4T 上订不上**（`rc=0x00000100` NOT_FOUND，
+> 飞机固件没挂这个话题）。**本节以下全部内容在修复前都不会产生任何输出** ——
+> 包括本节末尾「上机复验」的四条判据。详见 **§0c**。
 
 订阅了 `TOPIC_GIMBAL_STATUS`（10Hz，**不是**被照准订走的 `GIMBAL_ANGLES`），
 主循环里**只在内容变化时**报一行：
