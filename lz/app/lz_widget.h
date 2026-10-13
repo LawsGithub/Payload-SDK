@@ -166,6 +166,19 @@ bool LzWidget_TakeRecordRequest(LzPoleRecordKind *kind);
 bool LzWidget_TakeAlignRequest(void);
 
 /**
+ * @brief 取走"操作员按了标定地面按钮"的请求（取走即清，只返回一次 true）
+ *
+ * 与 `LzWidget_TakeAlignRequest()` 同一个模式：**回调只置标志，主循环干活**。
+ * 标定要调 `DjiCameraManager_GetLaserRangingInfo()`（同步阻塞，最多 1.2 s），
+ * 塞进控件回调里会把 PSDK 的工作线程卡死 —— 2026-09-22 就是这么闪退的。
+ *
+ * ⚠️ 标定**必须在起飞前、飞机还在起降点**做（见 `LzPole_CalibrateGround()`）。
+ * 这里不做时机校验 —— 判据在操作员那边（他自己知道飞机在不在起降点），
+ * 硬拦反而会在"起飞后又想重标一次"时挡住他。
+ */
+bool LzWidget_TakeCalibRequest(void);
+
+/**
  * @brief 报告绕飞已结束，并提醒操作员开关仍在 ON 位
  *
  * ## ⚠️ 它**做不到**把开关程序化拨回 OFF —— 别再照旧描述写

@@ -56,6 +56,51 @@ typedef enum {
 } LzPoleRecordKind;
 
 /**
+ * @brief 标定**地面基准**（激光海拔）—— 目标高的参考零点
+ *
+ * ## 操作时机（**必须是起飞前、飞机还在起降点**）
+ *
+ * 飞机在地面时，把激光打向**飞机附近的平整地面**，按「标定地面」。
+ * 那一刻的激光海拔就是"地面"这个参考面。
+ *
+ * ⚠️ **标定与测量必须同一架次、同一场地** —— 它存的是**绝对海拔**，
+ * 换了场地或重新上电（定位重收敛）后可能失效，须重标。
+ *
+ * ## 为什么需要它
+ *
+ * 见 `LzPole_ComputeTargetHeight()` 的长注释：原先用"起飞点海拔"当零点，
+ * 而它与激光海拔**参考面不同**（气压高 vs 椭球高），相减系统性偏约 38 m。
+ * 用激光自己标自己的地面，参考面问题被彻底绕开。
+ *
+ * ## 落盘
+ *
+ * 写 `data/ground.txt`（与 `pole.txt` 分开 —— 两者的生命周期不同：
+ * 杆位每次作业重记，地面基准一个场地标一次）。掉电后仍在。
+ *
+ * @return `LZ_OK` = 标定成功；
+ *         `LZ_ERR_IO` = 读不到激光；
+ *         `LZ_ERR_NO_TARGET` = 读数不可用（无回波 / 坐标非法 / 零解）
+ */
+LzStatus LzPole_CalibrateGround(void);
+
+/**
+ * @brief 地面基准海拔（米）；**没标定过返回 NaN**
+ *
+ * 返回 NaN 而不是 0：0 是一个**合法的海拔**（海平面附近），
+ * 用它当"没标定"的哨兵会让"标定过、且地面正好在海平面"与"没标定"
+ * 撞在一起 —— 本项目在"零解判据写 `== 0.0`"上踩过同一个形状。
+ */
+double LzPole_GetGroundAltM(void);
+
+/**
+ * @brief 从磁盘读回地面基准（进程启动时调一次）
+ *
+ * 与 `LzPole_LoadRecorded()` 同一个模式：没有文件是**正常状态**
+ * （还没标定过），返回 `LZ_ERR_NOT_READY`，不是错误。
+ */
+LzStatus LzPole_LoadGround(void);
+
+/**
  * @brief 取得绕飞圆心
  *
  * @param out [out] 目标杆；`geo` 被填成已记录的坐标
@@ -137,7 +182,11 @@ typedef enum {
  * @brief 目标高度那一步走到了哪个出口
  *
  * 与 `LzLaserMiss` 同一个理由：四个出口的处置不同（"打地面"是**合法用法**，
- * 而"超上限"要操作员核对参考面），合并成"算出来是 0"就分不开了。
+ * 而"超上限"要操作员核对），合并成"算出来是 0"就分不开了。
+ *
+ * ⚠️ **2026-10-13 起，"起飞点海拔"换成了"地面基准"**（标定得来）——
+ * 因为实测发现前者与激光海拔**参考面不同**（气压高 vs 椭球高），
+ * 相减会系统性偏掉约 38 m。详见 `LzPole_ComputeTargetHeight()` 的说明。
  */
 typedef enum {
     /* ⚠️ 0 是"这次读数不可用、目标高没算" —— **不是** NORMAL。
@@ -145,9 +194,9 @@ typedef enum {
      * `heightDiag` 留成 NORMAL，读起来像"算过了，正常"。 */
     LZ_LASER_TH_NA = 0,      /*!< 不适用：读数不可用，目标高没算 */
     LZ_LASER_TH_NORMAL,      /*!< 差落在 (0, MAX]，正常 */
-    LZ_LASER_TH_GROUND,      /*!< 差 ≤ 0 —— 打的是地面，**合法** */
-    LZ_LASER_TH_OVER_MAX,    /*!< 差 > MAX —— 参考面不一致 / 打到远处 */
-    LZ_LASER_TH_NO_HOME,     /*!< 拿不到起飞点海拔 */
+    LZ_LASER_TH_GROUND,      /*!< 差 ≤ 0 —— 激光打在**基准那一层**（地面），合法 */
+    LZ_LASER_TH_OVER_MAX,    /*!< 差 > MAX —— 打到远处 / 基准标错 */
+    LZ_LASER_TH_NO_GROUND,   /*!< **还没标定地面基准** —— 操作员须先按「标定地面」 */
     /* ⚠️ **刻意没有"激光海拔拿不到"这一项**：它不可达。
      * 实测（2026-10-06）`altitudeDm = NaN` 时 `LzGeo_IsValid()` 的
      * **有限性检查**在更前面就把它拦成 `LZ_LASER_MISS_BAD_COORD`，
@@ -179,6 +228,7 @@ typedef struct {
     LzLaserHeightDiag heightDiag; /*!< 目标高走到了哪个出口 */
 } LzPoleLaserRecord;
 
+
 /**
  * @brief 三道闸的**分类**结果 —— 纯逻辑，不打日志
  *
@@ -200,7 +250,7 @@ LzLaserMiss LzPole_ClassifyLaserReading(double latDeg, double lonDeg,
  *
  * 1. **单位换算**：`altitude` / `distance` 是 **0.1 m**（结构体注释明写）
  * 2. **三道闸**：无距离 / 坐标非法 / 零解 —— 分类结果进 `miss`
- * 3. **目标高**：激光海拔 − 起飞点海拔 —— 分类结果进 `heightDiag`
+ * 3. **目标高**：激光海拔 − 地面基准 —— 分类结果进 `heightDiag`
  *
  * ## 为什么必须抽出来
  *
@@ -218,33 +268,67 @@ LzLaserMiss LzPole_ClassifyLaserReading(double latDeg, double lonDeg,
  * 传进来却不用的参数会让下一个读代码的人以为它参与判定，
  * 进而以为"改了它会影响结果"。日志由调用方自己打。
  *
- * @param raw       原始读数（单位 0.1 m）
- * @param homeAltM  起飞点海拔（米）；NaN = 拿不到
- * @param out       [out] 结果；`NULL` 时返回 `LZ_ERR_PARAM`
+ * @param raw        原始读数（单位 0.1 m）
+ * @param groundAltM 地面基准海拔（米，标定得来）；**NaN = 没标定过**
+ * @param out        [out] 结果；`NULL` 时返回 `LZ_ERR_PARAM`
  * @return `LZ_OK` = 可用；`LZ_ERR_NO_TARGET` = 不可用（**成因看 `out->miss`**）；
  *         `LZ_ERR_PARAM` = `out == NULL`
  */
 LzStatus LzPole_PrepareLaserRecord(const LzLaserRawReading *raw,
-                                   double homeAltM, LzPoleLaserRecord *out);
+                                   double groundAltM, LzPoleLaserRecord *out);
 
 /**
- * @brief 由「激光点海拔 − 起飞点海拔」算**目标离地高度**（**纯逻辑，零依赖**）
+ * @brief 由「激光点海拔 − 地面基准海拔」算**目标离地高度**（**纯逻辑，零依赖**）
  *
- * ## 用法与来历（用户 2026-09-28 的方案）
+ * ## ⚠️ 2026-10-13：基准从「起飞点海拔」改成「标定的地面海拔」
  *
- * 把激光打在**旗面**上时，`LaserRangingInfo.altitude` 就是旗面那个点的
- * 高程；减去起飞点海拔就是旗面离地多高。这条比"距离 × 云台俯仰角"
- * 少两个误差源：俯仰角有噪声（实测 Rotate 实速只有下发的 10–20%），
- * 经纬度解算还要机身自身定位参与。
+ * ### 实测暴露的问题
  *
- * ## 三个出口，都不猜
+ * 原方案（用户 2026-09-28）是 `激光海拔 − 起飞点海拔`。2026-10-13 现场实测
+ * 证明**这两个量的参考面不同**：
+ *
+ * | 场景 | 激光点海拔 | 起飞点海拔 | 飞机椭球高 | 距离 | 反算目标高 |
+ * |---|---|---|---|---|---|
+ * | **瞄地面** | 34.10 | −4.15 | 61.71 | 30.9 m | **38.25** ❌ |
+ * | **瞄杆顶** | 49.60 | −4.15 | 61.72 | 18.8 m | 53.75 |
+ *
+ * 三条独立证据：
+ * 1. 地面读数稳定在 33.2–34.3、杆顶在 48.5–51.6 ⇒ 真实杆高约 **16 m**
+ * 2. `飞机椭球高 61.72 − 地面 33.5 = 28.2 m`，而同一时刻的飞行高度是
+ *    **29.1 m** ⇒ **激光海拔与飞机椭球高同一参考面（WGS84 椭球高）**
+ * 3. `ALTITUDE_OF_HOMEPOINT` 头文件原文：`"altitude from sea level ...
+ *    also uses the ICAO model"` ⇒ 它是**气压高**
+ *
+ * ⇒ 相减等于把椭球高与气压高混在一起，**系统性偏掉约 38 m**
+ * （本场地 37.6 m，且**随场地地面高程变**）。
+ *
+ * ### 后果（为什么必须修，不是"偏一点"）
+ *
+ * `targetHeightM` 直接进俯仰公式的 `-h` 项。取 11:40 那次（半径 14.4、
+ * 高度 29.1）：正确杆高 16 ⇒ **−42.3°**（俯视），错值 53.75 ⇒ **+59.7°**
+ * （上仰）—— **方向都反了，差 102°**。相机在瞄天空。
+ *
+ * 还有一个潜伏风险：`LZ_POLE_TARGET_HEIGHT_MAX_M` 是 60 m，而错误偏移
+ * 随场地变。本例 33.5 + 37.6 = 53.65 勉强没超；**换个地面更高的场地，
+ * 杆高还没超、和就已经超过 60，会被整个判成 0**（静默失效）。
+ *
+ * ### 新方案：地面标定
+ *
+ * 操作员在**起飞前、飞机还在起降点**时按「标定地面」，程序把那一刻的
+ * 激光海拔记为**地面基准**（落盘 `data/ground.txt`）。之后
+ * `targetHeight = 激光海拔 − 地面基准`。
+ *
+ * 为什么这样对：标定与测量**来自同一个传感器、同一个坐标系**，
+ * 参考面问题被彻底绕开 —— 而飞机自身的绝对高度不参与任何一步。
+ *
+ * ## 出口，都不猜
  *
  * | 情形 | 返回 |
  * |---|---|
  * | 两值有限且差落在 `(0, LZ_POLE_TARGET_HEIGHT_MAX_M]` | 那个差 |
- * | 差 ≤ 0（激光打的是地面） | **0** —— 合法用法，瞄它自身 |
- * | 差 > 上限（参考面不一致 / 打到远处） | **0**，并在日志里报出原始值 |
- * | 任一值拿不到（NaN） | **0** |
+ * | 差 ≤ 0（激光打在基准那一层） | **0** —— 合法用法，瞄它自身 |
+ * | 差 > 上限（打到远处 / 基准标错） | **0**，并在日志里报出原始值 |
+ * | **没标定过**（`groundAltM` 是 NaN） | **0** |
  *
  * ⚠️ **超限不"钳位到上限"而取 0**：钳位会把一个明显错的量伪装成
  * "一个很高的目标"，而取 0 至少是已知合法的那种用法。
@@ -254,10 +338,11 @@ LzStatus LzPole_PrepareLaserRecord(const LzLaserRawReading *raw,
  * 本项目已经因为"判据在 ifdef 里、测试编不到"踩过一次（激光零解闸门）。
  *
  * @param laserAltM 激光点海拔（米）；NaN = 拿不到
- * @param homeAltM  起飞点海拔（米）；NaN = 拿不到
+ * @param groundAltM 地面基准海拔（米，标定得来）；**NaN = 没标定过**
  * @return 目标离地高度（米）；不可用时 0
  */
-double LzPole_ComputeTargetHeight(double laserAltM, double homeAltM);
+double LzPole_ComputeTargetHeight(double laserAltM, double groundAltM);
+
 
 /**
  * @brief 从磁盘读回上次记录的圆心（进程启动时调一次）

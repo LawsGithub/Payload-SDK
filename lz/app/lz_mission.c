@@ -488,6 +488,53 @@ static void lz_mission_handle_record(void)
     }
 }
 
+/**
+ * @brief 处理「标定地面」按钮（2026-10-13 新增）
+ *
+ * ## 它解决的是什么
+ *
+ * 目标高（杆高）原先由"激光海拔 − **起飞点海拔**"算，而现场实测证明
+ * 这两个量**参考面不同**（激光=椭球高、起飞点海拔=气压高），
+ * 系统性偏约 38 m —— 瞄地面算出 38.25 m，瞄杆顶算出 53.75 m（真实杆高
+ * 约 16 m）。俯仰因此**方向都反了**（差 102°）。完整证据链见
+ * `LzPole_ComputeTargetHeight()`。
+ *
+ * 本按钮把"地面"这个参考零点**改用激光自己标定**：起飞前飞机在起降点、
+ * 激光打向附近平整地面，那一刻的激光海拔就是地面。
+ *
+ * ## 为什么用独立标志而不是复用记录那条路
+ *
+ * 标定与记录**产出完全不同**（一个写 `ground.txt` 定参考面，
+ * 一个写 `pole.txt` 定圆心），共用 kind 会让"这一次按的是哪个"多一层
+ * 需要维护的约定。两个 bool 各自独立、语义直白。
+ *
+ * ## 回执措辞
+ *
+ * ⚠️ 成功时**把基准值报出来**，并提示"之后记杆顶" —— 标定本身没错，
+ * 但操作员若在飞机已起飞后才标，基准就成了"当时飞机下方那层"，
+ * 之后算出的目标高会整体偏掉。报出数值让他能自己发现这种情形。
+ */
+static void lz_mission_handle_calib(void)
+{
+    if (!LzWidget_TakeCalibRequest()) {
+        return;
+    }
+
+    const LzStatus st = LzPole_CalibrateGround();
+    if (st == LZ_OK) {
+        LzWidget_PostMessage("✓ 地面基准已标定：%.1f m —— 之后「记录激光点」"
+                             "请瞄准杆顶", LzPole_GetGroundAltM());
+    } else if (st == LZ_ERR_UNSUPPORTED) {
+        LzWidget_PostMessage("✗ 本包未启用激光，无法标定地面");
+    } else if (st == LZ_ERR_NO_TARGET) {
+        LzWidget_PostMessage("✗ 标定失败：激光没打到地面，请对准再按");
+    } else if (st == LZ_ERR_IO) {
+        LzWidget_PostMessage("✗ 标定失败：读激光数据出错，详见日志");
+    } else {
+        LzWidget_PostMessage("✗ 标定失败：%s", LzStatus_Str(st));
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* 状态机                                                              */
 /* ------------------------------------------------------------------ */
@@ -551,6 +598,10 @@ void LzMission_Tick(void)
      * （操作员可以在任何时候记录圆心），而且它可能耗时 1.2 秒 ——
      * 放在状态机之前，避免被绕飞的状态转移耽误。 */
     lz_mission_handle_record();
+
+    /* 「标定地面」按钮：同样是"回调只置标志、这里干活"。
+     * 它要调阻塞的激光接口，所以也不能放在控件回调里。 */
+    lz_mission_handle_calib();
 
     /* 「识别目标」按钮：回调只置标志，这里把它转成照准模块的请求。
      *

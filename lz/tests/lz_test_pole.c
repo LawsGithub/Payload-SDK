@@ -40,11 +40,25 @@
  * build_dpk.sh 建好 data/ 是同一个前提。 */
 #define LZ_TEST_POLE_DIR "data"
 #define LZ_TEST_POLE_FILE "data/pole.txt"
+/* 地面基准的落盘路径（2026-10-13 新增）—— 必须与
+ * `lz_pole_source.c` 的 `LZ_GROUND_RECORD_PATH` 一致。 */
+#define LZ_TEST_GROUND_FILE "data/ground.txt"
 
 /** 直接写一个文件，用来构造"上次记录的"或"被改坏的"输入 */
 static void write_file(const char *content)
 {
     FILE *fp = fopen(LZ_TEST_POLE_FILE, "w");
+    if (fp == NULL) {
+        return;
+    }
+    fputs(content, fp);
+    fclose(fp);
+}
+
+/** 写一个**指定路径**的文件（地面基准那条路用） */
+static void write_file_to(const char *path, const char *content)
+{
+    FILE *fp = fopen(path, "w");
     if (fp == NULL) {
         return;
     }
@@ -329,7 +343,7 @@ int main(void)
          * 里面的话，桌面构建根本不编它 —— 改了判定逻辑测试照样绿。
          * 本项目已经在完全相同的地方踩过一次（激光零解闸门）。 */
 
-        /* 1. 正常：打旗面。10 m 高的旗面，起飞点在 0 m 那层 */
+        /* 1. 正常：打旗面。地面基准 40 m，旗面在 50 m ⇒ 离地 10 m */
         LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(50.0, 40.0), 10.0, 1e-9);
         LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(40.02, 40.0), 0.02, 1e-9);
 
@@ -338,7 +352,7 @@ int main(void)
         LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(39.7, 40.0), 0.0, 1e-9);
         LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(0.0, 100.0), 0.0, 1e-9);
 
-        /* 3. 超上限 ⇒ 0（参考面不一致 / 打到远处）。
+        /* 3. 超上限 ⇒ 0（打到远处 / 基准标错）。
          *    ⚠️ **不是钳位到上限** —— 钳位会把明显错的量伪装成
          *    "一个很高的目标"。取 0 至少是已知合法的那种用法。 */
         LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(40.0 + 1000.0, 40.0), 0.0, 1e-9);
@@ -347,48 +361,108 @@ int main(void)
         LZ_CHECK(LzPole_ComputeTargetHeight(
                      40.0 + LZ_POLE_TARGET_HEIGHT_MAX_M - 0.01, 40.0) > 0.0);
 
-        /* 4. 拿不到起飞点海拔 ⇒ 0，**不猜一个典型杆高** */
+        /* 4. **没标定过地面基准** ⇒ 0，**不猜一个典型杆高**。
+         *
+         * ⚠️ 这是 2026-10-13 新增的出口 —— 原先是"拿不到起飞点海拔"。
+         * 两者形状相同（基准拿不到 ⇒ 不猜），但**成因与处置完全不同**：
+         * 起飞点海拔拿不到是"等话题就绪"，地面基准没标定是
+         * "操作员忘了按「标定地面」按钮"。 */
         LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(50.0, 0.0 / 0.0), 0.0, 1e-9);
         LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(0.0 / 0.0, 40.0), 0.0, 1e-9);
         LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(0.0 / 0.0, 0.0 / 0.0), 0.0, 1e-9);
         LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(1.0 / 0.0, 40.0), 0.0, 1e-9);
+
+        /* 5. ⚠️ **回归用例：2026-10-13 现场实测的那两个数**。
+         *
+         * 现场用旧公式（减起飞点海拔 −4.15）算出：
+         *   瞄地面 ⇒ 38.25 m（**错**，应为 0）
+         *   瞄杆顶 ⇒ 53.75 m（**错**，应为约 16 m）
+         *
+         * 新公式（减标定地面基准）下，同样两次读数应为：
+         *   地面基准 = 33.5（现场地面读数）
+         *   瞄地面 33.5 − 33.5 = 0      ✅ 点目标
+         *   瞄杆顶 49.6 − 33.5 = 16.1   ✅ 真实杆高
+         *
+         * 这两个数是**从真实日志抄下来的**，不是编的 —— 守的就是"别再退回
+         * 减起飞点海拔"。 */
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(33.5, 33.5), 0.0, 1e-9);
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(49.6, 33.5), 16.1, 1e-9);
+        /* 而用旧的错误基准（−4.15）会得到 38.25 —— 断言它**不再**是那样 */
+        LZ_CHECK(LzPole_ComputeTargetHeight(34.10, -4.15) > 30.0);
     }
 
-    LZ_CASE("目标高度要能落盘并读回（th= 字段；旧文件缺它时按 0）");
+    LZ_CASE("杆位落盘/读回；目标高改为「alt − 地面基准」用时现算");
     {
-        /* ⚠️ **本条只覆盖"读"这一侧** —— 写那一侧由下面
-         * 「原始读数 → 该记什么」一组用例覆盖（走
-         * `LzPole_PrepareLaserRecord()`，它在 `#ifdef` 之外）。
+        /* ⚠️ **本条 2026-10-13 改过语义**。
          *
-         * 本条 2026-10-06 之前写的是"写侧在桌面上测不到，只能靠上机看日志"。
-         * 那句话**当时是对的**（判据全在 `#ifdef` 里），现在**不再成立** ——
-         * 单位换算、三道闸、目标高分类都已抽出来。
+         * 旧版：`th=` 是记录时算好存下来的目标高，本用例断言读回后
+         * `t.heightM == 9.75`。
          *
-         * 仍然留在设备上验的只剩：SDK 的取数本身（`GetLaserRangingInfo`
-         * 返回什么）与两个海拔话题就绪与否。那是观测，不是判据。 */
-        /* ⚠️ `th=` 是**后加的**字段。旧文件（现场设备上那份）没有它 ——
-         * 读旧文件必须**当作目标高 0**，而不是判成坏文件。
-         * 判错会让操作员莫名其妙地丢掉一条本来可用的记录。 */
+         * 新版：`th=` **已退役** —— 目标高由 `alt − groundAlt` 用时现算
+         * （理由见 `lz_record_save()` / `lz_pole_target_height()` 的说明）。
+         * 所以本用例改成：写一个地面基准文件，断言**现算**的结果。
+         *
+         * ⚠️ 但仍要**接受带 `th=` 的旧文件** —— 设备上现存的那份就是旧格式，
+         * 读不回来会让操作员莫名其妙丢掉一条本来可用的记录。 */
+        LzPoleLaserRecord rec;
+        (void)rec;
+
+        /* ---- 地面基准：55 − 9.75 = 45.25 ⇒ 目标高 9.75（等价于旧行为） ---- */
+        remove(LZ_TEST_GROUND_FILE);
         remove(LZ_TEST_POLE_FILE);
-        write_file("lon=112.9500000 lat=28.1800000 alt=55.0 th=9.75 src=laser\n");
+        write_file_to(LZ_TEST_GROUND_FILE, "groundAlt=45.25\n");
+        LZ_CHECK(LzPole_LoadGround() == LZ_OK);
+        write_file("lon=112.9500000 lat=28.1800000 alt=55.0 src=laser\n");
         LZ_CHECK(LzPole_LoadRecorded() == LZ_OK);
         LZ_CHECK(LzPole_Acquire(&t) == LZ_OK);
         LZ_CHECK_NEAR(t.heightM, 9.75, 1e-9);
 
-        /* 旧格式（4 字段，无 th=）⇒ 目标高 0，仍要能读回 */
+        /* ---- 旧格式（带 th=）仍要能读回；`th` 被**忽略**，
+         *      真值来自 alt − groundAlt ---- */
+        remove(LZ_TEST_POLE_FILE);
+        write_file("lon=112.9500000 lat=28.1800000 alt=55.0 th=999.00 src=laser\n");
+        LZ_CHECK(LzPole_LoadRecorded() == LZ_OK);
+        LZ_CHECK(LzPole_Acquire(&t) == LZ_OK);
+        /* th=999 被忽略，仍是 55 − 45.25 = 9.75 */
+        LZ_CHECK_NEAR(t.heightM, 9.75, 1e-9);
+        LZ_CHECK_NEAR(t.geo.latitudeDeg, 28.1800000, 1e-7);
+
+        /* ---- 没标定地面基准 ⇒ 目标高 0（点目标），但仍能读回杆位 ---- */
+        remove(LZ_TEST_GROUND_FILE);
+        LZ_CHECK(LzPole_LoadGround() == LZ_ERR_NOT_READY);
         remove(LZ_TEST_POLE_FILE);
         write_file("lon=112.9500000 lat=28.1800000 alt=55.0 src=laser\n");
         LZ_CHECK(LzPole_LoadRecorded() == LZ_OK);
         LZ_CHECK(LzPole_Acquire(&t) == LZ_OK);
         LZ_CHECK_NEAR(t.heightM, 0.0, 1e-9);
-        LZ_CHECK_NEAR(t.geo.latitudeDeg, 28.1800000, 1e-7);
+    }
 
-        /* th=0（打地面）与"没有 th="等价 —— 都是点目标 */
-        remove(LZ_TEST_POLE_FILE);
-        write_file("lon=112.9500000 lat=28.1800000 alt=55.0 th=0.00 src=laser\n");
-        LZ_CHECK(LzPole_LoadRecorded() == LZ_OK);
-        LZ_CHECK(LzPole_Acquire(&t) == LZ_OK);
-        LZ_CHECK_NEAR(t.heightM, 0.0, 1e-9);
+    LZ_CASE("地面基准：没标定过时 `LzPole_GetGroundAltM()` 返回 NaN，不是 0");
+    {
+        /* ⚠️ **为什么是 NaN 而不是 0**：0 是合法海拔（海平面附近）。
+         * 用它当"没标定"的哨兵会让"标定过、且地面正好在海平面"与
+         * "没标定"撞在一起 —— 本项目在"零解判据写 `== 0.0`"上踩过
+         * 同一个形状（实测零解给的是 1e-7 而不是精确 0）。
+         *
+         * 判据：`LzPole_ComputeTargetHeight()` 对 NaN 基准返回 0，
+         * 而对"基准恰为 0"返回正常差值 —— 两者必须分得开。 */
+        remove(LZ_TEST_GROUND_FILE);
+        LZ_CHECK(LzPole_LoadGround() == LZ_ERR_NOT_READY);
+        LZ_CHECK(!isfinite(LzPole_GetGroundAltM()));
+
+        /* 标定过、且地面恰在 0 m（海平面）⇒ 基准是 0，**不是**"没标定" */
+        write_file_to(LZ_TEST_GROUND_FILE, "groundAlt=0.00\n");
+        LZ_CHECK(LzPole_LoadGround() == LZ_OK);
+        LZ_CHECK_NEAR(LzPole_GetGroundAltM(), 0.0, 1e-9);
+        LZ_CHECK_NEAR(LzPole_ComputeTargetHeight(15.0, 0.0), 15.0, 1e-9);
+
+        /* 文件被改坏 ⇒ 当作未标定（与杆位文件同一条纪律：让内存与磁盘一致） */
+        remove(LZ_TEST_GROUND_FILE);
+        write_file_to(LZ_TEST_GROUND_FILE, "groundAlt=abc\n");
+        LZ_CHECK(LzPole_LoadGround() == LZ_ERR_IO);
+        LZ_CHECK(!isfinite(LzPole_GetGroundAltM()));
+
+        remove(LZ_TEST_GROUND_FILE);
     }
 
     /* ================================================================
@@ -482,8 +556,8 @@ int main(void)
     {
         /* 处置不同：
          *   打地面   ⇒ INFO，**正常**（点目标，瞄它自身）
-         *   超上限   ⇒ WARN，请核对参考面 / 激光是否打到远处地面
-         *   无起飞点 ⇒ WARN，按 0 处理
+         *   超上限   ⇒ WARN，请核对基准 / 激光是否打到远处地面
+         *   没标定   ⇒ WARN，操作员须先按「标定地面」
          * 全合并成"算出来是 0"就分不开了。 */
         LzPoleLaserRecord rec;
         const LzLaserRawReading raw = {
@@ -492,7 +566,7 @@ int main(void)
             .distanceDm = 44.0,
         };
 
-        /* 正常：旗面在 10 m 高（起飞点 40.4 m） */
+        /* 正常：旗面在 10 m 高（地面基准 40.4 m） */
         LZ_CHECK(LzPole_PrepareLaserRecord(&raw, 40.4, &rec) == LZ_OK);
         LZ_CHECK(rec.heightDiag == LZ_LASER_TH_NORMAL);
         LZ_CHECK_NEAR(rec.targetHeightM, 10.0, 1e-9);
@@ -509,9 +583,14 @@ int main(void)
         LZ_CHECK(rec.heightDiag == LZ_LASER_TH_OVER_MAX);
         LZ_CHECK_NEAR(rec.targetHeightM, 0.0, 1e-9);
 
-        /* 拿不到起飞点海拔 ⇒ 分类是 NO_HOME（与"打地面"同样返回 0） */
+        /* **没标定地面基准** ⇒ 分类是 NO_GROUND（与"打地面"同样返回 0）
+         *
+         * ⚠️ 2026-10-13 前这里是 `LZ_LASER_TH_NO_HOME`（拿不到起飞点海拔）。
+         * 换成"没标定"之后，**成因与处置都变了**：
+         *   旧 ⇒ 等话题就绪（不是操作员的错）
+         *   新 ⇒ 操作员忘了按「标定地面」按钮（**可操作**） */
         LZ_CHECK(LzPole_PrepareLaserRecord(&raw, 0.0 / 0.0, &rec) == LZ_OK);
-        LZ_CHECK(rec.heightDiag == LZ_LASER_TH_NO_HOME);
+        LZ_CHECK(rec.heightDiag == LZ_LASER_TH_NO_GROUND);
         LZ_CHECK_NEAR(rec.targetHeightM, 0.0, 1e-9);
 
         /* 边界：正好等于上限 ⇒ 0（开区间下端）；差一点点 ⇒ 正常。

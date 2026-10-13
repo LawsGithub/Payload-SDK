@@ -59,25 +59,28 @@
                     "is_enable": true,
                     "mapping_config_display_order": 3
                 }
+            },
+            {
+                "widget_index": 4,
+                "widget_type": "button",
+                "widget_name": "标定地面",
+                "icon_file_set": {
+                    "icon_file_name_selected": "icon_calib_ground.png",
+                    "icon_file_name_unselected": "icon_calib_ground.png"
+                },
+                "customize_rc_buttons_config": {
+                    "is_enable": true,
+                    "mapping_config_display_order": 4
+                }
             }
         ]
     },
     "config_interface": {
         "widget_list": [
             {
-                "widget_index": 4,
-                "widget_type": "scale",
-                "widget_name": "半径m",
-                "customize_rc_buttons_config": {
-                    "is_enable": true,
-                    "mapping_config_display_order": 4,
-                    "button_value_step_length": 5
-                }
-            },
-            {
                 "widget_index": 5,
                 "widget_type": "scale",
-                "widget_name": "高度m",
+                "widget_name": "半径m",
                 "customize_rc_buttons_config": {
                     "is_enable": true,
                     "mapping_config_display_order": 5,
@@ -86,6 +89,16 @@
             },
             {
                 "widget_index": 6,
+                "widget_type": "scale",
+                "widget_name": "高度m",
+                "customize_rc_buttons_config": {
+                    "is_enable": true,
+                    "mapping_config_display_order": 6,
+                    "button_value_step_length": 5
+                }
+            },
+            {
+                "widget_index": 7,
                 "widget_type": "int_input_box",
                 "widget_name": "航点数",
                 "int_input_box_hint": "个"

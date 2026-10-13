@@ -34,6 +34,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <math.h>   /* isfinite —— 判断地面基准标定过没有（未标定是 NaN） */
+
 /* ------------------------------------------------------------------ */
 /* 控件索引（必须与 app/widget_file 下的 widget_config.json 一致）        */
 /*                                                                     */
@@ -46,6 +48,12 @@
 #define LZ_WIDGET_IDX_RECORD_AIRCRAFT 1
 #define LZ_WIDGET_IDX_RECORD_LASER    2
 #define LZ_WIDGET_IDX_VISUAL_ALIGN    3
+/* ⚠️ **2026-10-13 新增，且必须在 main_interface**。
+ *
+ * 标定要把激光打向地面，而**瞄准要看相机画面** —— 相机视图里只有
+ * PSDK 菜单（main_interface）。放进 Payload Settings 的话操作员
+ * 得在两个界面之间来回切，看不见画面就没法瞄。 */
+#define LZ_WIDGET_IDX_CALIB_GROUND    4
 
 /* ---- config_interface（Payload Settings，起飞前配置）----
  *
@@ -71,11 +79,11 @@
  *
  * ⇒ 按 SDK 的界面语义归位：**飞行中操作的留在 main，起飞前定的挪进 config**。
  * 半径/高度/航点数都是"起飞前定的参数"，本来就不该在飞行中改。 */
-#define LZ_WIDGET_IDX_RADIUS_SCALE    4
-#define LZ_WIDGET_IDX_HEIGHT_SCALE    5
-#define LZ_WIDGET_IDX_WAYPOINT_BOX    6
+#define LZ_WIDGET_IDX_RADIUS_SCALE    5
+#define LZ_WIDGET_IDX_HEIGHT_SCALE    6
+#define LZ_WIDGET_IDX_WAYPOINT_BOX    7
 
-#define LZ_WIDGET_COUNT               7
+#define LZ_WIDGET_COUNT               8
 
 /* 范围条是 0–100 的百分比，这里映射到实际物理量。
  *
@@ -111,6 +119,15 @@ static LzPoleRecordKind s_recordKind = LZ_POLE_RECORD_AIRCRAFT;
 /* 视觉照准请求的待办标志。同一个模式：**回调只置它**，
  * 真正的照准动作由主循环 `LzVisualAlign_Tick()` 推进（分多拍做，不阻塞）。 */
 static volatile bool s_alignPending = false;
+
+/* 地面标定请求的待办标志。同一个模式：**回调只置它**，真正的标定
+ * （要调阻塞的激光接口）由主循环做 —— 理由与两个记录按钮完全相同。
+ *
+ * ⚠️ 2026-10-13 新增。为什么用**独立的标志**而不是复用 `s_recordPending`
+ * 加一个 kind：标定与记录**产出完全不同**（一个写 ground.txt 定参考面，
+ * 一个写 pole.txt 定圆心），共用 kind 会让"这一次按的是哪个"多一层
+ * 需要维护的约定。两个 bool 各自独立、语义直白。 */
+static volatile bool s_calibPending = false;
 /* 默认档位。换算见下方 LzWidget_GetRadiusM/GetAltitudeM ——
  * 区间收窄到 5–20 m / 5–120 m 后，50% → 12.5 m、66% → 约 80.9 m。
  * 这两个值**不是**"设计目标值"，只是出厂默认，操作员可拨。 */
@@ -270,6 +287,29 @@ static T_DjiReturnCode LzWidget_SetWidgetValue(E_DjiWidgetType widgetType, uint3
         break;
     }
 
+    /* ---- 「标定地面」按钮（2026-10-13 新增）----
+     *
+     * 与两个记录按钮同一条纪律：**只置标志**。标定要调
+     * `DjiCameraManager_GetLaserRangingInfo()`（同步阻塞，最多 1.2 s），
+     * 在 PSDK 回调线程里调它会把链路线程卡死 —— 2026-09-22 就是这么闪退的。
+     *
+     * ⚠️ button 的 value 是 `E_DjiWidgetButtonState`：按下与松开各触发一次，
+     * 只在按下时置标志 —— 不判的话一次点击会标定两遍（虽然结果相同，
+     * 但浮窗会闪两条、日志重复）。 */
+    case LZ_WIDGET_IDX_CALIB_GROUND: {
+        if (widgetType != DJI_WIDGET_TYPE_BUTTON) {
+            return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
+        }
+        if (value != DJI_WIDGET_BUTTON_STATE_PRESS_DOWN) {
+            break;
+        }
+        s_calibPending = true;
+        /* 与「识别目标」同样按下当场回执 —— 标定要读激光（阻塞约 1 s），
+         * 这期间浮窗安静会诱发操作员重复按。 */
+        LzWidget_PostMessage("收到「标定地面」—— 正在读激光，请稍候");
+        break;
+    }
+
     default:
         return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
     }
@@ -315,6 +355,7 @@ static T_DjiReturnCode LzWidget_GetWidgetValue(E_DjiWidgetType widgetType, uint3
     case LZ_WIDGET_IDX_RECORD_AIRCRAFT:
     case LZ_WIDGET_IDX_RECORD_LASER:
     case LZ_WIDGET_IDX_VISUAL_ALIGN:
+    case LZ_WIDGET_IDX_CALIB_GROUND:
         if (widgetType != DJI_WIDGET_TYPE_BUTTON) {
             return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
         }
@@ -336,6 +377,9 @@ static const T_DjiWidgetHandlerListItem s_widgetHandlerList[LZ_WIDGET_COUNT] = {
     {LZ_WIDGET_IDX_RECORD_AIRCRAFT, DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
     {LZ_WIDGET_IDX_RECORD_LASER,    DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
     {LZ_WIDGET_IDX_VISUAL_ALIGN,    DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
+    /* 标定地面（2026-10-13）。**必须在 main_interface** —— 标定要看着
+     * 相机画面瞄准地面，而相机视图里只有 PSDK 菜单。 */
+    {LZ_WIDGET_IDX_CALIB_GROUND,    DJI_WIDGET_TYPE_BUTTON, LzWidget_SetWidgetValue, LzWidget_GetWidgetValue, NULL},
 
     /* ---- config_interface（Payload Settings）----
      * ⚠️ handler 列表**不区分界面**，是一张扁平表 —— 所以两边的 index
@@ -517,9 +561,12 @@ T_DjiReturnCode LzWidget_Init(void)
         return rc;
     }
 
-    LzWidget_PostMessage("就绪：半径 %.1f m，高度 %.1f m，%d 个航点，等待操作员拨开关",
+    LzWidget_PostMessage("就绪：半径 %.1f m，高度 %.1f m，%d 个航点；地面基准%s，"
+                         "等待操作员拨开关",
                          LzWidget_GetRadiusM(), LzWidget_GetAltitudeM(),
-                         LzWidget_GetWaypointCount());
+                         LzWidget_GetWaypointCount(),
+                         isfinite(LzPole_GetGroundAltM()) ? "已标定"
+                                                          : "**未标定**（先按「标定地面」）");
     return DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS;
 }
 
@@ -617,6 +664,15 @@ bool LzWidget_TakeAlignRequest(void)
         return false;
     }
     s_alignPending = false;
+    return true;
+}
+
+bool LzWidget_TakeCalibRequest(void)
+{
+    if (!s_calibPending) {
+        return false;
+    }
+    s_calibPending = false;
     return true;
 }
 

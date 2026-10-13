@@ -23,7 +23,8 @@ filter type 字节（这里恒用 0 = None）。`zlib` 与 `struct` 都是标准
 
 | 文件名 | 控件 | 形状 |
 |---|---|---|
-| icon_visual_align.png | 6「识别目标」 | 取景框四角 + 中心十字（= 对焦/瞄准） |
+| icon_visual_align.png | 3「识别目标」 | 取景框四角 + 中心十字（= 对焦/瞄准） |
+| icon_calib_ground.png | 4「标定地面」 | 地平线 + 线上一个测点 + 下落竖线 |
 
 颜色沿用「记录」两个按钮的橙色 `(255,152,0)` —— 同一族"按下即执行一个
 瞬时动作"的按钮用同一个颜色，操作员在强光下靠颜色分区找按钮。
@@ -154,8 +155,38 @@ def icon_visual_align():
     return downsample(c)
 
 
+def icon_calib_ground():
+    """一条地平线 + 一个落在地面上的测点 —— 「标定地面」的图形。
+
+    为什么是"地平线 + 落点"而不是"一把尺子"或"一个标定靶"：
+    这个按钮做的事是**把激光打向脚下地面，把那一刻的高度记为参考零点**。
+    地平线（一条横贯的粗线）+ 线上一个实心点，笔画少、语义直白，
+    与「记录」族那两个按钮（橙色、瞬时动作）同色同族。
+
+    ⚠️ 与 `icon_visual_align`（取景框 + 十字）**刻意不同形** ——
+    两者都在 main 界面里，形状接近会让操作员在强光下按错。"""
+    c = new_canvas()
+    u = N / 96.0
+
+    # 地平线：横贯 8..88，靠下（地面在画面下方）
+    gy = 62 * u
+    t = 6 * u
+    rect(c, 8 * u, gy, 88 * u, gy + t)
+
+    # 地面上方的测点：一个方块（= 激光打中的那个点）
+    cx = 48 * u
+    half = 9 * u
+    rect(c, cx - half, gy - 2.2 * half, cx + half, gy - 1.2 * half)
+
+    # 指向该点的短竖线（= 激光下落）
+    rect(c, cx - t / 2, 14 * u, cx + t / 2, gy - 2.2 * half)
+
+    return downsample(c)
+
+
 ICONS = {
     'icon_visual_align.png': icon_visual_align,
+    'icon_calib_ground.png': icon_calib_ground,
 }
 
 
