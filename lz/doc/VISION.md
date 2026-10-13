@@ -272,7 +272,7 @@ controllable` / `机械软限位 −60° ~ +60°`。**程序能在 ±60° 内驱
 ```text
 lz/include/lz_align.h + lz/src/lz_align.c     ← 判据（零依赖，102 项断言守着）
 lz/app/lz_visual_align.{h,c}                  ← 接线（取帧、读云台角、下发转角）
-lz/app/lz_widget.c                            控件 6「识别目标」
+lz/app/lz_widget.c                            控件 3「识别目标」
 lz/app/lz_mission.c                           两个方向的互斥、请求转发
 lz/app/main.c                                 主循环里的一拍
 ```
