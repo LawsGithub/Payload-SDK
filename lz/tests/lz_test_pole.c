@@ -217,6 +217,42 @@ int main(void)
         LZ_CHECK(LzPole_RecordAircraft(NULL) == LZ_ERR_PARAM);
     }
 
+    LZ_CASE("⚠️ 飞机位来源的目标高必须是 0 —— 不是「飞机离地高度」");
+    {
+        /* ⚠️ **这条守的是一次真实的功能倒退**（2026-10-13）。
+         *
+         * 把目标高从"记录时存死 `th=`"改成"用时现算 `alt − groundAlt`"时，
+         * 第一版对**所有来源**都现算 —— 而"飞机位"来源的圆心是**飞机坐标**，
+         * 于是目标高变成"飞机离地高度"。
+         *
+         * 后果很具体：在 30 m 高记圆心、再用半径 12.5 m 绕飞，俯仰按
+         * `-h = -30 m` 算 ⇒ 相机**朝上瞄 30 m 处的空气**，而不是朝下瞄杆。
+         *
+         * 旧实现（存死）在这一点上是对的（飞机位固定写 0）—— 改成现算时
+         * 漏掉了这个区分。**判据：只有"激光点"来源才有"目标高度"这回事。** */
+        LzGeo pos = { .latitudeDeg = 28.18, .longitudeDeg = 112.92, .altitudeM = 63.5 };
+        LZ_CHECK(LzPole_RecordAircraft(&pos) == LZ_OK);
+
+        /* 标一个地面基准（33.5 m）—— 若实现是"一律现算"，
+         * 这里会得到 63.5 − 33.5 = 30.0，而那**不是**杆高。 */
+        remove(LZ_TEST_GROUND_FILE);
+        write_file_to(LZ_TEST_GROUND_FILE, "groundAlt=33.50\n");
+        LZ_CHECK(LzPole_LoadGround() == LZ_OK);
+
+        LZ_CHECK(LzPole_Acquire(&t) == LZ_OK);
+        LZ_CHECK_NEAR(t.heightM, 0.0, 1e-9);
+
+        /* 对照：同样 63.5 m 的**激光点**来源，就该算成 30 m 高 ——
+         * 证明"归零"来自来源判断，而不是判据坏了。 */
+        remove(LZ_TEST_POLE_FILE);
+        write_file("lon=112.9500000 lat=28.1800000 alt=63.5 src=laser\n");
+        LZ_CHECK(LzPole_LoadRecorded() == LZ_OK);
+        LZ_CHECK(LzPole_Acquire(&t) == LZ_OK);
+        LZ_CHECK_NEAR(t.heightM, 30.0, 1e-9);
+
+        remove(LZ_TEST_GROUND_FILE);
+    }
+
     LZ_CASE("重启后能读回：模拟进程重启，从文件恢复");
     {
         /* 写一份"上次记录的"文件，然后当作新进程读它。
