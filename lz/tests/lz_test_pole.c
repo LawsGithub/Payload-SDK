@@ -161,6 +161,14 @@ int main(void)
         LZ_CHECK(strstr(line, "lon=112.9210020") != NULL);
         LZ_CHECK(strstr(line, "lat=28.1788480") != NULL);
         LZ_CHECK(strstr(line, "src=aircraft") != NULL);
+
+        /* ⚠️ **`th=` 必须不再被写出来**（2026-10-13）。
+         *
+         * 目标高现在是"用时现算"（`alt − groundAlt`），存 `th=` 就有了
+         * 第二个真值，标定后会互相打架。**读**那一侧的兼容由下面
+         * 「旧格式仍要能读回」守着；这条守**写**那一侧 ——
+         * 否则将来有人把 `th=` 加回去不会变红。 */
+        LZ_CHECK(strstr(line, "th=") == NULL);
     }
 
     LZ_CASE("零解**邻域**必须被拒 —— 不只是精确的 (0,0)");
