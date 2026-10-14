@@ -200,6 +200,16 @@ curl -sL $B/20.template-kml.md $B/30.waylines-wpml.md $B/40.common-element.md
 收尾点被接受（8 航点跑出 1…9）。实测日志见
 [`lz/doc/WPML-ORBIT.md`](lz/doc/WPML-ORBIT.md)。
 
+**2026-10-13 线下新增两条验收** `[V]`：
+
+- **「标定地面」生效** —— 标定后目标高报 **10 多米**（≈ 真实杆高 16 m），
+  不再是修复前因参考面不一致算出的 50 多米；**航线中的云台角度得到很大改善**。
+- **绕飞云台偏航顶限位 / 电机异常已验收** —— 绕飞全程**两条告警均未再出现**。
+  ⚠️ **验收靠目视**：§0c 记着 `TOPIC_GIMBAL_STATUS`(27) 在 M4T 上订不上，
+  那两条告警**在日志里不会输出**，所以本轮**没有日志证据**，也未跑
+  「识别目标 → 绕飞」的组合场景。判据与缺口见
+  [`lz/doc/ONDEVICE-CHECKLIST.md`](lz/doc/ONDEVICE-CHECKLIST.md) §3.0 / §3.13。
+
 **仍然待确认的项**（含判据与回退方案）—— **唯一真值是现场执行清单
 [`lz/doc/ONDEVICE-CHECKLIST.md`](lz/doc/ONDEVICE-CHECKLIST.md)**，
 **别在这里另抄一份**（抄两份必然有一份不跟着改，本项目已踩过三次）。
