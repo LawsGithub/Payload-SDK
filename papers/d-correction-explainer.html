@@ -1,0 +1,1291 @@
+<title>停机角矫正</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+:root {
+  --ground:      #EDF0F3;
+  --surface:     #FFFFFF;
+  --surface-2:   #E2E8EE;
+  --ink:         #151B23;
+  --ink-2:       #4C5763;
+  --ink-3:       #7B8794;
+  --rule:        #D3DBE2;
+  --rule-strong: #B6C2CC;
+  --steel:       #C6CFD8;
+  --sky-top:     #CFDDE9;
+  --sky-bot:     #E9EFF4;
+
+  --tower:  #2E5F8F;
+  --blade:  #2C7A58;
+  --noise:  #A64B3C;
+  --gamma:  #B06A12;
+  --coarse: #6F4FA0;
+
+  --shadow: 0 1px 2px rgba(21,27,35,.06), 0 5px 14px rgba(21,27,35,.05);
+  --font-display: "IBM Plex Sans Condensed", "Helvetica Neue", Arial, sans-serif;
+  --font-body:    "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0F1319;
+    --surface:     #161C24;
+    --surface-2:   #1E252F;
+    --ink:         #E2E8EE;
+    --ink-2:       #A6B1BC;
+    --ink-3:       #737F8B;
+    --rule:        #29323D;
+    --rule-strong: #3C4753;
+    --steel:       #2C3641;
+    --sky-top:     #10161D;
+    --sky-bot:     #1B232D;
+
+    --tower:  #62A0D8;
+    --blade:  #4FA97F;
+    --noise:  #D4796A;
+    --gamma:  #E0A44A;
+    --coarse: #A98AD6;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.45), 0 5px 16px rgba(0,0,0,.32);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground:      #0F1319;
+  --surface:     #161C24;
+  --surface-2:   #1E252F;
+  --ink:         #E2E8EE;
+  --ink-2:       #A6B1BC;
+  --ink-3:       #737F8B;
+  --rule:        #29323D;
+  --rule-strong: #3C4753;
+  --steel:       #2C3641;
+  --sky-top:     #10161D;
+  --sky-bot:     #1B232D;
+
+  --tower:  #62A0D8;
+  --blade:  #4FA97F;
+  --noise:  #D4796A;
+  --gamma:  #E0A44A;
+  --coarse: #A98AD6;
+
+  --shadow: 0 1px 2px rgba(0,0,0,.45), 0 5px 16px rgba(0,0,0,.32);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+.prose { max-width: 68ch; }
+
+/* ---------- header ---------- */
+
+.site { padding: 60px 0 44px; }
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 12px; font-weight: 600;
+  letter-spacing: .13em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+h1 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(40px, 6.4vw, 66px);
+  line-height: 1.0;
+  letter-spacing: -.015em;
+  margin: 16px 0 0;
+  text-wrap: balance;
+}
+.lead {
+  font-size: 18px; line-height: 1.6;
+  color: var(--ink-2);
+  margin: 20px 0 0;
+  max-width: 62ch;
+}
+.lead code {
+  font-family: var(--font-mono);
+  font-size: .88em;
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--ink);
+}
+
+/* ---------- pipeline strip ---------- */
+
+.pipeline {
+  display: flex; flex-wrap: wrap;
+  align-items: center; gap: 7px;
+  margin-top: 34px;
+}
+.chip {
+  font-family: var(--font-display);
+  font-size: 13px; font-weight: 600;
+  padding: 7px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.chip.hot { border-color: var(--gamma); color: var(--gamma); }
+.arrow { color: var(--ink-3); font-size: 11px; }
+
+/* ---------- sections ---------- */
+
+section { padding: 58px 0; border-top: 1px solid var(--rule); }
+.sec-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+.sec-num {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--gamma); letter-spacing: .06em;
+}
+h2 {
+  font-family: var(--font-display);
+  font-size: 27px; font-weight: 600;
+  letter-spacing: -.008em;
+  margin: 0;
+}
+h2 + p { margin-top: 10px; }
+
+/* ---------- stage / diagram ---------- */
+
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 26px 0 14px; }
+.tab {
+  font-family: var(--font-display);
+  font-size: 13.5px; font-weight: 600;
+  padding: 8px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background .18s, color .18s, border-color .18s;
+}
+.tab:hover { border-color: var(--rule-strong); color: var(--ink); }
+.tab[aria-selected="true"] {
+  background: var(--ink); color: var(--ground); border-color: var(--ink);
+}
+.tab:focus-visible { outline: 2px solid var(--gamma); outline-offset: 2px; }
+
+.stage {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.stage svg { display: block; width: 100%; height: auto; }
+
+.legend {
+  display: flex; flex-wrap: wrap; gap: 18px;
+  margin-top: 14px;
+  font-size: 13px; color: var(--ink-2);
+}
+.lg { display: inline-flex; align-items: center; gap: 7px; }
+.lg i { width: 18px; height: 3px; border-radius: 2px; display: inline-block; }
+.lg i.dot { width: 11px; height: 11px; border-radius: 50%; }
+
+.caption {
+  margin-top: 22px;
+  padding-left: 18px;
+  border-left: 3px solid var(--gamma);
+}
+.caption h3 {
+  font-family: var(--font-display);
+  font-size: 20px; font-weight: 600;
+  margin: 0 0 10px;
+}
+.caption p { margin: 0 0 11px; color: var(--ink-2); max-width: 68ch; }
+.caption p:last-child { margin-bottom: 0; }
+.caption strong { color: var(--ink); font-weight: 600; }
+.caption code {
+  font-family: var(--font-mono); font-size: .87em;
+  background: var(--surface-2); padding: 1px 5px;
+  border-radius: 3px; color: var(--ink);
+}
+
+/* ---------- rotation demo ---------- */
+
+.slider-row {
+  display: flex; align-items: center; gap: 18px;
+  margin-top: 20px; flex-wrap: wrap;
+}
+.slider-row label {
+  font-family: var(--font-display); font-size: 13px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3);
+}
+input[type="range"] {
+  flex: 1 1 260px; min-width: 200px;
+  accent-color: var(--gamma);
+  height: 22px;
+}
+input[type="range"]:focus-visible { outline: 2px solid var(--gamma); outline-offset: 4px; }
+.readout {
+  font-family: var(--font-mono);
+  font-size: 16px; font-variant-numeric: tabular-nums;
+  min-width: 96px; text-align: right;
+  color: var(--gamma); font-weight: 500;
+}
+
+/* ---------- formula compare ---------- */
+
+.compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 16px; margin-top: 26px;
+}
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--rule-strong);
+  border-radius: 5px;
+  padding: 20px 22px;
+}
+.panel.bad  { border-left-color: var(--noise); }
+.panel.good { border-left-color: var(--blade); }
+.panel h4 {
+  font-family: var(--font-display);
+  font-size: 15px; font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase;
+  margin: 0 0 14px; color: var(--ink-2);
+}
+.panel.bad h4  { color: var(--noise); }
+.panel.good h4 { color: var(--blade); }
+.panel p { margin: 14px 0 0; font-size: 14.5px; color: var(--ink-2); }
+.panel p:first-of-type { margin-top: 0; }
+
+.formula {
+  font-family: var(--font-mono);
+  font-size: 14px; line-height: 1.9;
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--ink);
+}
+
+/* ---------- dof table ---------- */
+
+.doftable {
+  width: 100%; border-collapse: collapse;
+  margin-top: 26px; font-size: 14.5px;
+}
+.doftable th, .doftable td {
+  text-align: left; padding: 11px 14px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+.doftable th {
+  font-family: var(--font-display);
+  font-size: 12px; font-weight: 600;
+  letter-spacing: .09em; text-transform: uppercase;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--rule-strong);
+}
+.doftable td:first-child { font-weight: 600; white-space: nowrap; }
+.doftable .yes { color: var(--blade); font-weight: 600; }
+.doftable .no  { color: var(--ink-3); font-weight: 600; }
+.doftable code {
+  font-family: var(--font-mono); font-size: .86em;
+  background: var(--surface-2); padding: 1px 4px; border-radius: 3px;
+}
+.tbl-scroll { overflow-x: auto; }
+
+/* ---------- notes ---------- */
+
+.notes { display: grid; gap: 16px; margin-top: 26px; }
+.note {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+.note-mark {
+  font-family: var(--font-mono);
+  font-size: 12px; line-height: 1.7;
+  color: var(--gamma); padding-top: 2px;
+}
+.note p { margin: 0; color: var(--ink-2); max-width: 68ch; }
+.note strong { color: var(--ink); font-weight: 600; }
+.note code {
+  font-family: var(--font-mono); font-size: .87em;
+  background: var(--surface-2); padding: 1px 5px;
+  border-radius: 3px; color: var(--ink);
+}
+
+/* ---------- svg helpers ---------- */
+
+.ln {
+  fill: none;
+  stroke: var(--ink-3);
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 1;
+  transition: stroke .34s ease, stroke-width .34s ease, opacity .34s ease;
+}
+.ln.dim   { opacity: .2; }
+.ln.faint { opacity: .1; }
+.ln.is-tower { stroke: var(--tower); stroke-width: 5; }
+.ln.is-blade { stroke: var(--blade); stroke-width: 5; }
+.ln.is-noise { stroke: var(--noise); stroke-width: 3; }
+
+#aux { transition: opacity .25s ease; }
+.ann {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  fill: var(--ink-2);
+}
+.ann-hi { fill: var(--gamma); font-weight: 500; }
+.ann-tower { fill: var(--tower); }
+.ann-blade { fill: var(--blade); }
+.ann-noise { fill: var(--noise); }
+.ann-bg {
+  fill: var(--surface);
+  stroke: var(--rule);
+  stroke-width: 1;
+}
+
+/* 3D 场景内的元素（2/4 节） */
+.g-axis   { fill: none; stroke-width: 2.5; stroke-linecap: round; }
+.g-tower  { fill: none; stroke: var(--tower); stroke-width: 9; stroke-linecap: round; }
+.g-blade-g{ fill: none; stroke: var(--blade); stroke-width: 5; stroke-linecap: round; }
+.g-wp-g   { fill: var(--gamma); }
+.g-track  { fill: none; stroke: var(--noise); stroke-width: 1.6; stroke-dasharray: 5 5; opacity: .85; }
+.g-offset { fill: none; stroke: var(--noise); stroke-width: 1.6; stroke-dasharray: 5 5; opacity: .9; }
+.g-hub    { fill: var(--tower); }
+
+/* 04 节分阶段配色：不动 / 该转，一眼可分 */
+.g-wp-entry { fill: var(--ink-3); }
+.g-wp-coarse{ fill: var(--coarse); }
+.g-wp-tower { fill: var(--tower); }
+.g-limit    { fill: none; stroke: var(--tower); stroke-width: 1.8;
+              stroke-dasharray: 6 5; opacity: .8; }
+
+footer {
+  padding: 44px 0 64px;
+  color: var(--ink-3);
+  font-size: 13.5px;
+  border-top: 1px solid var(--rule);
+}
+footer p { margin: 0 0 6px; max-width: 78ch; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+</style>
+
+<div class="wrap">
+
+<header class="site">
+  <div class="eyebrow">论文 D · §4.5 在线矫正 · 朱凯华 · 北京交通大学 2021</div>
+  <h1>停机角矫正</h1>
+  <p class="lead">
+    从<strong>一帧正面照片</strong>里认出风轮停在哪个角度，再让航线跟着风轮转同样的角度。
+    论文只用了两页讲完，中间几步的几何直觉全跳过了 —— 这里逐步展开。
+  </p>
+
+  <div class="pipeline">
+    <span class="chip">飞至机舱正前方</span><span class="arrow">→</span>
+    <span class="chip">拍正面图</span><span class="arrow">→</span>
+    <span class="chip hot">EDLines 提线段</span><span class="arrow">→</span>
+    <span class="chip hot">认塔筒 · 凑 120°</span><span class="arrow">→</span>
+    <span class="chip hot">求偏转角 γ</span><span class="arrow">→</span>
+    <span class="chip hot">航线跟随风轮转 γ</span>
+  </div>
+</header>
+
+<section>
+  <div class="sec-head"><span class="sec-num">01</span><h2>五个步骤，从像素到角度</h2></div>
+  <p class="prose">点上面的标签逐步看。图上灰底是照片本身，彩色线是从中提取出来的线段。</p>
+
+  <div class="tabs" role="tablist" aria-label="算法步骤">
+    <button class="tab" role="tab" aria-selected="true"  data-step="0">① 提线段</button>
+    <button class="tab" role="tab" aria-selected="false" data-step="1">② 认塔筒</button>
+    <button class="tab" role="tab" aria-selected="false" data-step="2">③ 定圆心</button>
+    <button class="tab" role="tab" aria-selected="false" data-step="3">④ 凑 120°</button>
+    <button class="tab" role="tab" aria-selected="false" data-step="4">⑤ 算 γ</button>
+  </div>
+
+  <div class="stage">
+    <svg id="scene" viewBox="0 0 900 620" role="img"
+         aria-label="风机正面图中提取线段并识别塔筒、叶片与停机偏转角">
+      <defs>
+        <clipPath id="frameClip"><rect x="60" y="40" width="780" height="540"/></clipPath>
+        <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="var(--sky-top)"/>
+          <stop offset="1" stop-color="var(--sky-bot)"/>
+        </linearGradient>
+      </defs>
+
+      <rect x="60" y="40" width="780" height="540" fill="url(#skyGrad)"/>
+
+      <g clip-path="url(#frameClip)">
+        <g id="photo" opacity=".62">
+          <!-- 塔筒 -->
+          <polygon points="439,240 461,240 468,580 432,580" fill="var(--steel)"/>
+          <!-- 叶片 -->
+          <g id="photoBlades"></g>
+          <!-- 轮毂 -->
+          <circle cx="450" cy="240" r="29" fill="var(--steel)"/>
+        </g>
+      </g>
+
+      <g id="lines"></g>
+      <g id="aux"></g>
+
+      <rect x="60" y="40" width="780" height="540" fill="none"
+            stroke="var(--rule-strong)" stroke-width="1.5"/>
+    </svg>
+  </div>
+
+  <div class="legend">
+    <span class="lg"><i style="background:var(--tower)"></i>塔筒</span>
+    <span class="lg"><i style="background:var(--blade)"></i>叶片</span>
+    <span class="lg"><i style="background:var(--noise)"></i>干扰段</span>
+    <span class="lg"><i style="background:var(--ink-3)"></i>未分类</span>
+  </div>
+
+  <div class="caption" id="caption"></div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">02</span><h2>旋转的轴：风轮主轴</h2></div>
+  <p class="prose">
+    论文说「航迹线跟随旋转 γ 度」。绕哪条轴转，是这一步的关键 —— 而它只在三维里看得出来。
+  </p>
+
+  <div class="stage">
+    <svg id="axisScene" viewBox="0 0 800 520" role="img"
+         aria-label="风轮主轴与塔筒轴是两条异面直线，水平相距一个 nacelleOffset"></svg>
+  </div>
+
+  <div class="legend">
+    <span class="lg"><i class="dot" style="background:var(--gamma)"></i>风轮主轴（旋转轴）</span>
+    <span class="lg"><i class="dot" style="background:var(--tower)"></i>塔筒轴</span>
+    <span class="lg"><i class="dot" style="background:var(--noise)"></i>前伸量 <code>nacelleOffset</code></span>
+  </div>
+
+  <div class="caption">
+    <h3>为什么不是塔筒轴</h3>
+    <p>
+      塔筒轴<strong>竖直、过塔基</strong>；风轮主轴<strong>过轮毂、朝下游</strong>。
+      两者是<strong>异面直线</strong>，水平相距一个 <code>nacelleOffset</code>（真实机型 4~5 m）
+      —— 图上那段红色虚线的长度。
+    </p>
+    <p>
+      所以「绕塔筒轴转」在几何上就是<strong>改变机舱朝向</strong>（偏航），
+      而那是<strong>另一个自由度</strong>、另一个参数（<code>heading</code>），不是停机角矫正。
+    </p>
+    <p>
+      本方案里 <code>heading</code> 是<strong>停机时的台账常量</strong> —— 依据 DL/T 797-2012
+      停机检修规程，风机已停住、已偏航对风，停机期间<strong>变的只有叶片转到哪</strong>。
+      所以塔筒轴不动，也不需要被矫正；要转的只有风轮主轴这一个自由度。
+    </p>
+    <p>
+      反过来也说明一件事：主轴<strong>不是水平的</strong> —— 它按 <code>tiltDeg</code>
+      （典型 3~6°）略微上扬，方位随 <code>headingDeg</code> 定。塔筒轴永远竖直。
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">03</span><h2>公式：论文写错了，别照抄</h2></div>
+  <p class="prose">
+    论文式 4-29 给出的是绕主轴旋转 γ 的坐标变换。二次补读回查过 PDF 原页，
+    <strong>排版就是那样</strong> —— 而它错了。
+  </p>
+  <p class="prose">
+    先澄清一点：论文说「风机叶片所在面可视为 y 值固定的平面」，那么 y 轴就是
+    <strong>风轮平面的法向</strong> —— 也就是<strong>风轮主轴</strong>，和上一节那条是同一个东西。
+    所以论文<strong>轴选对了</strong>；错的只是矩阵。
+  </p>
+
+  <div class="compare">
+    <div class="panel bad">
+      <h4>论文原文（式 4-29）</h4>
+      <div class="formula">x' = x·cos γ + z·sin γ
+z' = x·sin γ + z·cos γ
+y' = y</div>
+      <p>
+        这个 2×2 矩阵的行列式是 <code>cos²γ − sin²γ = cos 2γ</code>，<strong>不等于 1</strong>。
+      </p>
+      <p>
+        所以它<strong>根本不是旋转矩阵</strong> —— 不是「丢了一个负号」那么简单，
+        而是含尺度与镜像的变换。拿它转航点，站位间距会被拉伸。
+      </p>
+    </div>
+
+    <div class="panel good">
+      <h4>正确的写法</h4>
+      <div class="formula">x' = x·cos γ + z·sin γ
+z' = −x·sin γ + z·cos γ
+y' = y</div>
+      <p>行列式 = <code>cos²γ + sin²γ = 1</code>，正交，是纯旋转。</p>
+      <p>
+        落到代码里建议配一条回归测试：<strong>γ = 90° 时航点必须落到预期的象限</strong>，
+        且旋转前后任意两点间距不变。符号约定（顺时针为正还是逆时针为正）用这条测试钉死，
+        别靠读论文猜。
+      </p>
+    </div>
+  </div>
+
+  <div class="caption">
+    <h3>还有一处更细的近似</h3>
+    <p>
+      「叶片所在面<strong>视为</strong>平面」本身是简化：叶片有<strong>锥角</strong>（把叶片拉向迎风侧）
+      和<strong>预弯</strong>（叶尖向迎风侧偏出），叶尖并不落在同一个平面上。
+      对「绕主轴转 γ」这个操作没影响（那本来就是绕主轴的角度），
+      但若要把照片里的像素位置反投影成三维点，这两个量必须算进去。
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">04</span><h2>三维里，哪些段依赖相位</h2></div>
+  <p class="prose">
+    论文的「<strong>整条</strong>航迹线旋转 γ」，在分阶段航线里<strong>不能照字面执行</strong>。
+    真正依赖相位的只有中间两段。拖动滑块看哪些点动、哪些不动。
+  </p>
+
+  <div class="stage" style="margin-top:26px">
+    <svg id="stage3d" viewBox="0 0 800 560" role="img"
+         aria-label="三维航线分阶段：进场、粗模环绕与退场点不随相位变化，叶片站位与塔筒段随之变化"></svg>
+  </div>
+
+  <div class="legend">
+    <span class="lg"><i class="dot" style="background:var(--ink-3)"></i>① 进场 / ⑤ 退场</span>
+    <span class="lg"><i class="dot" style="background:var(--coarse)"></i>② 粗模环绕</span>
+    <span class="lg"><i class="dot" style="background:var(--blade)"></i>③ 叶片站位</span>
+    <span class="lg"><i class="dot" style="background:var(--tower)"></i>④ 塔筒段</span>
+  </div>
+
+  <div class="slider-row">
+    <label for="dofSlider">停机角 γ</label>
+    <input id="dofSlider" type="range" min="-60" max="60" step="1" value="-30"
+           aria-label="停机偏转角">
+    <span class="readout" id="dofOut">−30.0°</span>
+  </div>
+
+  <div class="tbl-scroll">
+    <table class="doftable">
+      <thead>
+        <tr><th>阶段</th><th>依赖相位？</th><th>跟着 γ 变吗</th><th>为什么</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>① 进场悬停点</td><td>否</td><td class="no">不动</td>
+          <td>位置由叶轮半径与轮毂高定死，<code>rotorCenter</code> 本身不含相位</td>
+        </tr>
+        <tr>
+          <td>② 粗模环绕</td><td>否</td><td class="no">不动</td>
+          <td>规划时直接写死 <code>BuildRotorFrame(spec, 0.0)</code> —— 环绕航线不依赖相位</td>
+        </tr>
+        <tr>
+          <td>③ 叶片站位</td><td><strong>是</strong></td><td class="yes">绕主轴转</td>
+          <td>站位由叶片轴线算出，叶片转到哪，站位就跟到哪</td>
+        </tr>
+        <tr>
+          <td>④ 塔筒段</td><td><strong>是</strong></td><td class="yes">高度上限变</td>
+          <td>水平位置不变；变的是「最高能贴到哪」—— 要避开当前相位下最低的那支叶片</td>
+        </tr>
+        <tr>
+          <td>⑤ 退场点</td><td>否</td><td class="no">不动</td>
+          <td>只用 <code>rotorCenter</code>，与相位无关</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="caption">
+    <h3>两条容易踩的坑</h3>
+    <p>
+      <strong>一、转了不该转的段，飞机会去错的地方。</strong>
+      若照字面把①进场点和②粗模环绕圆也绕主轴转 γ，它们会跟着叶片摆动，
+      而它们本来就应该待在原地。
+    </p>
+    <p>
+      <strong>二、危险航段的修补必须在矫正之后跑。</strong>
+      修补会扫描全部航段、插入绕行点；若先修补后矫正，新插入的点是照着旧相位算的，
+      等于白补。
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">05</span><h2>其实不必旋转</h2></div>
+  <p class="prose">
+    上面两节都在讲「怎么把航线转对」。但对<strong>解析构造</strong>出来的航线，
+    根本不需要事后硬转 —— 把测出来的相位<strong>喂回规划器重新生成</strong>就行。
+  </p>
+
+  <div class="compare">
+    <div class="panel">
+      <h4>论文的路：事后旋转</h4>
+      <p>
+        论文的航迹线是<strong>离线优化</strong>出来的（采样 + QP + RRT* + TSP），
+        没有可调的解析参数，只能拿到点集之后硬转。
+      </p>
+      <p>
+        代价是得逐点做浮点变换，还要额外处理「哪些段不该转」「修补点得重算」。
+      </p>
+    </div>
+    <div class="panel good">
+      <h4>本项目的路：喂相位重生成</h4>
+      <p>
+        规划器是<strong>参数化</strong>的 —— 它吃 <code>parkPhaseDeg</code>，
+        自己把叶片位置、塔筒上限、危险航段修补全部算对。
+      </p>
+      <p>
+        所以「矫正」= 把测出来的相位写进去、重新跑一遍规划。
+      </p>
+    </div>
+  </div>
+
+  <div class="formula" style="margin-top:22px">/* 断的只有这一行：相位是硬编码的 */
+double parkPhase = -1.0;              /* app/main.c:369 ← 改成测出来的 γ */
+rr = WtRunner_RunTurbine(&amp;s_runner, name, parkPhase);
+
+/* RunTurbine 收到相位后，自己把整条航线算对 */
+job-&gt;frame = WtTurbine_BuildRotorFrame(&amp;job-&gt;turbine-&gt;spec,
+                                       job-&gt;parkPhaseDeg);
+prc = WtPlan_BuildMission(&amp;job-&gt;turbine-&gt;spec, &amp;job-&gt;frame, ...);</div>
+
+  <div class="notes" style="margin-top:26px">
+    <div class="note">
+      <span class="note-mark">01</span>
+      <p><strong>没有累积误差。</strong>旋转要逐个点做浮点变换；重生成是重新算，不存在误差叠加。</p>
+    </div>
+    <div class="note">
+      <span class="note-mark">02</span>
+      <p><strong>不该动的自动不动。</strong>进场、粗模环绕、退场点本来就不依赖相位，
+      重生成时自然保持原位 —— 不用像旋转那样再筛一遍。</p>
+    </div>
+    <div class="note">
+      <span class="note-mark">03</span>
+      <p><strong>塔筒段和修补自动跟着重算。</strong>它们都吃同一个 <code>frame</code>，
+      相位一变就一起变对了。</p>
+    </div>
+    <div class="note">
+      <span class="note-mark">04</span>
+      <p><strong>论文那个错误公式根本用不上。</strong>§03 里那处矩阵错误，
+      在「重新生成」这条路上完全不出现。</p>
+    </div>
+  </div>
+
+  <div class="caption">
+    <h3>但有一个前提要自己守住</h3>
+    <p>
+      两条路都要求<strong>先测准相位</strong>。§01 那套视觉判据是论文的贡献，
+      而它只验证过一个样本（缩比模型、实验室光照）。相位测错，
+      重生成出来的航线一样是错的 —— 而且因为它「看起来是重新算的」，反而更不容易被怀疑。
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">06</span><h2>用之前要知道的前提</h2></div>
+
+  <div class="notes">
+    <div class="note">
+      <span class="note-mark">01</span>
+      <p>
+        <strong>只在停机模式成立。</strong>论文的依据是 DL/T 797-2012 停机检修规程；
+        识别的是「停机姿态」。风轮可转动时唯一的安全判据仍是「保持在叶轮圆盘之外」，
+        这两套判据不可混用。
+      </p>
+    </div>
+    <div class="note">
+      <span class="note-mark">02</span>
+      <p>
+        <strong>判据只验证了一个样本。</strong>论文实测偏转角 −29.75°，
+        对象是缩比模型、实验室光照，且未说明拍摄距离与分辨率。天空背景高对比是优势，
+        但云、远山、飞鸟都会产生干扰线段。
+      </p>
+    </div>
+    <div class="note">
+      <span class="note-mark">03</span>
+      <p>
+        <strong>120° 判据依赖叶片处于典型顺桨形。</strong>叶片若被变桨到非典型形态，
+        「两两夹角接近 120°」这一条会失效 —— 需要兜底判据或直接拒绝解算。
+      </p>
+    </div>
+    <div class="note">
+      <span class="note-mark">04</span>
+      <p>
+        <strong>耗时（PC 上）。</strong>识别 1.91 s + 矫正 1.50 s ≈ 3.4 s。
+        论文的结论是「无人机在轮毂位置短暂停留即可」。
+      </p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>来源：朱凯华《基于无人机的风机叶片自动航迹线规划研究》，北京交通大学，2021，§4.5 / §5.3.4。</p>
+  <p>§02 的轴：论文的 y 轴是<strong>风轮平面的法向</strong>（即风轮主轴），不是塔筒轴 —— 论文选对了轴。
+     塔筒轴对应的是偏航（<code>heading</code>），本方案中它是停机时的台账常量，不参与矫正。</p>
+  <p>§03 公式错误一条由二次补读回查 PDF 原页（PDF p.66 / 正文 p.54）确认。</p>
+  <p>图中数值为示意，非论文原始数据；<code>nacelleOffset</code> 与风轮半径的比例已放大，否则两者在图上分不开。</p>
+</footer>
+
+</div>
+
+<script>
+/* ============================================================
+   01 节：正面图 —— 线段提取与判据
+   ============================================================ */
+(function () {
+  "use strict";
+
+  var HUB = { x: 450, y: 240 };
+  var BLADE_LEN = 190;
+  var BLADE_ANGLES = [-30, 90, 210];
+
+  function ptAt(deg, len) {
+    var r = deg * Math.PI / 180;
+    return { x: HUB.x + len * Math.sin(r), y: HUB.y - len * Math.cos(r) };
+  }
+
+  function bladePoly(deg) {
+    var r = deg * Math.PI / 180;
+    var dx = Math.sin(r), dy = -Math.cos(r);
+    var px = -dy, py = dx;
+    var root = 0.10 * BLADE_LEN, tip = BLADE_LEN;
+    var wR = 13, wT = 3;
+    var rx = HUB.x + dx * root, ry = HUB.y + dy * root;
+    var tx = HUB.x + dx * tip,  ty = HUB.y + dy * tip;
+    return [
+      [rx + px * wR, ry + py * wR],
+      [tx + px * wT, ty + py * wT],
+      [tx - px * wT, ty - py * wT],
+      [rx - px * wR, ry - py * wR]
+    ].map(function (p) { return p[0].toFixed(1) + "," + p[1].toFixed(1); }).join(" ");
+  }
+
+  var LINES = [
+    { id: "tower", a: { x: 450, y: 240 }, b: { x: 450, y: 580 }, kind: "tower" },
+    { id: "b0", a: ptAt(-30, 19), b: ptAt(-30, BLADE_LEN), kind: "blade" },
+    { id: "b1", a: ptAt(90, 19),  b: ptAt(90, BLADE_LEN),  kind: "blade" },
+    { id: "b2", a: ptAt(210, 19), b: ptAt(210, BLADE_LEN), kind: "blade" },
+    { id: "n0", a: { x: 688, y: 112 }, b: { x: 768, y: 146 }, kind: "noise" },
+    { id: "n1", a: { x: 142, y: 468 }, b: { x: 216, y: 498 }, kind: "noise" },
+    { id: "n2", a: { x: 758, y: 302 }, b: { x: 798, y: 334 }, kind: "noise" },
+    { id: "n3", a: { x: 78,  y: 520 }, b: { x: 286, y: 500 }, kind: "noise" },
+    { id: "n4", a: { x: 700, y: 60  }, b: { x: 704, y: 190 }, kind: "noise" }
+  ];
+
+  var photoBlades = document.getElementById("photoBlades");
+  photoBlades.innerHTML = BLADE_ANGLES.map(function (d) {
+    return '<polygon points="' + bladePoly(d) + '" fill="var(--steel)"/>';
+  }).join("");
+
+  var linesG = document.getElementById("lines");
+  linesG.innerHTML = LINES.map(function (l) {
+    return '<line class="ln" id="ln-' + l.id + '" x1="' + l.a.x + '" y1="' + l.a.y +
+           '" x2="' + l.b.x + '" y2="' + l.b.y + '"/>';
+  }).join("");
+
+  var auxG = document.getElementById("aux");
+
+  function el(id) { return document.getElementById("ln-" + id); }
+
+  function setClass(id, cls) {
+    var e = el(id);
+    if (e) { e.setAttribute("class", "ln " + (cls || "")); }
+  }
+
+  function arcPath(cx, cy, r, a0, a1) {
+    var r0 = a0 * Math.PI / 180, r1 = a1 * Math.PI / 180;
+    var p0 = { x: cx + r * Math.sin(r0), y: cy - r * Math.cos(r0) };
+    var p1 = { x: cx + r * Math.sin(r1), y: cy - r * Math.cos(r1) };
+    var large = Math.abs(a1 - a0) > 180 ? 1 : 0;
+    var sweep = a1 > a0 ? 1 : 0;
+    return "M " + p0.x.toFixed(2) + " " + p0.y.toFixed(2) +
+           " A " + r + " " + r + " 0 " + large + " " + sweep + " " +
+           p1.x.toFixed(2) + " " + p1.y.toFixed(2);
+  }
+
+  function tag(x, y, text, cls, anchor) {
+    var w = text.length * 7.6 + 16;
+    var a = anchor || "start";
+    var tx = a === "end" ? x - w + 8 : (a === "middle" ? x - w / 2 : x - 8);
+    return '<rect class="ann-bg" x="' + tx.toFixed(1) + '" y="' + (y - 14) +
+           '" width="' + w.toFixed(1) + '" height="22" rx="3"/>' +
+           '<text class="ann ' + (cls || "") + '" x="' + x + '" y="' + y +
+           '" text-anchor="' + a + '">' + text + "</text>";
+  }
+
+  function auxFor(step) {
+    var s = "";
+
+    if (step === 1) {
+      s += '<path d="M 450 580 m -13 0 l 0 -13 l 13 0" fill="none" stroke="var(--tower)" stroke-width="2"/>';
+      s += tag(468, 572, "下端落在图像下边缘 + 斜率≈90°", "ann-tower");
+      s += tag(716, 186, "竖直，但没触底 → 排除", "ann-noise", "end");
+      s += '<line x1="450" y1="580" x2="450" y2="598" stroke="var(--tower)" stroke-width="2" stroke-dasharray="3 3"/>';
+    }
+
+    if (step === 2) {
+      s += '<circle cx="450" cy="240" r="161" fill="none" stroke="var(--tower)" ' +
+           'stroke-width="1.5" stroke-dasharray="6 5" opacity=".75"/>';
+      s += '<line x1="450" y1="240" x2="600" y2="240" stroke="var(--tower)" ' +
+           'stroke-width="1.5" stroke-dasharray="3 4" opacity=".6"/>';
+      s += '<line x1="450" y1="240" x2="450" y2="90" stroke="var(--tower)" ' +
+           'stroke-width="1.5" stroke-dasharray="3 4" opacity=".6"/>';
+      s += '<circle cx="450" cy="240" r="5" fill="var(--tower)"/>';
+      s += tag(450, 74, "圆心 = 塔筒顶端 = 机舱/轮毂位置", "ann-tower", "middle");
+    }
+
+    if (step === 3) {
+      s += '<circle cx="450" cy="240" r="161" fill="none" stroke="var(--blade)" ' +
+           'stroke-width="1.5" stroke-dasharray="6 5" opacity=".5"/>';
+      s += '<circle cx="450" cy="240" r="5" fill="var(--blade)"/>';
+      s += tag(560, 132, "两两夹角 ≈ 120° 的三条线 = 叶片", "ann-blade");
+      s += tag(792, 356, "凑不出搭档 → 干扰段", "ann-noise", "end");
+    }
+
+    if (step === 4) {
+      s += '<line x1="450" y1="240" x2="450" y2="106" stroke="var(--ink-3)" ' +
+           'stroke-width="1.5" stroke-dasharray="5 4"/>';
+      s += '<path d="' + arcPath(450, 240, 120, 0, -30) + '" fill="none" ' +
+           'stroke="var(--gamma)" stroke-width="2.5"/>';
+      s += '<circle cx="450" cy="240" r="4.5" fill="var(--gamma)"/>';
+      s += tag(452, 96, "12 点钟", null, "middle");
+      s += tag(372, 190, "γ = −30°", "ann-hi", "end");
+      s += tag(360, 60, "最高像素点的叶片 = 最接近竖直向上的那支", "ann-blade", "middle");
+    }
+
+    return s;
+  }
+
+  var CAPTIONS = [
+    {
+      h: "① 从一帧正面图里提出所有线段",
+      p: [
+        "EDLines 在图上提出一堆线段：叶片边缘、塔筒边缘、机舱轮廓，还有天空里的干扰（云、远山、飞鸟）。",
+        "每片叶片其实有<strong>两条</strong>边缘线。所以先做论文说的「清晰化」：剔除过短的线段 → 距离接近的两条线按最小二乘合并成一条中心线 → 再剔一次短的。图上显示的是合并后的结果。",
+        "此刻所有线段都是<strong>没有身份</strong>的 —— 下一步才开始分类。"
+      ]
+    },
+    {
+      h: "② 认塔筒 —— 判据是「触底 + 竖直」",
+      p: [
+        "判据：<strong>一条线段的下端落在图像下边缘，且斜率接近 90°</strong>。两个条件必须同时满足。",
+        "为什么成立？风机很大、无人机飞得很近，正面拍摄时塔筒常常<strong>超出画面下缘</strong> —— 于是它只有上端在画面里，下端被裁掉，端点正好压在下边界上。而塔筒本身是竖直的，斜率自然接近 90°。",
+        "右上角那条竖线（红色标注）是这条判据的<strong>反例</strong>：它也是竖直的，但整条都浮在天空里、没触到图像下边缘，所以被排除。这说明判据里「触底」那一条不是多余的。"
+      ]
+    },
+    {
+      h: "③ 以塔筒顶端为圆心",
+      p: [
+        "塔筒线的<strong>上端</strong>（远离图像边缘的那一端）就是机舱与轮毂的位置。以它为圆心画一个圆。",
+        "这个圆心是后面所有角度测量的<strong>原点</strong>。注意这一步不需要任何台账数据 —— 不知道轮毂高、不知道叶长，纯图像几何就能定出来。这是这条方法很轻的原因。"
+      ]
+    },
+    {
+      h: "④ 凑出互成 120° 的三条线",
+      p: [
+        "三叶片风机停机时，三支叶片<strong>两两之间都是 120°</strong>。于是遍历所有线段，找出「与另外两条线都接近 120°」的那一组 —— 这一组就是叶片。",
+        "论文的做法是：把偏转角相近的线归为一组，组内取平均，作为该叶片的偏转角。这样同一条叶片的上下两条边缘线会自然合到一起。",
+        "红色那几条凑不出 120° 的搭档，判定为干扰段。"
+      ]
+    },
+    {
+      h: "⑤ 求停机偏转角 γ",
+      p: [
+        "取<strong>最高像素点</strong>的那条叶片线（也就是最接近竖直向上的那一支）。它与 12 点钟方向的夹角就是停机偏转角 γ。",
+        "论文把它写成 <code>γ = 90° − α</code>，其中 α 是这条线相对<strong>水平方向</strong>的倾角。符号约定是<strong>顺时针为正、逆时针为负</strong>。",
+        "图上这支叶片偏向 12 点钟左侧，所以 γ 取负值。论文实测的那个样本是 <strong>−29.75°</strong>，这里用 −30° 示意。",
+        "如果风机恰好停在「一支叶片正指 12 点钟」，那么 γ = 0，不需要矫正。"
+      ]
+    }
+  ];
+
+  function setStep(k) {
+    var i;
+    for (i = 0; i < LINES.length; i++) {
+      setClass(LINES[i].id, "");
+    }
+
+    if (k === 1 || k === 2) {
+      for (i = 0; i < LINES.length; i++) {
+        setClass(LINES[i].id, LINES[i].id === "tower" ? "is-tower" : "dim");
+      }
+    } else if (k === 3) {
+      for (i = 0; i < LINES.length; i++) {
+        var id = LINES[i].id;
+        if (id === "tower") { setClass(id, "is-tower"); }
+        else if (id.charAt(0) === "b") { setClass(id, "is-blade"); }
+        else if (id === "n3" || id === "n4") { setClass(id, "faint"); }
+        else { setClass(id, "is-noise"); }
+      }
+    } else if (k === 4) {
+      for (i = 0; i < LINES.length; i++) {
+        var id2 = LINES[i].id;
+        if (id2 === "tower") { setClass(id2, "is-tower dim"); }
+        else if (id2 === "b0") { setClass(id2, "is-blade"); }
+        else if (id2.charAt(0) === "b") { setClass(id2, "is-blade dim"); }
+        else { setClass(id2, "faint"); }
+      }
+    }
+
+    auxG.innerHTML = auxFor(k);
+
+    var tabs = document.querySelectorAll(".tab");
+    for (i = 0; i < tabs.length; i++) {
+      tabs[i].setAttribute("aria-selected", String(Number(tabs[i].dataset.step) === k));
+    }
+
+    var c = CAPTIONS[k];
+    document.getElementById("caption").innerHTML =
+      "<h3>" + c.h + "</h3>" +
+      c.p.map(function (t) { return "<p>" + t + "</p>"; }).join("");
+  }
+
+  var tabEls = document.querySelectorAll(".tab");
+  for (var t = 0; t < tabEls.length; t++) {
+    tabEls[t].addEventListener("click", function () {
+      setStep(Number(this.dataset.step));
+    });
+  }
+
+  setStep(0);
+})();
+
+/* ============================================================
+   02 / 04 节：三维场景
+   ============================================================ */
+(function () {
+  "use strict";
+
+  /* ---------- 正交投影 ---------- */
+
+  var AZ = 38, EL = 25;
+
+  function makeProj(azDeg, elDeg) {
+    var az = azDeg * Math.PI / 180, el = elDeg * Math.PI / 180;
+    var ca = Math.cos(az), sa = Math.sin(az);
+    var ce = Math.cos(el), se = Math.sin(el);
+    return {
+      sx: function (p) { return p[0] * ca - p[1] * sa; },
+      sy: function (p) { return -p[0] * sa * se - p[1] * ca * se + p[2] * ce; }
+    };
+  }
+
+  var PR = makeProj(AZ, EL);
+
+  /* ---------- 矢量小工具 ---------- */
+
+  function cross(a, b) {
+    return [a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]];
+  }
+  function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+  /* Rodrigues：绕单位轴 k、过点 O，旋转 th（弧度） */
+  function rotAbout(p, th, k, O) {
+    var v = [p[0] - O[0], p[1] - O[1], p[2] - O[2]];
+    var c = Math.cos(th), s = Math.sin(th);
+    var kv = cross(k, v), kd = dot(k, v);
+    return [
+      v[0] * c + kv[0] * s + k[0] * kd * (1 - c) + O[0],
+      v[1] * c + kv[1] * s + k[1] * kd * (1 - c) + O[1],
+      v[2] * c + kv[2] * s + k[2] * kd * (1 - c) + O[2]
+    ];
+  }
+
+  /* ---------- 风机几何（比例已夸张，便于观察） ---------- */
+
+  var H = 100;    /* 轮毂高 */
+  var OFF = 26;   /* 轮毂相对塔筒轴的前伸 */
+  var RR = 60;    /* 风轮半径 */
+  var SO = 22;    /* 站位离风轮面的距离 */
+  var HUBR = 8;   /* 轮毂半径 */
+
+  var HUB = [0, OFF, H];
+  var AXIS_K = [0, -1, 0];   /* 风轮主轴方向（朝下游） */
+
+  /* 叶片径向单位矢量：与 rotAxis × upRef 的约定一致 */
+  function bladeDir(angDeg) {
+    var a = angDeg * Math.PI / 180;
+    return [-Math.sin(a), 0, Math.cos(a)];
+  }
+
+  function bladeTip(phaseDeg, i) {
+    var d = bladeDir(phaseDeg + i * 120);
+    return [HUB[0] + d[0] * RR, HUB[1] + d[1] * RR, HUB[2] + d[2] * RR];
+  }
+
+  /* 航点：每支叶片中部两侧（模拟双面站位） */
+  function wpFor(phaseDeg) {
+    var pts = [];
+    for (var i = 0; i < 3; i++) {
+      var d = bladeDir(phaseDeg + i * 120);
+      var b = [HUB[0] + d[0] * RR * 0.55,
+               HUB[1] + d[1] * RR * 0.55,
+               HUB[2] + d[2] * RR * 0.55];
+      pts.push([b[0], b[1] - SO, b[2]]);
+      pts.push([b[0], b[1] + SO, b[2]]);
+    }
+    return pts;
+  }
+
+  /* ---------- 自动取景 ---------- */
+
+  function fitTo(pts, vw, vh, pad) {
+    var x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+    for (var i = 0; i < pts.length; i++) {
+      var x = PR.sx(pts[i]), y = PR.sy(pts[i]);
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+    var sc = Math.min((vw - 2 * pad) / (x1 - x0), (vh - 2 * pad) / (y1 - y0));
+    return {
+      sc: sc,
+      ox: vw / 2 - (x0 + x1) / 2 * sc,
+      oy: vh / 2 + (y0 + y1) / 2 * sc
+    };
+  }
+
+  function mkT(f) {
+    return function (p) {
+      return [f.ox + PR.sx(p) * f.sc, f.oy - PR.sy(p) * f.sc];
+    };
+  }
+
+  function line3(T, a, b, cls) {
+    var p = T(a), q = T(b);
+    return '<line class="' + cls + '" x1="' + p[0].toFixed(1) + '" y1="' + p[1].toFixed(1) +
+           '" x2="' + q[0].toFixed(1) + '" y2="' + q[1].toFixed(1) + '"/>';
+  }
+
+  function circle3(T, c, r, u, cls) {
+    var d = "";
+    for (var k = 0; k <= 48; k++) {
+      var a = k / 48 * Math.PI * 2;
+      var p = T([c[0] + r * Math.sin(a), c[1] + r * Math.cos(a), u]);
+      d += (k === 0 ? "M " : "L ") + p[0].toFixed(1) + " " + p[1].toFixed(1) + " ";
+    }
+    return '<path class="' + cls + '" d="' + d + '"/>';
+  }
+
+  function dots3(T, pts, cls, r) {
+    var s = "";
+    for (var i = 0; i < pts.length; i++) {
+      var p = T(pts[i]);
+      s += '<circle class="' + cls + '" cx="' + p[0].toFixed(1) + '" cy="' +
+           p[1].toFixed(1) + '" r="' + r + '"/>';
+    }
+    return s;
+  }
+
+  /* ============================================================
+     02 节：风轮主轴 vs 塔筒轴（异面直线）
+     ============================================================ */
+
+  var svgAxisScene = document.getElementById("axisScene");
+
+  function drawAxisScene() {
+    /* 这一节不需要滑块：heading 是停机时的常量，没有可扫的变量。
+       要表达的是「两条轴空间上不重合」这一静态事实。 */
+    var pts = [[0, 0, 0], [0, 0, H + 16], HUB];
+    var axA = [HUB[0], HUB[1] + 38, HUB[2] + 3.4];
+    var axB = [HUB[0], HUB[1] - 52, HUB[2] - 4.6];
+    pts.push(axA, axB);
+    /* 前伸量的连线（水平，从塔筒轴到轮毂） */
+    pts.push([0, 0, H]);
+    var i;
+    for (i = 0; i < 3; i++) { pts.push(bladeTip(0, i)); }
+    var w = wpFor(0);
+    for (i = 0; i < w.length; i++) { pts.push(w[i]); }
+
+    var f = fitTo(pts, 800, 520, 46);
+    var T = mkT(f);
+    var s = "";
+
+    /* 叶片（相位 0，作为参照姿态） */
+    for (i = 0; i < 3; i++) {
+      s += line3(T, HUB, bladeTip(0, i), "g-blade-g");
+    }
+
+    /* 塔筒 */
+    s += line3(T, [0, 0, 0], [0, 0, H], "g-tower");
+
+    /* 前伸量：塔筒轴 -> 轮毂（水平线段，就是 nacelleOffset） */
+    s += line3(T, [0, 0, H], HUB, "g-offset");
+
+    /* 塔筒轴（竖直，向上延伸出画面顶端） */
+    s += '<path class="g-axis" stroke="var(--tower)" d="M ' +
+         T([0, 0, -14])[0].toFixed(1) + ' ' + T([0, 0, -14])[1].toFixed(1) +
+         ' L ' + T([0, 0, H + 16])[0].toFixed(1) + ' ' +
+         T([0, 0, H + 16])[1].toFixed(1) + '"/>';
+
+    /* 风轮主轴（旋转轴，高亮） */
+    s += '<path class="g-axis" stroke="var(--gamma)" d="M ' +
+         T(axA)[0].toFixed(1) + ' ' + T(axA)[1].toFixed(1) +
+         ' L ' + T(axB)[0].toFixed(1) + ' ' + T(axB)[1].toFixed(1) + '"/>';
+
+    /* 轮毂 */
+    s += dots3(T, [HUB], "g-hub", 6.5);
+
+    /* 标注 */
+    var pAxis = T(axB);
+    s += '<text class="ann ann-hi" x="' + (pAxis[0] - 8).toFixed(1) + '" y="' +
+         (pAxis[1] + 18).toFixed(1) + '" text-anchor="end">风轮主轴（旋转轴）</text>';
+    var pTower = T([0, 0, H + 16]);
+    s += '<text class="ann ann-tower" x="' + (pTower[0] + 12).toFixed(1) + '" y="' +
+         (pTower[1] + 14).toFixed(1) + '">塔筒轴</text>';
+    var pOff = T([0, 0, H]);
+    s += '<text class="ann ann-noise" x="' + (pOff[0] - 6).toFixed(1) + '" y="' +
+         (pOff[1] - 10).toFixed(1) + '" text-anchor="end">nacelleOffset</text>';
+    var pHub = T(HUB);
+    s += '<text class="ann" x="' + (pHub[0] + 14).toFixed(1) + '" y="' +
+         (pHub[1] - 10).toFixed(1) + '">轮毂</text>';
+
+    svgAxisScene.innerHTML = s;
+  }
+
+  drawAxisScene();
+
+  /* ============================================================
+     04 节：分阶段 —— 哪些段该转
+     ============================================================ */
+
+  var ENTRY = [0, -(RR + 46), H + RR + 26];
+  var EXITP = [RR + 46, 0, H + RR + 26];
+  var COARSE_N = 8;
+  var COARSE_R = RR + 34;
+
+  /* 用于自动取景的相位采样：只需覆盖滑块量程的端点，避免中间相位撑大包围盒 */
+  var GAMMAS = [-60, 0, 60];
+
+  function coarsePts() {
+    var pts = [];
+    for (var i = 0; i < COARSE_N; i++) {
+      var a = (180 + i * 360 / COARSE_N) * Math.PI / 180;
+      pts.push([HUB[0] + Math.sin(a) * COARSE_R,
+                HUB[1] + Math.cos(a) * COARSE_R,
+                HUB[2] + RR * 0.1]);
+    }
+    return pts;
+  }
+
+  function bladeStationPts(phaseDeg) {
+    return wpFor(phaseDeg);
+  }
+
+  /* 塔筒段：水平位置固定，高度上限随相位变 */
+  function towerTopU(phaseDeg) {
+    var minU = 1e9;
+    for (var i = 0; i < 3; i++) {
+      var a = (phaseDeg + i * 120) * Math.PI / 180;
+      var u = H + HUBR * Math.cos(a);
+      if (u < minU) { minU = u; }
+    }
+    return minU - 2;
+  }
+
+  function towerPts(phaseDeg) {
+    var top = towerTopU(phaseDeg);
+    var pts = [];
+    var radii = [14, 22];
+    for (var r = 0; r < radii.length; r++) {
+      for (var k = 0; k < 4; k++) {
+        var a = k * Math.PI / 2 + r * Math.PI / 4;
+        var u = 12 + (top - 12) * (r === 0 ? 0.35 : 0.85);
+        pts.push([Math.sin(a) * radii[r], Math.cos(a) * radii[r], u]);
+      }
+    }
+    return pts;
+  }
+
+  function collect3d() {
+    var pts = [[0, 0, 0], [0, 0, H], HUB, ENTRY, EXITP];
+    var cs = coarsePts();
+    for (var i = 0; i < cs.length; i++) { pts.push(cs[i]); }
+    for (var gi = 0; gi < GAMMAS.length; gi++) {
+      var gd = GAMMAS[gi];
+      var bs = bladeStationPts(gd);
+      for (var j = 0; j < bs.length; j++) { pts.push(bs[j]); }
+      var ts = towerPts(gd);
+      for (var k = 0; k < ts.length; k++) { pts.push(ts[k]); }
+    }
+    return pts;
+  }
+
+  var FIT3D = fitTo(collect3d(), 800, 560, 42);
+  var T3D = mkT(FIT3D);
+
+  var svg3d = document.getElementById("stage3d");
+
+  function draw3d(gammaDeg) {
+    var s = "";
+
+    /* 塔筒 */
+    s += line3(T3D, [0, 0, 0], [0, 0, H], "g-tower");
+
+    /* ② 粗模环绕（不动） */
+    var cs = coarsePts();
+    s += '<path class="g-track" stroke="var(--coarse)" d="';
+    for (var i = 0; i < cs.length; i++) {
+      var p = T3D(cs[i]);
+      s += (i === 0 ? "M " : "L ") + p[0].toFixed(1) + " " + p[1].toFixed(1) + " ";
+    }
+    s += "Z\"/>";
+    s += dots3(T3D, cs, "g-wp-coarse", 4);
+
+    /* ④ 塔筒段（高度上限随相位变） */
+    var topU = towerTopU(gammaDeg);
+    var ts = towerPts(gammaDeg);
+    s += circle3(T3D, [0, 0], 27, topU, "g-limit");
+    s += dots3(T3D, ts, "g-wp-tower", 4);
+    var lp = T3D([27, 0, topU]);
+    s += '<text class="ann ann-tower" x="' + (lp[0] + 9).toFixed(1) + '" y="' +
+         (lp[1] + 4).toFixed(1) + '">高度上限 ' + topU.toFixed(1) + ' m</text>';
+
+    /* ③ 叶片站位（绕主轴转） */
+    var bs = bladeStationPts(gammaDeg);
+    s += dots3(T3D, bs, "g-wp-g", 5);
+
+    /* ① 进场 / ⑤ 退场（不动） */
+    s += dots3(T3D, [ENTRY], "g-wp-entry", 5.5);
+    s += dots3(T3D, [EXITP], "g-wp-entry", 5.5);
+
+    /* 轮毂 */
+    s += dots3(T3D, [HUB], "g-hub", 5.5);
+
+    svg3d.innerHTML = s;
+  }
+
+  var dofSlider = document.getElementById("dofSlider");
+  var dofOut = document.getElementById("dofOut");
+
+  function fmt(v) {
+    var n = Number(v);
+    return (n < 0 ? "−" : "") + Math.abs(n).toFixed(1) + "°";
+  }
+
+  dofSlider.addEventListener("input", function () {
+    dofOut.textContent = fmt(this.value);
+    draw3d(Number(this.value));
+  });
+
+  dofOut.textContent = fmt(dofSlider.value);
+  draw3d(Number(dofSlider.value));
+})();
+</script>

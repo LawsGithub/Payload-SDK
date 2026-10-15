@@ -1,0 +1,976 @@
+<title>航线闭环</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+:root {
+  --ground:      #EDF0F3;
+  --surface:     #FFFFFF;
+  --surface-2:   #E2E8EE;
+  --ink:         #151B23;
+  --ink-2:       #4C5763;
+  --ink-3:       #7B8794;
+  --rule:        #D3DBE2;
+  --rule-strong: #B6C2CC;
+
+  --ok:    #2C7A58;
+  --part:  #B06A12;
+  --gap:   #A64B3C;
+  --tower: #2E5F8F;
+  --axis:  #6F4FA0;
+
+  --shadow: 0 1px 2px rgba(21,27,35,.06), 0 5px 14px rgba(21,27,35,.05);
+  --font-display: "IBM Plex Sans Condensed", "Helvetica Neue", Arial, sans-serif;
+  --font-body:    "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0F1319;
+    --surface:     #161C24;
+    --surface-2:   #1E252F;
+    --ink:         #E2E8EE;
+    --ink-2:       #A6B1BC;
+    --ink-3:       #737F8B;
+    --rule:        #29323D;
+    --rule-strong: #3C4753;
+
+    --ok:    #4FA97F;
+    --part:  #E0A44A;
+    --gap:   #D4796A;
+    --tower: #62A0D8;
+    --axis:  #A98AD6;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.45), 0 5px 16px rgba(0,0,0,.32);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground:      #0F1319;
+  --surface:     #161C24;
+  --surface-2:   #1E252F;
+  --ink:         #E2E8EE;
+  --ink-2:       #A6B1BC;
+  --ink-3:       #737F8B;
+  --rule:        #29323D;
+  --rule-strong: #3C4753;
+
+  --ok:    #4FA97F;
+  --part:  #E0A44A;
+  --gap:   #D4796A;
+  --tower: #62A0D8;
+  --axis:  #A98AD6;
+
+  --shadow: 0 1px 2px rgba(0,0,0,.45), 0 5px 16px rgba(0,0,0,.32);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+.prose { max-width: 68ch; }
+
+/* ---------- header ---------- */
+
+.site { padding: 60px 0 40px; }
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 12px; font-weight: 600;
+  letter-spacing: .13em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+h1 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(40px, 6.4vw, 66px);
+  line-height: 1.0;
+  letter-spacing: -.015em;
+  margin: 16px 0 0;
+  text-wrap: balance;
+}
+.lead {
+  font-size: 18px; line-height: 1.6;
+  color: var(--ink-2);
+  margin: 20px 0 0;
+  max-width: 64ch;
+}
+.lead code {
+  font-family: var(--font-mono); font-size: .88em;
+  background: var(--surface-2); padding: 1px 5px;
+  border-radius: 3px; color: var(--ink);
+}
+
+/* ---------- sections ---------- */
+
+section { padding: 56px 0; border-top: 1px solid var(--rule); }
+.sec-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+.sec-num {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--part); letter-spacing: .06em;
+}
+h2 {
+  font-family: var(--font-display);
+  font-size: 27px; font-weight: 600;
+  letter-spacing: -.008em;
+  margin: 0;
+}
+h2 + p { margin-top: 10px; }
+
+/* ---------- stage ---------- */
+
+.stage {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  margin-top: 26px;
+}
+.stage svg { display: block; width: 100%; height: auto; }
+
+.legend {
+  display: flex; flex-wrap: wrap; gap: 18px;
+  margin-top: 14px;
+  font-size: 13px; color: var(--ink-2);
+}
+.lg { display: inline-flex; align-items: center; gap: 7px; }
+.lg i { width: 18px; height: 3px; border-radius: 2px; display: inline-block; }
+.lg i.dot { width: 11px; height: 11px; border-radius: 50%; }
+
+.caption {
+  margin-top: 22px;
+  padding-left: 18px;
+  border-left: 3px solid var(--part);
+}
+.caption h3 {
+  font-family: var(--font-display);
+  font-size: 20px; font-weight: 600;
+  margin: 0 0 10px;
+}
+.caption p { margin: 0 0 11px; color: var(--ink-2); max-width: 68ch; }
+.caption p:last-child { margin-bottom: 0; }
+.caption strong { color: var(--ink); font-weight: 600; }
+.caption code {
+  font-family: var(--font-mono); font-size: .87em;
+  background: var(--surface-2); padding: 1px 5px;
+  border-radius: 3px; color: var(--ink);
+}
+
+/* ---------- loop diagram ---------- */
+
+.loop-node { cursor: pointer; }
+.loop-node circle {
+  fill: var(--surface);
+  stroke: var(--rule-strong);
+  stroke-width: 2;
+  transition: stroke .2s, stroke-width .2s;
+}
+.loop-node:hover circle { stroke: var(--ink); stroke-width: 2.6; }
+.loop-node.sel circle { stroke: var(--ink); stroke-width: 3.2; }
+.loop-node.s-ok   circle { stroke: var(--ok); }
+.loop-node.s-part circle { stroke: var(--part); }
+.loop-node.s-gap  circle { stroke: var(--gap); stroke-dasharray: 5 4; }
+.loop-node text {
+  font-family: var(--font-display);
+  font-size: 15px; font-weight: 600;
+  fill: var(--ink); text-anchor: middle;
+  pointer-events: none;
+}
+.loop-node .sub {
+  font-family: var(--font-mono);
+  font-size: 10.5px; font-weight: 400;
+  fill: var(--ink-3);
+}
+
+.arc { fill: none; stroke-width: 3; stroke-linecap: round; }
+.arc.ok   { stroke: var(--ok); }
+.arc.part { stroke: var(--part); stroke-dasharray: 7 6; }
+.arc.gap  { stroke: var(--gap); stroke-dasharray: 4 7; opacity: .9; }
+.arc.hidden { opacity: .12; }
+
+.arc-head { fill: var(--ink-3); }
+.arc-head.ok   { fill: var(--ok); }
+.arc-head.part { fill: var(--part); }
+.arc-head.gap  { fill: var(--gap); }
+
+#loopInfo text { text-anchor: middle; }
+.li-title {
+  font-family: var(--font-display);
+  font-size: 21px; font-weight: 600; fill: var(--ink);
+}
+.li-state {
+  font-family: var(--font-display);
+  font-size: 12px; font-weight: 600;
+  letter-spacing: .1em; text-transform: uppercase;
+}
+.li-state.ok   { fill: var(--ok); }
+.li-state.part { fill: var(--part); }
+.li-state.gap  { fill: var(--gap); }
+.li-body { font-family: var(--font-body); font-size: 13.5px; fill: var(--ink-2); }
+.li-hint { font-family: var(--font-mono); font-size: 11.5px; fill: var(--ink-3); }
+
+/* ---------- mode switch ---------- */
+
+.switch-row {
+  display: flex; align-items: center; gap: 14px;
+  margin: 22px 0 0; flex-wrap: wrap;
+}
+.switch-row .lab {
+  font-family: var(--font-display);
+  font-size: 13px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3);
+}
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+.seg button {
+  font-family: var(--font-display);
+  font-size: 13.5px; font-weight: 600;
+  padding: 8px 16px;
+  border: 0; background: var(--surface); color: var(--ink-2);
+  cursor: pointer;
+  transition: background .18s, color .18s;
+}
+.seg button + button { border-left: 1px solid var(--rule); }
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--ground); }
+.seg button:focus-visible { outline: 2px solid var(--part); outline-offset: -2px; }
+
+/* ---------- slider ---------- */
+
+.slider-row {
+  display: flex; align-items: center; gap: 18px;
+  margin-top: 20px; flex-wrap: wrap;
+}
+.slider-row label {
+  font-family: var(--font-display); font-size: 13px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3);
+}
+input[type="range"] {
+  flex: 1 1 260px; min-width: 200px;
+  accent-color: var(--part);
+  height: 22px;
+}
+input[type="range"]:focus-visible { outline: 2px solid var(--part); outline-offset: 4px; }
+.readout {
+  font-family: var(--font-mono);
+  font-size: 16px; font-variant-numeric: tabular-nums;
+  min-width: 104px; text-align: right;
+  color: var(--part); font-weight: 500;
+}
+
+/* ---------- table ---------- */
+
+.tbl-scroll { overflow-x: auto; margin-top: 26px; }
+.doftable { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+.doftable th, .doftable td {
+  text-align: left; padding: 11px 14px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+.doftable th {
+  font-family: var(--font-display);
+  font-size: 12px; font-weight: 600;
+  letter-spacing: .09em; text-transform: uppercase;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--rule-strong);
+}
+.doftable td:first-child { font-weight: 600; white-space: nowrap; }
+.doftable .yes { color: var(--ok); font-weight: 600; }
+.doftable .no  { color: var(--ink-3); font-weight: 600; }
+.doftable .mid { color: var(--part); font-weight: 600; }
+.doftable code {
+  font-family: var(--font-mono); font-size: .86em;
+  background: var(--surface-2); padding: 1px 4px; border-radius: 3px;
+}
+
+/* ---------- notes ---------- */
+
+.notes { display: grid; gap: 16px; margin-top: 26px; }
+.note { display: grid; grid-template-columns: 28px 1fr; gap: 14px; align-items: start; }
+.note-mark {
+  font-family: var(--font-mono);
+  font-size: 12px; line-height: 1.7;
+  color: var(--part); padding-top: 2px;
+}
+.note p { margin: 0; color: var(--ink-2); max-width: 68ch; }
+.note strong { color: var(--ink); font-weight: 600; }
+.note code {
+  font-family: var(--font-mono); font-size: .87em;
+  background: var(--surface-2); padding: 1px 5px;
+  border-radius: 3px; color: var(--ink);
+}
+
+/* ---------- code ---------- */
+
+.formula {
+  font-family: var(--font-mono);
+  font-size: 13.5px; line-height: 1.85;
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 16px 18px;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--ink);
+  margin-top: 20px;
+}
+.formula .cmt { color: var(--ink-3); }
+.formula .bad { color: var(--gap); }
+.formula .good { color: var(--ok); }
+
+/* ---------- svg helpers (03 节场景) ---------- */
+
+.sc-disk   { fill: none; stroke: var(--axis); stroke-width: 2; stroke-dasharray: 7 6; }
+.sc-blade  { fill: none; stroke: var(--ok); stroke-width: 6; stroke-linecap: round; }
+.sc-hub    { fill: var(--tower); }
+.sc-stand  { fill: var(--part); }
+.sc-sight  { fill: none; stroke: var(--part); stroke-width: 2.2; }
+.sc-sight-o{ fill: none; stroke: var(--ink-3); stroke-width: 1.4; stroke-dasharray: 4 4; opacity: .6; }
+.sc-standoff { fill: none; stroke: var(--tower); stroke-width: 1.8; stroke-dasharray: 5 4; }
+.ann { font-family: var(--font-mono); font-size: 12.5px; fill: var(--ink-2); }
+.ann-hi { fill: var(--part); font-weight: 500; }
+.ann-ok { fill: var(--ok); font-weight: 500; }
+.ann-tower { fill: var(--tower); }
+.ann-axis { fill: var(--axis); }
+
+footer {
+  padding: 44px 0 64px;
+  color: var(--ink-3);
+  font-size: 13.5px;
+  border-top: 1px solid var(--rule);
+}
+footer p { margin: 0 0 6px; max-width: 80ch; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+</style>
+
+<div class="wrap">
+
+<header class="site">
+  <div class="eyebrow">风机叶片巡检 · 机载航线 · 闭环设计</div>
+  <h1>航线闭环</h1>
+  <p class="lead">
+    闭环不是「有反馈就算闭环」。对这条航线来说，<strong>该闭的只有一层</strong> ——
+    位置可以开环，云台必须闭环。而这条分界线，是平台能力划出来的，不是算法选的。
+  </p>
+</header>
+
+<section>
+  <div class="sec-head"><span class="sec-num">01</span><h2>一个回路，六个环节</h2></div>
+  <p class="prose">
+    点任意一个环节看它的状态。<strong>绿色 = 已接通，橙色 = 代码在但未生效，红色 = 断</strong>。
+  </p>
+
+  <div class="stage">
+    <svg id="loopScene" viewBox="0 0 900 660" role="img"
+         aria-label="航线闭环回路：相位、规划、KMZ、执行、拍照、视觉反解六个环节及云台支线"></svg>
+  </div>
+
+  <div class="legend">
+    <span class="lg"><i style="background:var(--ok)"></i>已接通</span>
+    <span class="lg"><i style="background:var(--part)"></i>代码在，未生效</span>
+    <span class="lg"><i style="background:var(--gap)"></i>断</span>
+  </div>
+
+  <div class="caption">
+    <h3>这个回路在问什么</h3>
+    <p>
+      回路的核心是<strong>相位</strong> —— 风轮停在（或转到）哪个角度。它既是<strong>规划器的输入</strong>，
+      又是<strong>视觉要测的量</strong>。闭环的全部意义，就是让这两头接上。
+    </p>
+    <p>
+      顺时针走一圈：相位 → 规划 → KMZ → 执行 → 拍照 → 视觉反解 → 回到相位。
+      另有一条支线：相位 → 云台，在执行途中实时调整指向。
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">02</span><h2>什么时候才需要闭环</h2></div>
+  <p class="prose">
+    判据只有一条：<strong>相位是常量，还是观测量？</strong>
+  </p>
+
+  <div class="switch-row">
+    <span class="lab">作业模式</span>
+    <div class="seg" role="group" aria-label="作业模式">
+      <button id="modeStop" aria-pressed="true">停机受控</button>
+      <button id="modeSpin" aria-pressed="false">风轮可转动</button>
+    </div>
+    <span class="readout" id="modeNote" style="min-width:auto;text-align:left;font-family:var(--font-body);font-size:14px;color:var(--ink-2)">相位是台账常量，一次规划即可</span>
+  </div>
+
+  <div class="tbl-scroll">
+    <table class="doftable">
+      <thead>
+        <tr><th></th><th>停机受控</th><th>风轮可转动</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>相位从哪来</td>
+          <td>台账常量（现场实测填 <code>park_phase</code>）</td>
+          <td><strong>实时观测量</strong>（视觉反解）</td>
+        </tr>
+        <tr>
+          <td>规划</td>
+          <td class="yes">开环，一次生成</td>
+          <td class="mid">仍需一次假设相位</td>
+        </tr>
+        <tr>
+          <td>安全靠什么保证</td>
+          <td>离叶片轴线的距离</td>
+          <td><strong>离盘面的轴向距离</strong>（与相位无关）</td>
+        </tr>
+        <tr>
+          <td>闭环必要性</td>
+          <td class="no">不必要</td>
+          <td class="yes">必须</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="caption">
+    <h3>停机时，回路本来就是断的 —— 而且这样没问题</h3>
+    <p>
+      停机受控作业下，相位在起飞前就测好了、写进台账，飞行中<strong>不会再变</strong>。
+      这时候「视觉反解 → 相位」那一段<strong>不需要存在</strong>：规划器拿到的相位是对的，
+      一次生成航线即可。
+    </p>
+    <p>
+      只有风轮可能转动时，相位才变成<strong>必须在飞行中持续测量的量</strong> ——
+      回路才必须真的闭上。
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">03</span><h2>该闭在哪一层</h2></div>
+  <p class="prose">
+    这是整页最要紧的一节。结论是：<strong>位置层开环，云台层闭环</strong>。
+    拖动滑块 —— 叶片在动，站位不动，云台跟着转。
+  </p>
+
+  <div class="stage">
+    <svg id="layerScene" viewBox="0 0 860 480" role="img"
+         aria-label="侧视图：站位固定不动，叶片绕轮毂转动，云台实时跟踪叶尖"></svg>
+  </div>
+
+  <div class="legend">
+    <span class="lg"><i class="dot" style="background:var(--part)"></i>站位（开环，固定）</span>
+    <span class="lg"><i style="background:var(--ok)"></i>叶片（转动）</span>
+    <span class="lg"><i class="dot" style="background:var(--axis)"></i>风轮盘面</span>
+    <span class="lg"><i style="background:var(--part)"></i>云台视线（闭环，跟随）</span>
+  </div>
+
+  <div class="slider-row">
+    <label for="phaseSlider">风轮相位</label>
+    <input id="phaseSlider" type="range" min="0" max="359" step="1" value="20"
+           aria-label="风轮相位">
+    <span class="readout" id="phaseOut">20°</span>
+  </div>
+
+  <div class="notes" style="margin-top:28px">
+    <div class="note">
+      <span class="note-mark">01</span>
+      <p>
+        <strong>位置为什么能开环。</strong>转动模式下的安全判据用的是
+        <strong>离盘面的轴向距离</strong>（<code>|along| &lt; min_safe_dist</code>），
+        而不是叶片位置 —— 这个量<strong>与相位无关</strong>。更关键的是，规划器会把站位
+        自动推到盘外至少 <code>min_safe_dist</code> 处。所以<strong>无论相位假设对不对，站位都是安全的</strong>。
+      </p>
+    </div>
+    <div class="note">
+      <span class="note-mark">02</span>
+      <p>
+        <strong>位置为什么只能开环。</strong>执行单元是 <strong>KMZ 预下发</strong>的航点文件。
+        任务一旦启动，航点就固化了 —— 飞行途中<strong>改不了位置</strong>。
+        想改只能重新生成 + 重新上传，那是分钟级的，跟不上风轮转动。
+      </p>
+    </div>
+    <div class="note">
+      <span class="note-mark">03</span>
+      <p>
+        <strong>云台为什么能闭环。</strong>云台是<strong>唯一在飞行中可实时干预</strong>的执行器 ——
+        <code>DjiGimbalManager_Rotate</code> 是直接调用，不依赖 KMZ 动作表。
+        所以「对准叶片」这件事，只能交给云台。
+      </p>
+    </div>
+  </div>
+
+  <div class="caption">
+    <h3>于是闭环被拆成两条，快慢分明</h3>
+    <p>
+      <strong>慢回路（规划级）</strong>：相位 → 重规划 → 重新上传 KMZ。分钟级，跟不上转动。
+      <br>
+      <strong>快回路（执行级）</strong>：相位 → 云台指向。毫秒级，<strong>飞行中唯一有效的闭环</strong>。
+    </p>
+    <p>
+      代价要说清楚：位置开环意味着站位是按<strong>某个假设相位</strong>摆的。相位错了，
+      站位仍然安全，但可能<strong>不在叶片附近</strong> —— 拍出来的 GSD 与预期不符。
+      云台闭环能补指向，补不了站位。
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">04</span><h2>现状：断在哪</h2></div>
+  <p class="prose">
+    快回路的代码<strong>已经写好了</strong>，但它的感知端是空的。断点不在算法，在<strong>没有图进来</strong>。
+  </p>
+
+  <div class="formula"><span class="cmt">/* 快回路：代码完整，但进不来 */</span>
+if (cfg-&gt;profile.rotorMayRotate &amp;&amp; runner-&gt;telemetry.rotor.<span class="bad">valid</span> &amp;&amp;
+    target-&gt;bladeIndex &gt;= 0) {
+    predicted = WtTelemetry_PredictRotorFrame(&amp;telemetry, 0.3);  <span class="cmt">/* 外推 0.3s */</span>
+    tip  = WtTurbine_BladeTip(&amp;predicted, spec, target-&gt;bladeIndex);
+    wantYaw = WtEnu_Azimuth(...);                                <span class="cmt">/* 指向叶尖 */</span>
+}
+<span class="cmt">/* 但 rotor.valid 唯一的置位入口是 —— */</span>
+WtTelemetry_UpdatePhaseEstimate(...)   <span class="cmt">← 只被 SolvePhaseFromVision 调用</span>
+WtTelemetry_SolvePhaseFromVision(...)  <span class="bad">← 全仓库无人调用</span></div>
+
+  <div class="tbl-scroll">
+    <table class="doftable">
+      <thead>
+        <tr><th>环节</th><th>状态</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>规划 → KMZ → 执行</td><td class="yes">已接通</td>
+          <td>KMZ 上传、任务启动、监控循环完整</td>
+        </tr>
+        <tr>
+          <td>遥测订阅</td><td class="yes">已接通</td>
+          <td>位姿、云台姿态、RTK 状态、电池</td>
+        </tr>
+        <tr>
+          <td>云台跟踪（快回路）</td><td class="mid">代码在，未生效</td>
+          <td>默认 <code>gimbal_track_gain = 0</code> 关闭；且只在<strong>航点序号变化时</strong>触发一次，不是连续跟踪</td>
+        </tr>
+        <tr>
+          <td>相位视觉反解</td><td class="mid">代码在，无人调用</td>
+          <td><code>SolvePhaseFromVision</code> 接口与实现都完整，但没有调用者</td>
+        </tr>
+        <tr>
+          <td><strong>取图</strong></td><td class="gap" style="color:var(--gap);font-weight:600">不存在</td>
+          <td>只有 <code>StartShootPhoto</code> 触发快门，<strong>没有 liveview 订阅，也没有照片回传</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="caption">
+    <h3>断点是一条链，不是一处</h3>
+    <p>
+      取图不存在 → 照片进不了视觉模块 → <code>SolvePhaseFromVision</code> 没有输入 →
+      <code>rotor.valid</code> 永远是 <code>false</code> → 云台跟踪那个 <code>if</code>
+      <strong>永远不成立</strong> → 快回路整条空转。
+    </p>
+    <p>
+      所以「闭环没生效」的根因<strong>不在闭环代码本身</strong>（它写得很完整，含 0.3 s 外推、
+      死区、低通滤波、转速估计），而在<strong>更上游的取图能力</strong>。
+      这也解释了为什么把 <code>gimbal_track_gain</code> 调大也没用 —— 感知端是空的。
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">05</span><h2>补齐的顺序</h2></div>
+  <p class="prose">
+    断点在感知端，所以补的顺序是<strong>从下游往上游</strong>倒着来会白做 —— 必须先把图取到。
+  </p>
+
+  <div class="notes">
+    <div class="note">
+      <span class="note-mark">01</span>
+      <p>
+        <strong>先取图。</strong>接入 liveview 订阅（实时、低延迟，适合跟踪）或照片回传
+        （分辨率高，适合精测）。这一步不解决，后面全都无从验证。
+      </p>
+    </div>
+    <div class="note">
+      <span class="note-mark">02</span>
+      <p>
+        <strong>再接通视觉。</strong>把图像里的叶尖方向按相机内参换算成相对光轴的偏角，
+        喂给 <code>SolvePhaseFromVision</code> —— 它的入参就是这两个角，接口已经为这一步留好了。
+      </p>
+    </div>
+    <div class="note">
+      <span class="note-mark">03</span>
+      <p>
+        <strong>然后才开云台跟踪。</strong>把 <code>gimbal_track_gain</code> 从 0 调开。
+        此时 <code>rotor.valid</code> 才会真的为真，快回路才第一次真的闭上。
+      </p>
+    </div>
+    <div class="note">
+      <span class="note-mark">04</span>
+      <p>
+        <strong>最后才是调参。</strong>死区、低通系数、外推时长（当前写死 0.3 s）都要按实测响应调。
+        这些参数现在都是拍脑袋的默认值 —— 因为回路从没真跑过。
+      </p>
+    </div>
+  </div>
+
+  <div class="caption">
+    <h3>还有一处架构上的待办</h3>
+    <p>
+      云台跟踪目前挂在<strong>航点到达事件</strong>上（<code>HandleWaypointActions</code>），
+      而不是挂在主循环的每个周期上。所以它是<strong>离散触发</strong>的 —— 航点之间飞行时云台不动。
+    </p>
+    <p>
+      真正的「实时跟踪」应该把它移到 10 Hz 的主循环里，按固定周期算指向。
+      这件事独立于取图，可以先做，但<strong>做了也看不出来效果</strong>（因为相位还是无效的）——
+      所以顺序上仍排在取图之后。
+    </p>
+  </div>
+</section>
+
+<footer>
+  <p>依据：<code>wt_runner_psdk.c</code>（执行与云台）、<code>wt_telemetry.c</code>（相位估计）、
+     <code>wt_plan.c</code>（安全判据与站位）、<code>wt_app_config.c</code>（默认参数）。</p>
+  <p>状态判定以当前分支代码为准；「代码在，未生效」指实现完整但无调用者或默认关闭。</p>
+  <p>图中比例为示意，站位距离与叶轮半径未按真实比例绘制。</p>
+</footer>
+
+</div>
+
+<script>
+/* ============================================================
+   01 节：闭环回路图
+   ============================================================ */
+(function () {
+  "use strict";
+
+  var CX = 450, CY = 340, R = 208;
+  var NODE_R = 54;
+
+  var NODES = [
+    { id: "phase",  label: "相位",   sub: "转到哪",   ang: -90, state: "part" },
+    { id: "plan",   label: "规划",   sub: "生成航线", ang: -30, state: "ok"   },
+    { id: "kmz",    label: "KMZ",    sub: "航点+动作", ang: 30, state: "ok"   },
+    { id: "exec",   label: "执行",   sub: "上传飞行", ang: 90,  state: "ok"   },
+    { id: "photo",  label: "拍照",   sub: "到达站位", ang: 150, state: "ok"   },
+    { id: "vision", label: "视觉反解", sub: "从图算相位", ang: 210, state: "part" }
+  ];
+
+  /* 环节之间的连线：i -> i+1 */
+  var LINKS = [
+    { from: "phase",  to: "plan",   state: "ok"   },
+    { from: "plan",   to: "kmz",    state: "ok"   },
+    { from: "kmz",    to: "exec",   state: "ok"   },
+    { from: "exec",   to: "photo",  state: "ok"   },
+    { from: "photo",  to: "vision", state: "gap"  },
+    { from: "vision", to: "phase",  state: "gap"  }
+  ];
+
+  var DETAIL = {
+    phase: {
+      state: "part", stateText: "代码在，未生效",
+      body: ["相位是回路的核心：既是规划器的输入，又是视觉要测的量。",
+             "当前机载侧它恒为无效值 —— 没有观测来源。"],
+      hint: "telemetry.rotor.valid 恒为 false"
+    },
+    plan: {
+      state: "ok", stateText: "已接通",
+      body: ["用相位建立风轮参考系，生成站位、塔筒段与转场点。",
+             "停机模式下相位来自台账，这里是对的。"],
+      hint: "WtPlan_BuildMission"
+    },
+    kmz: {
+      state: "ok", stateText: "已接通",
+      body: ["航点位置、云台角、快门动作一并固化进 KMZ。",
+             "注意：固化意味着飞行途中改不了。"],
+      hint: "WtBridge_ExportKmz"
+    },
+    exec: {
+      state: "ok", stateText: "已接通",
+      body: ["上传 KMZ、启动任务，主循环 10 Hz 监控状态。",
+             "含 RTK 退化中止、落地判定、超时保护。"],
+      hint: "WtRunner_ExecuteTurbine"
+    },
+    photo: {
+      state: "ok", stateText: "已接通",
+      body: ["到点悬停稳定后触发快门，避免运动模糊。",
+             "照片落盘 —— 但机载侧没有任何途径把它读回来。"],
+      hint: "DjiCameraManager_StartShootPhoto"
+    },
+    vision: {
+      state: "part", stateText: "代码在，无人调用",
+      body: ["接口与实现都完整：逐片试反解、取最近解、低通、转速估计。",
+             "但没有任何调用者 —— 因为没有图像输入。"],
+      hint: "WtTelemetry_SolvePhaseFromVision"
+    }
+  };
+
+  function polar(r, deg) {
+    var a = deg * Math.PI / 180;
+    return { x: CX + r * Math.cos(a), y: CY + r * Math.sin(a) };
+  }
+
+  function nodeById(id) {
+    for (var i = 0; i < NODES.length; i++) {
+      if (NODES[i].id === id) { return NODES[i]; }
+    }
+    return null;
+  }
+
+  /* 从 a 节点到 b 节点的弧，两端各留出节点半径的间隙 */
+  function arcPath(a, b, r) {
+    var gapDeg = Math.asin(Math.min(0.95, NODE_R / r)) * 180 / Math.PI + 4;
+    var a0 = a.ang + gapDeg;
+    var a1 = b.ang - gapDeg;
+    if (a1 < a0) { a1 += 360; }
+    var p0 = polar(r, a0), p1 = polar(r, a1);
+    var large = (a1 - a0) > 180 ? 1 : 0;
+    return "M " + p0.x.toFixed(1) + " " + p0.y.toFixed(1) +
+           " A " + r + " " + r + " 0 " + large + " 1 " +
+           p1.x.toFixed(1) + " " + p1.y.toFixed(1);
+  }
+
+  /* 箭头：放在弧的中点，指向切线方向 */
+  function headFor(a, b, r) {
+    var gapDeg = Math.asin(Math.min(0.95, NODE_R / r)) * 180 / Math.PI + 4;
+    var a0 = a.ang + gapDeg, a1 = b.ang - gapDeg;
+    if (a1 < a0) { a1 += 360; }
+    var mid = (a0 + a1) / 2;
+    var p = polar(r, mid);
+    /* 切线方向（顺时针） */
+    var t = (mid + 90) * Math.PI / 180;
+    var dx = Math.cos(t), dy = Math.sin(t);
+    var L = 11, W = 6.5;
+    var nx = -dy, ny = dx;
+    return { d: "M " + (p.x + dx * L / 2).toFixed(1) + " " + (p.y + dy * L / 2).toFixed(1) +
+                " L " + (p.x - dx * L / 2 + nx * W).toFixed(1) + " " +
+                (p.y - dy * L / 2 + ny * W).toFixed(1) +
+                " L " + (p.x - dx * L / 2 - nx * W).toFixed(1) + " " +
+                (p.y - dy * L / 2 - ny * W).toFixed(1) + " Z",
+             cls: "arc-head " + (b.state === "gap" ? "gap" : (b.state === "part" ? "part" : "ok")) };
+  }
+
+  var svg = document.getElementById("loopScene");
+  var selected = "phase";
+
+  function renderLoop() {
+    var s = "";
+
+    /* 主环连线 */
+    for (var i = 0; i < LINKS.length; i++) {
+      var L = LINKS[i];
+      var a = nodeById(L.from), b = nodeById(L.to);
+      var h = headFor(a, b, R);
+      s += '<path class="arc ' + L.state + '" d="' + arcPath(a, b, R) + '"/>';
+      s += '<path class="' + h.cls + '" d="' + h.d + '"/>';
+    }
+
+    /* 云台支线：相位 -> 执行，走内圈 */
+    {
+      var pa = nodeById("phase"), pe = nodeById("exec");
+      var rIn = 96;
+      var g0 = pa.ang + 26, g1 = pe.ang - 26;
+      var q0 = polar(rIn, g0), q1 = polar(rIn, g1);
+      s += '<path class="arc part" d="M ' + q0.x.toFixed(1) + ' ' + q0.y.toFixed(1) +
+           ' A ' + rIn + ' ' + rIn + ' 0 0 1 ' + q1.x.toFixed(1) + ' ' + q1.y.toFixed(1) + '"/>';
+      /* 支线标注 */
+      s += '<text class="ann ann-hi" x="' + (CX - rIn - 6).toFixed(1) + '" y="' +
+           (CY - 4).toFixed(1) + '" text-anchor="end">云台跟踪（快回路）</text>';
+    }
+
+    /* 节点 */
+    for (i = 0; i < NODES.length; i++) {
+      var n = NODES[i];
+      var p = polar(R, n.ang);
+      s += '<g class="loop-node s-' + n.state + (n.id === selected ? " sel" : "") +
+           '" data-id="' + n.id + '">';
+      s += '<circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="' + NODE_R + '"/>';
+      s += '<text x="' + p.x.toFixed(1) + '" y="' + (p.y - 2).toFixed(1) + '">' + n.label + '</text>';
+      s += '<text class="sub" x="' + p.x.toFixed(1) + '" y="' + (p.y + 17).toFixed(1) + '">' +
+           n.sub + '</text>';
+      s += '</g>';
+    }
+
+    /* 中心信息区 */
+    var d = DETAIL[selected];
+    var bodyLines = "";
+    for (i = 0; i < d.body.length; i++) {
+      bodyLines += '<text class="li-body" x="' + CX + '" y="' + (CY - 6 + i * 21) + '">' +
+                   d.body[i] + '</text>';
+    }
+    s += '<g id="loopInfo">';
+    s += '<text class="li-title" x="' + CX + '" y="' + (CY - 56) + '">' +
+         nodeById(selected).label + '</text>';
+    s += '<text class="li-state ' + d.state + '" x="' + CX + '" y="' + (CY - 34) + '">' +
+         d.stateText + '</text>';
+    s += bodyLines;
+    s += '<text class="li-hint" x="' + CX + '" y="' + (CY + 48) + '">' + d.hint + '</text>';
+    s += '</g>';
+
+    svg.innerHTML = s;
+
+    var groups = svg.querySelectorAll(".loop-node");
+    for (var k = 0; k < groups.length; k++) {
+      groups[k].addEventListener("click", function () {
+        selected = this.getAttribute("data-id");
+        renderLoop();
+      });
+    }
+  }
+
+  renderLoop();
+})();
+
+/* ============================================================
+   02 节：模式切换
+   ============================================================ */
+(function () {
+  "use strict";
+
+  var bStop = document.getElementById("modeStop");
+  var bSpin = document.getElementById("modeSpin");
+  var note = document.getElementById("modeNote");
+
+  var TEXT = {
+    stop: "相位是台账常量，一次规划即可",
+    spin: "相位是实时观测量，回路必须闭上"
+  };
+
+  function setMode(m) {
+    bStop.setAttribute("aria-pressed", String(m === "stop"));
+    bSpin.setAttribute("aria-pressed", String(m === "spin"));
+    note.textContent = TEXT[m];
+  }
+
+  bStop.addEventListener("click", function () { setMode("stop"); });
+  bSpin.addEventListener("click", function () { setMode("spin"); });
+  setMode("stop");
+})();
+
+/* ============================================================
+   03 节：位置开环 / 云台闭环
+   ============================================================ */
+(function () {
+  "use strict";
+
+  var svg = document.getElementById("layerScene");
+  var slider = document.getElementById("phaseSlider");
+  var out = document.getElementById("phaseOut");
+
+  /* 侧视图坐标：盘面竖直，站位在左侧盘外 */
+  var DISK_X = 560;      /* 风轮盘面在屏幕上的横坐标 */
+  var HUB_Y  = 250;      /* 轮毂高度 */
+  var RR     = 132;      /* 叶轮半径（像素） */
+  var STAND_X = 200;     /* 站位横坐标（固定不动） */
+  var STAND_Y = 250;
+
+  function tipY(phaseDeg) {
+    /* 侧看盘面：叶尖只在竖直方向投影出分量 */
+    return HUB_Y - RR * Math.cos(phaseDeg * Math.PI / 180);
+  }
+
+  function draw(phaseDeg) {
+    var s = "";
+    var ty = tipY(phaseDeg);
+
+    /* 地面 */
+    s += '<line x1="60" y1="430" x2="800" y2="430" stroke="var(--rule-strong)" stroke-width="2"/>';
+    s += '<text class="ann" x="66" y="450">地面</text>';
+
+    /* 塔筒 */
+    s += '<rect x="' + (DISK_X - 9) + '" y="' + HUB_Y + '" width="18" height="' +
+         (430 - HUB_Y) + '" fill="var(--tower)" opacity=".35"/>';
+
+    /* 风轮盘面（侧看是一条竖线） */
+    s += '<line class="sc-disk" x1="' + DISK_X + '" y1="' + (HUB_Y - RR - 30) +
+         '" x2="' + DISK_X + '" y2="' + (HUB_Y + RR + 30) + '"/>';
+    s += '<text class="ann ann-axis" x="' + (DISK_X + 12) + '" y="' +
+         (HUB_Y - RR - 36) + '">风轮盘面</text>';
+
+    /* 盘面安全带：站位必须在这条带之外 */
+    s += '<line x1="' + (DISK_X - 34) + '" y1="' + (HUB_Y - RR - 24) + '" x2="' +
+         (DISK_X - 34) + '" y2="' + (HUB_Y + RR + 24) +
+         '" stroke="var(--ok)" stroke-width="1.4" stroke-dasharray="4 5" opacity=".6"/>';
+
+    /* 叶片：三支，绕轮毂 */
+    var i;
+    for (i = 0; i < 3; i++) {
+      var a = phaseDeg + i * 120;
+      var ey = HUB_Y - RR * Math.cos(a * Math.PI / 180);
+      s += '<line class="sc-blade" x1="' + DISK_X + '" y1="' + HUB_Y + '" x2="' + DISK_X +
+           '" y2="' + ey.toFixed(1) + '"/>';
+    }
+
+    /* 轮毂 */
+    s += '<circle class="sc-hub" cx="' + DISK_X + '" cy="' + HUB_Y + '" r="9"/>';
+
+    /* 目标叶尖（相位 0 的那支） */
+    s += '<circle cx="' + DISK_X + '" cy="' + ty.toFixed(1) + '" r="6" fill="var(--ok)"/>';
+    s += '<text class="ann ann-ok" x="' + (DISK_X + 14) + '" y="' + (ty - 8).toFixed(1) +
+         '">叶尖</text>';
+
+    /* 站位（固定不动） */
+    s += '<line class="sc-standoff" x1="' + STAND_X + '" y1="' + STAND_Y + '" x2="' +
+         (DISK_X - 34) + '" y2="' + STAND_Y + '"/>';
+    s += '<text class="ann ann-tower" x="' + ((STAND_X + DISK_X) / 2 - 20) + '" y="' +
+         (STAND_Y - 10) + '" text-anchor="middle">≥ min_safe_dist</text>';
+
+    s += '<circle class="sc-stand" cx="' + STAND_X + '" cy="' + STAND_Y + '" r="9"/>';
+    s += '<text class="ann ann-hi" x="' + STAND_X + '" y="' + (STAND_Y + 30) +
+         '" text-anchor="middle">站位（开环·不动）</text>';
+
+    /* 云台视线：站位 -> 叶尖 */
+    s += '<line class="sc-sight" x1="' + STAND_X + '" y1="' + STAND_Y + '" x2="' + DISK_X +
+         '" y2="' + ty.toFixed(1) + '"/>';
+
+    /* 指向 12 点时的视线作参照 */
+    s += '<line class="sc-sight-o" x1="' + STAND_X + '" y1="' + STAND_Y + '" x2="' + DISK_X +
+         '" y2="' + (HUB_Y - RR) + '"/>';
+
+    /* 云台角标注 */
+    var angDeg = Math.atan2(STAND_Y - ty, DISK_X - STAND_X) * 180 / Math.PI;
+    s += '<text class="ann ann-hi" x="' + (STAND_X + 16) + '" y="' +
+         (STAND_Y - 22) + '">云台 ' + angDeg.toFixed(1) + '°</text>';
+
+    s += '<text class="ann" x="' + (STAND_X + 16) + '" y="' + (STAND_Y - 6) +
+         '" opacity=".7">（闭环·跟随叶尖）</text>';
+
+    /*
+     * 侧视图里叶尖只投影出竖直分量，所以相位相差 120° 的两支叶片
+     * 会落在同一高度 —— 看上去像"没动"。用一个小相位盘把真实转角显示出来，
+     * 避免误读。
+     */
+    s += '<g transform="translate(120, 96)">';
+    s += '<circle r="42" fill="none" stroke="var(--rule-strong)" stroke-width="1.4"/>';
+    s += '<line x1="0" y1="0" x2="0" y2="-42" stroke="var(--rule)" stroke-width="1.2"/>';
+    for (i = 0; i < 3; i++) {
+      var pa = (phaseDeg + i * 120 - 90) * Math.PI / 180;
+      s += '<line x1="0" y1="0" x2="' + (30 * Math.cos(pa)).toFixed(1) + '" y2="' +
+           (30 * Math.sin(pa)).toFixed(1) + '" stroke="var(--ok)" stroke-width="3.4" ' +
+           'stroke-linecap="round"/>';
+    }
+    s += '<circle r="3.4" fill="var(--tower)"/>';
+    s += '</g>';
+    s += '<text class="ann ann-ok" x="120" y="156" text-anchor="middle">正视图</text>';
+
+    svg.innerHTML = s;
+  }
+
+  slider.addEventListener("input", function () {
+    out.textContent = Number(this.value).toFixed(0) + "°";
+    draw(Number(this.value));
+  });
+
+  out.textContent = Number(slider.value).toFixed(0) + "°";
+  draw(Number(slider.value));
+})();
+</script>
