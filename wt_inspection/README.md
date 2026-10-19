@@ -117,6 +117,15 @@ bash ../tools/build_dpk/build_dpk.sh -i app_json/app.json -o ~/dpk
 `/data/` 不可写；输出的正确位置是应用目录下的 `data/`（包内已建好、属主
 `dji:dji`、可写）。
 
+已落实为：配置缺失或非法时只置 `s_configReady = false`，进程保持存活走完
+身份校验，等到要执行作业时才拒绝，并以**返回码 0** 退出。安装实测通过
+（`APP INSTALL SUCCESS`），安装器试运行期间配置模板被正常落盘到
+`data/wt_config.ini`。
+
+配置路径与默认输出目录都是**相对应用目录**的（`data/wt_config.ini`、
+`data/`）—— 应用的工作目录就是包根，这也是 `WT_LOG_PATH = "data/logs/WT"`
+这个相对路径成立的前提。
+
 ---
 
 ## 分层结构
