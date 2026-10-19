@@ -77,6 +77,15 @@ typedef struct {
     /* ---- 作业剖面 ---- */
     WtInspectionProfile profile;
 
+    /* ---- 沿中线飞行模式（trace）----
+     *
+     * 与 profile 里的「盘外站位斜拍」互斥的另一种航线形态：无人机沿叶片
+     * 轴线平行飞过、叶尖绕半圈换面。traceEnabled 为 true 时规划走
+     * WtPlan_BladeTrace，profile 的采样字段不再参与。
+     */
+    bool traceEnabled;       /*!< 是否启用沿中线飞行模式 */
+    WtTraceProfile trace;    /*!< 该模式的参数 */
+
     /* ---- 机载运行参数 ---- */
     double telemetryHz;      /*!< 遥测订阅频率 Hz */
     double gimbalTrackGain;  /*!< 云台实时跟踪增益，0 = 不跟踪 */

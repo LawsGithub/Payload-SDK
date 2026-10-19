@@ -27,6 +27,7 @@ extern "C" {
 #define WT_EARTH_F (1.0 / WT_EARTH_INV_F)        /*!< 扁率 */
 #define WT_EARTH_E2 (WT_EARTH_F * (2.0 - WT_EARTH_F)) /*!< 第一偏心率平方 */
 
+#define WT_PI 3.14159265358979323846
 #define WT_DEG2RAD 0.017453292519943295
 #define WT_RAD2DEG 57.29577951308232
 

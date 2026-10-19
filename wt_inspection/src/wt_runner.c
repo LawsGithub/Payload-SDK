@@ -175,8 +175,37 @@ WtRunResult WtRunner_PlanTurbine(WtRunner *runner, const char *turbineName,
 
     job->frame = WtTurbine_BuildRotorFrame(&job->turbine->spec, job->parkPhaseDeg);
 
-    prc = WtPlan_BuildMission(&job->turbine->spec, &job->frame, &runner->config.profile,
-                              &job->mission);
+    /*
+     * 两种互斥的航线形态，由配置选择：
+     *   trace_enable = true  → 沿叶片中线飞行（去程/叶尖掉头/回程）
+     *   trace_enable = false → 盘外站位斜拍（默认）
+     * 安全校验对两者是同一套（到叶片轴线距离），只是 trace 模式的
+     * 偏置量必须由配置保证大于 minSafeDistM。
+     */
+    if (runner->config.traceEnabled) {
+        WtValidateResult tv = WtTraceProfile_Validate(&runner->config.trace);
+
+        if (!tv.ok) {
+            fprintf(stderr, "[runner] 沿中线飞行剖面非法：%s\n", tv.message);
+            return WT_RUN_ERR_CONFIG;
+        }
+        if (runner->config.trace.offsetM <= runner->config.profile.minSafeDistM) {
+            fprintf(stderr,
+                    "[runner] trace_offset %.1f m 不大于 min_safe_dist %.1f m，"
+                    "贴近叶片飞行将无法通过安全判据。\n",
+                    runner->config.trace.offsetM, runner->config.profile.minSafeDistM);
+            return WT_RUN_ERR_CONFIG;
+        }
+        printf("[runner] 沿中线飞行模式：偏置 %.1f m，展向间距 %.1f m，掉头 %d 段\n",
+               runner->config.trace.offsetM, runner->config.trace.stepM,
+               runner->config.trace.arcSegments);
+        prc = WtPlan_BladeTrace(&job->turbine->spec, &job->frame,
+                                &runner->config.trace, &job->mission);
+        /* BladeTrace 内部已按本模式的判据算过统计 */
+    } else {
+        prc = WtPlan_BuildMission(&job->turbine->spec, &job->frame,
+                                  &runner->config.profile, &job->mission);
+    }
     if (prc != WT_PLAN_OK) {
         fprintf(stderr, "[runner] 航线规划失败，错误码 %d\n", (int)prc);
         return WT_RUN_ERR_PLAN;

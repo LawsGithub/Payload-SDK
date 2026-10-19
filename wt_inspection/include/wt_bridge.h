@@ -28,6 +28,13 @@ extern "C" {
 typedef enum {
     WT_GIMBAL_ABSOLUTE = 0, /*!< 云台偏航跟随航向，俯仰按绝对值下发 */
     WT_GIMBAL_FREE_YAW,     /*!< 云台偏航独立于机头，按绝对方位角下发 */
+    /*
+     * 仅俯仰、不碰偏航。用于「机头承担偏转」的航段（沿中线飞行的叶尖
+     * 掉头）：那一段由 waypointHeadingMode=towardPOI 让机头绕叶尖转，
+     * 云台若同时下发 yaw，两者会互相打架。M4T 的云台 Pan 轴本就
+     * 「Not controllable」，让机头承担偏转是唯一可行的做法。
+     */
+    WT_GIMBAL_PITCH_ONLY,
 } WtGimbalMode;
 
 /** 相机动作 */

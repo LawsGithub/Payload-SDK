@@ -66,7 +66,10 @@ static const char *const WT_KEYS_INSPECTION[] = {
     "ground_clearance", "rotor_may_rotate", "blade_side", "overlap", "blade_spacing",
     "max_samples_per_blade", "blade_axial_shift", "tower_ring_count", "tower_per_ring",
     "include_tower", "do_coarse_survey", "coarse_radius", "coarse_photo_count",
-    "coarse_pitch", "cruise_speed", "inspect_speed", "photo_dwell", NULL,
+    "coarse_pitch", "cruise_speed", "inspect_speed", "photo_dwell",
+    /* 沿中线飞行模式（trace）：与上面的站位式采样互斥，见 WtTraceProfile */
+    "trace_enable", "trace_offset", "trace_step", "trace_approach",
+    "trace_arc_segments", NULL,
 };
 
 static const char *const WT_KEYS_APP[] = {
@@ -451,6 +454,30 @@ static bool WtConfig_ApplyProfileKey(WtInspectionProfile *p, const char *key, co
     return true;
 }
 
+/** 解析 [inspection] 段里的「沿中线飞行」模式键；未命中返回 false */
+static bool WtConfig_ApplyTraceKey(WtAppConfig *config, const char *key, const char *value)
+{
+    WtTraceProfile *t = &config->trace;
+
+    if (strcmp(key, "trace_enable") == 0) {
+        return WtConfig_GetBool(value, &config->traceEnabled);
+    }
+    if (strcmp(key, "trace_offset") == 0) {
+        return WtConfig_GetDouble(value, &t->offsetM);
+    }
+    if (strcmp(key, "trace_step") == 0) {
+        return WtConfig_GetDouble(value, &t->stepM);
+    }
+    if (strcmp(key, "trace_approach") == 0) {
+        return WtConfig_GetDouble(value, &t->approachM);
+    }
+    if (strcmp(key, "trace_arc_segments") == 0) {
+        return WtConfig_GetInt(value, &t->arcSegments);
+    }
+
+    return false;
+}
+
 bool WtAppConfig_Load(const char *path, WtAppConfig *config)
 {
     FILE *fp;
@@ -463,6 +490,8 @@ bool WtAppConfig_Load(const char *path, WtAppConfig *config)
 
     memset(config, 0, sizeof(*config));
     config->profile = WtInspectionProfile_Default();
+    config->trace = WtTraceProfile_Default();
+    config->traceEnabled = false;
 
     config->turbines = calloc((size_t)capacity, sizeof(WtTurbineEntry));
     if (config->turbines == NULL) {
@@ -576,7 +605,14 @@ bool WtAppConfig_Load(const char *path, WtAppConfig *config)
                 }
             } else if (strcmp(section, "inspection") == 0) {
                 keySection = WT_CFG_SECTION_INSPECTION;
-                applied = WtConfig_ApplyProfileKey(&config->profile, key, value);
+                /*
+                 * trace 与站位式采样共处 [inspection] 段：两者是同一层级的
+                 * 互斥航线形态，另开段落只会让现场多一层判断。先试 trace，
+                 * 未命中再落到 profile —— 两组键名无交集，顺序不影响结果。
+                 */
+                if (!WtConfig_ApplyTraceKey(config, key, value)) {
+                    applied = WtConfig_ApplyProfileKey(&config->profile, key, value);
+                }
             } else if (strcmp(section, "app") == 0) {
                 keySection = WT_CFG_SECTION_APP;
                 if (strcmp(key, "telemetry_hz") == 0) {
@@ -751,6 +787,23 @@ bool WtAppConfig_WriteTemplate(const char *path)
             "cruise_speed        = 8.0\n"
             "inspect_speed       = 2.0\n"
             "photo_dwell         = 1.5\n"
+            "\n"
+            "# ---- 沿中线飞行模式（trace）------------------------------------\n"
+            "# 与上面的「盘外站位斜拍」互斥的另一种航线形态：无人机沿叶片轴线\n"
+            "# 平行飞过，到叶尖后以叶尖为圆心绕半圈切到另一侧，再飞回轮毂。\n"
+            "# 一片叶一趟同时覆盖迎风面（去程）与背风面（回程）。\n"
+            "# 启用后，上面的站位式采样参数（overlap / blade_spacing 等）不再参与。\n"
+            "#\n"
+            "# trace_offset 是离叶片轴线的偏置距离，必须显著大于 min_safe_dist：\n"
+            "# 偏置越小成像越好，但越贴近叶片，任何定位漂移都更危险。\n"
+            "trace_enable        = false\n"
+            "trace_offset        = 10.0\n"
+            "# 沿展向的航点间距，决定成像重叠率\n"
+            "trace_step          = 5.0\n"
+            "# 轮毂前方捕获相位的距离\n"
+            "trace_approach      = 30.0\n"
+            "# 叶尖掉头半圆的分段数，至少 2\n"
+            "trace_arc_segments  = 8\n"
             "\n"
             "[app]\n"
             "telemetry_hz       = 10\n"

@@ -92,6 +92,14 @@ WtPlanResult WtBridge_BuildActions(const WtMission *mission,
         memset(&a, 0, sizeof(a));
         a.waypointIndex = (int)i;
         a.mode = mode;
+        /*
+         * 沿中线飞行模式的叶尖掉头段：机头由 towardPOI 绕叶尖转，云台只
+         * 保留俯仰 —— 若同时下发 yaw，云台与机头会互相打架（且 M4T 的
+         * 云台 Pan 轴本就不可独立控制）。
+         */
+        if (p->tag != NULL && strcmp(p->tag, "trace_arc") == 0) {
+            a.mode = WT_GIMBAL_PITCH_ONLY;
+        }
 
         /*
          * 云台偏航一律按「绝对方位角」下发（gimbalHeadingYawBase = north）。
@@ -397,14 +405,48 @@ static bool WtBridge_WritePlacemark(WtStr *s, const WtMission *mission,
         return false;
     if (!WtStr_Append(s, "        <wpml:waypointSpeed>%.2f</wpml:waypointSpeed>\n", speed))
         return false;
-    if (!WtStr_Append(s,
+    /*
+     * 航向：默认沿航线（followWayline）。
+     *
+     * 例外是「沿中线飞行」模式的叶尖掉头段 —— 那一段要求机头绕着叶尖转
+     * 180°，做法是把该航点的 waypointHeadingMode 置 towardPOI、POI 填叶尖
+     * 坐标，机头就会在飞向下一航点的途中始终朝向叶尖（这正是 DJI Pilot 2
+     * 「兴趣点环绕」的机制）。
+     *
+     * 为什么不用 gimbalRotate 的 yaw 去转：M4T 的云台 Pan 轴标着
+     * 「Not controllable」，云台 yaw 无法独立于机头偏转。让机头承担偏转、
+     * 云台只做俯仰，是 M4T 上唯一可行的做法。
+     */
+    if (WtPlanPoint_IsTrace(p) && p->tag != NULL &&
+        strcmp(p->tag, "trace_arc") == 0) {
+        /* POI = 该点所属叶片的叶尖（转场点没有归属叶片，用自身坐标兜底） */
+        double poiLat = p->geo.lat;
+        double poiLon = p->geo.lon;
+
+        if (p->bladeIndex >= 0 && mission->bladeTips != NULL &&
+            (size_t)p->bladeIndex < mission->bladeTipCount) {
+            poiLat = mission->bladeTips[p->bladeIndex].lat;
+            poiLon = mission->bladeTips[p->bladeIndex].lon;
+        }
+        if (!WtStr_Append(s,
+                          "        <wpml:waypointHeadingParam>\n"
+                          "          <wpml:waypointHeadingMode>towardPOI</wpml:waypointHeadingMode>\n"
+                          "          <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>\n"
+                          "          <wpml:waypointPoiPoint>%.8f,%.8f,0.000000</wpml:waypointPoiPoint>\n"
+                          "          <wpml:waypointHeadingPathMode>%s</wpml:waypointHeadingPathMode>\n"
+                          "        </wpml:waypointHeadingParam>\n",
+                          poiLat, poiLon,
+                          (idx % 2 == 0) ? "clockwise" : "counterClockwise"))
+            return false;
+    } else if (!WtStr_Append(s,
                       "        <wpml:waypointHeadingParam>\n"
                       "          <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>\n"
                       "          <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>\n"
                       "          <wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>\n"
                       "          <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>\n"
-                      "        </wpml:waypointHeadingParam>\n"))
+                      "        </wpml:waypointHeadingParam>\n")) {
         return false;
+    }
     if (!WtStr_Append(s,
                       "        <wpml:waypointTurnParam>\n"
                       "          <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>\n"
@@ -428,6 +470,12 @@ static bool WtBridge_WritePlacemark(WtStr *s, const WtMission *mission,
             return false;
 
         if (a->setGimbal) {
+            /*
+             * PITCH_ONLY 时 yaw 元素仍要写（规范标为必需元素），但 enable 置 0
+             * —— 这样云台偏航完全交给机头（towardPOI），两者不会互相打架。
+             */
+            int yawEnable = (a->mode == WT_GIMBAL_PITCH_ONLY) ? 0 : 1;
+
             if (!WtStr_Append(s,
                               "          <wpml:action>\n"
                               "            <wpml:actionId>%d</wpml:actionId>\n"
@@ -437,13 +485,13 @@ static bool WtBridge_WritePlacemark(WtStr *s, const WtMission *mission,
                               "              <wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>\n"
                               "              <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>\n"
                               "              <wpml:gimbalPitchRotateAngle>%.2f</wpml:gimbalPitchRotateAngle>\n"
-                              "              <wpml:gimbalYawRotateEnable>1</wpml:gimbalYawRotateEnable>\n"
+                              "              <wpml:gimbalYawRotateEnable>%d</wpml:gimbalYawRotateEnable>\n"
                               "              <wpml:gimbalYawRotateAngle>%.2f</wpml:gimbalYawRotateAngle>\n"
                               "              <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>\n"
                               "              <wpml:payloadPositionIndex>%d</wpml:payloadPositionIndex>\n"
                               "            </wpml:actionActuatorFuncParam>\n"
                               "          </wpml:action>\n",
-                              actionId++, a->gimbalPitchDeg, a->gimbalYawDeg,
+                              actionId++, a->gimbalPitchDeg, yawEnable, a->gimbalYawDeg,
                               WT_BRIDGE_PAYLOAD_INDEX))
                 return false;
         }

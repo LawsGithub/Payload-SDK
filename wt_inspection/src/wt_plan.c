@@ -23,6 +23,12 @@ typedef struct {
     const WtTurbineSpec *spec;
     const WtInspectionProfile *profile;
     WtLocalFrame frame; /*!< 以塔基为原点的局部切平面 */
+    /*
+     * 沿中线飞行模式（WtPlan_BladeTrace）的参数。该模式不复用
+     * WtInspectionProfile 的采样推导 —— 成像几何完全不同（正对叶面
+     * 而非斜视），所以单独挂一个指针，未使用时为 NULL。
+     */
+    const WtTraceProfile *trace;
 } WtPlanCtx;
 
 /** 点 P 到线段 AB 的最近距离 */
@@ -156,7 +162,14 @@ static WtPlanPoint WtPlan_MakePoint(const WtPlanCtx *ctx, WtEnu standoff, WtEnu 
     p.gimbalYawDeg = WtEnu_Azimuth(look);
     p.gimbalPitchDeg = WtEnu_Elevation(look);
     p.distanceToTargetM = WtEnu_Length(look);
-    p.gsdMmPerPx = WtCamera_GsdAtDistance(&ctx->profile->camera, p.distanceToTargetM);
+    /*
+     * 沿中线飞行模式不带 WtInspectionProfile（成像几何不同），此时
+     * 没有相机模型可算 GSD —— 该模式的成像质量由调用方按弦长另行评估，
+     * 故留 0 而不是取一个错误的相机去算。
+     */
+    p.gsdMmPerPx = (ctx->profile != NULL)
+                       ? WtCamera_GsdAtDistance(&ctx->profile->camera, p.distanceToTargetM)
+                       : 0.0;
     p.purpose = WT_PHOTO_DEFECT;
     p.tag = tag;
 
@@ -541,6 +554,7 @@ void WtMission_Init(WtMission *mission)
 void WtMission_Free(WtMission *mission)
 {
     free(mission->points);
+    free(mission->bladeTips);
     memset(mission, 0, sizeof(*mission));
 }
 
@@ -1265,8 +1279,16 @@ WtSafetyReport WtPlan_ValidateMission(const WtTurbineSpec *spec,
         /*
          * GSD 只对「叶片精细巡检」环节有意义：它决定缺陷能否被分辨。
          * 粗模环绕与塔筒照片不以分辨率为指标，混入统计会掩盖真实问题。
+         *
+         * 沿中线飞行（trace）模式单独排除：该模式的成像几何是「正对叶面、
+         * 沿展向扫过」，GSD 随叶弦变化而非随斜距变化，用这里的斜距公式
+         * 算出来的是错的值。规划器在该模式下把 gsdMmPerPx 置 0 表示
+         * 「未计算」—— 若照常走下面的判据，0 > 目标GSD 恒为假，会**静默
+         * 通过**一项其实没做的检查。宁可显式跳过并留下计数。
          */
-        if (p->purpose == WT_PHOTO_DEFECT) {
+        if (WtPlanPoint_IsTrace(p)) {
+            /* 本模式不做斜距 GSD 判定，见上 */
+        } else if (p->purpose == WT_PHOTO_DEFECT) {
             sumDefectGsd += p->gsdMmPerPx;
             defectCount++;
             if (p->gsdMmPerPx > rep.maxDefectGsdMmPerPx) {
@@ -1345,6 +1367,327 @@ WtPlanResult WtMission_ExportCsv(const WtMission *mission, const char *path)
     }
 
     fclose(fp);
+
+    return WT_PLAN_OK;
+}
+
+void WtMission_ComputeStatsTrace(WtMission *mission, const WtTraceProfile *profile)
+{
+    size_t i;
+    double length = 0.0;
+    double duration = 0.0;
+    int photos = 0;
+
+    for (i = 0; i < mission->count; i++) {
+        const WtPlanPoint *p = &mission->points[i];
+
+        if (p->purpose == WT_PHOTO_DEFECT) {
+            photos++;
+        }
+        if (WtPlanPoint_TakesPhoto(p)) {
+            duration += 1.0;   /* 每张照片的悬停稳定时间 */
+        }
+
+        if (i > 0) {
+            const WtPlanPoint *a = &mission->points[i - 1];
+            double d = WtEnu_Distance(a->enu, p->enu);
+            /*
+             * 巡检段 = 两端归属同一片叶片、同一面、且都拍照（去程或回程）。
+             * 掉头段与轮毂转场按巡航速度 —— 掉头时机头正在转向，本就不该
+             * 按巡检速度飞。判据里必须同时看 side：去程与回程分居两面，
+             * 只比 bladeIndex 会把叶尖那段换面弧也算成巡检段。
+             */
+            bool insp = (a->bladeIndex >= 0) && (p->bladeIndex == a->bladeIndex) &&
+                        (a->side >= 0) && (p->side == a->side) &&
+                        WtPlanPoint_TakesPhoto(a) && WtPlanPoint_TakesPhoto(p);
+            double speed = insp ? profile->speedMs : profile->speedMs * 2.0;
+
+            length += d;
+            if (speed > 0.0) {
+                duration += d / speed;
+            }
+        }
+    }
+
+    mission->pathLengthM = length;
+    mission->durationSec = duration;
+    mission->defectPhotoCount = photos;
+    mission->modelPhotoCount = 0;
+}
+
+/* ==================================================================
+ * 沿中线飞行（blade-trace）作业模式
+ *
+ * 与默认的「盘外站位斜拍」互斥的另一种航线形态。几何由 PC 侧可视化
+ * 核对稿（papers/blade-trace.html）确认后落到这里，改动前请先重跑
+ * 那个页面看形状。
+ * ================================================================== */
+
+WtTraceProfile WtTraceProfile_Default(void)
+{
+    WtTraceProfile p;
+
+    memset(&p, 0, sizeof(p));
+    p.offsetM     = 10.0;  /* 离叶片轴线偏置；须显著大于 minSafeDistM */
+    p.stepM       = 5.0;   /* 展向航点间距 */
+    p.approachM   = 30.0;  /* 轮毂前方捕获相位 */
+    p.arcSegments = 8;     /* 叶尖半圆分段数 */
+    p.speedMs     = 2.0;
+    p.shootInbound  = true;
+    p.shootOutbound = true;
+
+    return p;
+}
+
+WtValidateResult WtTraceProfile_Validate(const WtTraceProfile *profile)
+{
+    WtValidateResult r;
+
+    r.ok = false;
+    r.message = "ok";
+
+    if (profile == NULL) {
+        r.message = "剖面为空";
+        return r;
+    }
+    if (!(profile->offsetM > 0.0)) {
+        r.message = "offset 必须为正";
+        return r;
+    }
+    if (!(profile->stepM > 0.0)) {
+        r.message = "step 必须为正";
+        return r;
+    }
+    if (!(profile->approachM > 0.0)) {
+        r.message = "approach 必须为正";
+        return r;
+    }
+    /* 半圆至少 2 段才能构成「绕过去」；1 段退化成直线，等于没有掉头 */
+    if (profile->arcSegments < 2) {
+        r.message = "arc_segments 至少为 2";
+        return r;
+    }
+    if (!(profile->speedMs > 0.0)) {
+        r.message = "speed 必须为正";
+        return r;
+    }
+
+    r.ok = true;
+
+    return r;
+}
+
+bool WtPlanPoint_IsTrace(const WtPlanPoint *point)
+{
+    return point != NULL && point->tag != NULL &&
+           strncmp(point->tag, "trace", 5) == 0;
+}
+
+/** 叶片展向长度：叶根（轮毂边缘）到叶尖 */
+static double WtPlan_TraceSpan(const WtTurbineSpec *spec)
+{
+    return spec->rotorDiameter * 0.5 - spec->hubRadius;
+}
+
+/**
+ * @brief 生成「沿中线飞行」航线
+ *
+ * 每片叶片的往返由三段构成，且**三段必须在同一个叶片内连续**：
+ *   去程（叶根→叶尖）→ 叶尖半圆掉头 → 回程（叶尖→叶根）
+ *
+ * 叶片之间经轮毂正面/背面转场，绝不跨叶片直连 —— 后者会在航线里
+ * 留下一条几十米长的无效直线（曾出现在可视化第一版）。
+ */
+WtPlanResult WtPlan_BladeTrace(const WtTurbineSpec *spec,
+                               const WtRotorFrame *frame,
+                               const WtTraceProfile *profile,
+                               WtMission *mission)
+{
+    WtPlanCtx ctx;
+    WtEnu rc;
+    WtEnu nUp;   /* 迎风侧（上游）单位矢量 */
+    WtEnu nDn;   /* 背风侧（下游）单位矢量 */
+    WtEnu hubFront;
+    WtEnu hubBack;
+    double span;
+    int nStep;
+    int blade;
+    int i;
+
+    if (spec == NULL || frame == NULL || profile == NULL || mission == NULL) {
+        return WT_PLAN_ERR_PARAM;
+    }
+    if (!WtTraceProfile_Validate(profile).ok) {
+        return WT_PLAN_ERR_PARAM;
+    }
+
+    ctx.spec = spec;
+    ctx.profile = NULL;   /* 本模式不复用 WtInspectionProfile 的采样推导 */
+    ctx.frame = WtLocalFrame_Init(&spec->base);
+    ctx.trace = profile;
+
+    rc = frame->rotorCenter;
+    nUp = WtEnu_Scale(frame->rotAxis, -1.0);
+    nDn = frame->rotAxis;
+    span = WtPlan_TraceSpan(spec);
+    nStep = (int)(span / profile->stepM);
+    if (nStep < 1) {
+        nStep = 1;
+    }
+
+    hubFront = WtEnu_Add(rc, WtEnu_Scale(nUp, profile->offsetM));
+    hubBack  = WtEnu_Add(rc, WtEnu_Scale(nDn, profile->offsetM));
+
+    /* 0. 相位捕获点：轮毂正前方更远处 */
+    {
+        WtPlanPoint p = WtPlan_MakeTransitPoint(&ctx,
+            WtEnu_Add(rc, WtEnu_Scale(nUp, profile->approachM)), rc, "trace_capture");
+        if (WtMission_Append(mission, &p) != WT_PLAN_OK) {
+            return WT_PLAN_ERR_OVERFLOW;
+        }
+    }
+    /* 1. 进入轮毂正面 */
+    {
+        WtPlanPoint p = WtPlan_MakeTransitPoint(&ctx, hubFront, rc, "trace_hub");
+        if (WtMission_Append(mission, &p) != WT_PLAN_OK) {
+            return WT_PLAN_ERR_OVERFLOW;
+        }
+    }
+
+    for (blade = 0; blade < spec->bladeCount; blade++) {
+        WtEnu axis = WtTurbine_BladeAxisDir(frame, blade, spec);
+        WtEnu tip = WtTurbine_BladePoint(frame, spec, blade, 1.0);
+        /*
+         * 偶数叶片从正面进（去程在迎风侧），奇数从背面进。
+         * 这样三片叶片的去程面自然交替为 迎风/背风/迎风，
+         * 去程与回程各占一面 —— 一片叶一趟就覆盖两个面。
+         */
+        bool fromFront = ((blade % 2) == 0);
+        WtEnu nIn  = fromFront ? nUp : nDn;
+        WtEnu nOut = fromFront ? nDn : nUp;
+        int sideIn  = fromFront ? WT_BLADE_SIDE_UPSTREAM : WT_BLADE_SIDE_DOWNSTREAM;
+        int sideOut = fromFront ? WT_BLADE_SIDE_DOWNSTREAM : WT_BLADE_SIDE_UPSTREAM;
+
+        /* 去程：叶根 → 叶尖 */
+        for (i = 0; i <= nStep; i++) {
+            double s = (i == nStep) ? span : (double)i * profile->stepM;
+            double rf = (spec->hubRadius + s) / (spec->rotorDiameter * 0.5);
+            WtEnu target = WtTurbine_BladePoint(frame, spec, blade, rf);
+            WtEnu pos = WtEnu_Add(target, WtEnu_Scale(nIn, profile->offsetM));
+            WtPlanPoint p = WtPlan_MakePoint(&ctx, pos, target, "trace_out",
+                                             blade, rf, sideIn);
+
+            if (!profile->shootInbound) {
+                p.purpose = WT_PHOTO_NONE;
+            }
+            if (WtMission_Append(mission, &p) != WT_PLAN_OK) {
+                return WT_PLAN_ERR_OVERFLOW;
+            }
+        }
+
+        /* 叶尖半圆掉头：以叶尖为圆心、半径 offsetM，在 (nIn, axis) 张成的平面内 */
+        for (i = 1; i < profile->arcSegments; i++) {
+            double th = WT_PI * (double)i / (double)profile->arcSegments;
+            WtEnu pos = WtEnu_Add(tip,
+                WtEnu_Add(WtEnu_Scale(nIn, profile->offsetM * cos(th)),
+                          WtEnu_Scale(axis, profile->offsetM * sin(th))));
+            WtPlanPoint p = WtPlan_MakeTransitPoint(&ctx, pos, tip, "trace_arc");
+
+            p.bladeIndex = blade;
+            p.radialFrac = 1.0;
+            if (WtMission_Append(mission, &p) != WT_PLAN_OK) {
+                return WT_PLAN_ERR_OVERFLOW;
+            }
+        }
+
+        /* 回程：叶尖 → 叶根 */
+        for (i = nStep; i >= 0; i--) {
+            double s = (i == nStep) ? span : (double)i * profile->stepM;
+            double rf = (spec->hubRadius + s) / (spec->rotorDiameter * 0.5);
+            WtEnu target = WtTurbine_BladePoint(frame, spec, blade, rf);
+            WtEnu pos = WtEnu_Add(target, WtEnu_Scale(nOut, profile->offsetM));
+            WtPlanPoint p = WtPlan_MakePoint(&ctx, pos, target, "trace_back",
+                                             blade, rf, sideOut);
+
+            if (!profile->shootOutbound) {
+                p.purpose = WT_PHOTO_NONE;
+            }
+            if (WtMission_Append(mission, &p) != WT_PLAN_OK) {
+                return WT_PLAN_ERR_OVERFLOW;
+            }
+        }
+
+        /* 回到轮毂：偶数叶片收在背面，奇数收在正面 */
+        {
+            WtPlanPoint p = WtPlan_MakeTransitPoint(&ctx,
+                fromFront ? hubBack : hubFront, rc, "trace_hub");
+            if (WtMission_Append(mission, &p) != WT_PLAN_OK) {
+                return WT_PLAN_ERR_OVERFLOW;
+            }
+        }
+    }
+
+    /* 结束点 */
+    {
+        WtPlanPoint p = WtPlan_MakeTransitPoint(&ctx,
+            WtEnu_Add(rc, WtEnu_Scale(nDn, profile->approachM)), rc, "trace_end");
+        if (WtMission_Append(mission, &p) != WT_PLAN_OK) {
+            return WT_PLAN_ERR_OVERFLOW;
+        }
+    }
+
+    /*
+     * 记录各叶片的叶尖坐标：KMZ 生成时叶尖掉头段的 towardPOI 兴趣点要用它。
+     * 放在这里而不是让 bridge 自己算 —— bridge 只做格式转换、不做几何，
+     * 让它在没有风轮参考系的情况下反推叶尖会引入第二份几何真值。
+     */
+    mission->bladeTips = calloc((size_t)spec->bladeCount, sizeof(WtGeo));
+    if (mission->bladeTips == NULL) {
+        return WT_PLAN_ERR_NOMEM;
+    }
+    mission->bladeTipCount = (size_t)spec->bladeCount;
+    for (blade = 0; blade < spec->bladeCount; blade++) {
+        WtEnu tipEnu = WtTurbine_BladeTip(frame, spec, blade);
+
+        mission->bladeTips[blade] = WtEnu_ToGeo(&ctx.frame, &tipEnu);
+    }
+
+    /*
+     * 低空告警。停用角决定叶片姿态，而本模式沿叶片全长飞 —— 当某片叶片
+     * 指向下方时，它的叶尖会接近地面，航点随之进入低空区。这是本模式
+     * 固有的物理约束（不像站位模式可以整体抬高），只能在规划时暴露出来，
+     * 由现场按实际地面余量决定是否放行。真正的否决权在
+     * WtPlan_ValidateMission 的 ground 判据，这里只负责让操作员提前知道
+     * 是哪片叶片、低到多少。
+     */
+    {
+        double minU = 1e18;
+        int worstBlade = -1;
+        size_t i;
+
+        for (i = 0; i < mission->count; i++) {
+            if (mission->points[i].enu.u < minU) {
+                minU = mission->points[i].enu.u;
+                worstBlade = mission->points[i].bladeIndex;
+            }
+        }
+        if (worstBlade >= 0) {
+            WtEnu tip = WtTurbine_BladeTip(frame, spec, worstBlade);
+
+            if (tip.u < spec->hubHeight - spec->rotorDiameter * 0.5 + 20.0) {
+                fprintf(stderr,
+                        "[plan] 提示：沿中线飞行时 %d 号叶片指向下方，"
+                        "最低航点 U=%.1f m（叶尖 U=%.1f m）。\n",
+                        worstBlade, minU, tip.u);
+                fprintf(stderr,
+                        "[plan]       若低于 ground_clearance 会被安全校验拒绝，"
+                        "此时应调整停用角或等待风向使叶片转开。\n");
+            }
+        }
+    }
+
+    /* 统计必须在本模式自己的判据下重算，见 WtMission_ComputeStatsTrace */
+    WtMission_ComputeStatsTrace(mission, profile);
 
     return WT_PLAN_OK;
 }

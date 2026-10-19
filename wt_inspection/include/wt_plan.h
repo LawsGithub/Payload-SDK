@@ -139,6 +139,12 @@ typedef struct {
     WtPlanPoint *points;   /*!< 点数组，堆分配 */
     size_t count;
     size_t capacity;
+    /*
+     * 各叶片的叶尖 WGS84 坐标，供 KMZ 生成时填 towardPOI 的兴趣点。
+     * 沿中线飞行模式的叶尖掉头需要它；其它模式不使用（bladeTips 为 NULL）。
+     */
+    WtGeo *bladeTips;
+    size_t bladeTipCount;
     double pathLengthM;    /*!< 折线总长 m */
     double durationSec;    /*!< 按速度与悬停时间估算的总耗时 s */
     int defectPhotoCount;  /*!< 缺陷检测用图数量 */
@@ -177,6 +183,67 @@ WtValidateResult WtInspectionProfile_Validate(const WtInspectionProfile *profile
 double WtPlan_BladeSkewAngleDeg(const WtInspectionProfile *profile);
 
 /* ------------------------------------------------------------------ */
+/* 沿中线飞行（blade-trace）                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief 「沿叶片中线飞行」作业模式的参数
+ *
+ * 与默认的「盘外站位斜拍」是两种互斥的航线形态：
+ *
+ *   默认模式：无人机停在叶片旁边 standoff 米处，斜视拍摄；
+ *   本模式  ：无人机沿叶片轴线、在盘面一侧 offset 米处平行飞过，
+ *             到叶尖后以叶尖为圆心绕半圈切到另一侧，再飞回轮毂。
+ *
+ * 本模式的成像几何与默认模式完全不同 —— 相机正对叶面而非斜视，
+ * 因此采样间距、GSD 都由调用方另行确定，不复用 WtBladeSampling。
+ */
+typedef struct {
+    double offsetM;        /*!< 离叶片轴线的偏置距离 m（盘面法向），必须 > minSafeDistM */
+    double stepM;          /*!< 沿展向的航点间距 m */
+    double approachM;      /*!< 轮毂前方捕获相位的距离 m */
+    int    arcSegments;    /*!< 叶尖掉头半圆的分段数，>=2 */
+    double speedMs;        /*!< 巡检段速度 m/s */
+    bool   shootInbound;   /*!< 去程是否拍照 */
+    bool   shootOutbound;  /*!< 回程是否拍照 */
+} WtTraceProfile;
+
+/**
+ * @brief 沿中线飞行模式的默认剖面
+ */
+WtTraceProfile WtTraceProfile_Default(void);
+
+/** @brief 校验剖面参数 */
+WtValidateResult WtTraceProfile_Validate(const WtTraceProfile *profile);
+
+/**
+ * @brief 生成「沿中线飞行」航线
+ *
+ * 航线拓扑（三叶片）：
+ *
+ *   捕获 → 轮毂正面 → 1号叶往返 → 轮毂背面 → 2号叶往返
+ *        → 轮毂正面 → 3号叶往返 → 轮毂背面 → 结束
+ *
+ * 每片叶片的往返为：
+ *   去程（叶根→叶尖，在盘面一侧偏置）→ 叶尖半圆掉头 → 回程（叶尖→叶根，另一侧）
+ *
+ * 相邻叶片经轮毂正面/背面转场，**不跨叶片直连**。
+ * 偶数序号叶片从正面进入，奇数从背面进入，使去程面自然交替。
+ *
+ * @param spec    风机几何
+ * @param frame   风轮参考系（决定叶片姿态，即停用角）
+ * @param profile 本模式参数
+ * @param mission 输出航线
+ */
+WtPlanResult WtPlan_BladeTrace(const WtTurbineSpec *spec,
+                               const WtRotorFrame *frame,
+                               const WtTraceProfile *profile,
+                               WtMission *mission);
+
+/** @brief 该点是否属于「沿中线飞行」航线（用于报告与动作生成） */
+bool WtPlanPoint_IsTrace(const WtPlanPoint *point);
+
+/* ------------------------------------------------------------------ */
 /* 任务容器                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -186,6 +253,15 @@ void WtMission_Free(WtMission *mission);
 WtPlanResult WtMission_Append(WtMission *mission, const WtPlanPoint *point);
 /** @brief 基于各点间距与速度，重算折线长度与预计耗时 */
 void WtMission_ComputeStats(WtMission *mission, const WtInspectionProfile *profile);
+
+/**
+ * @brief 沿中线飞行模式下的统计重算
+ *
+ * 与上面的区别只在速度判据：trace 模式没有 WtInspectionProfile，且它的
+ * 「巡检段」不是按 side 区分（去程/回程各占一面），而是按 tag 判定。
+ * 单独一个入口，避免把 trace 的分支塞进上面那个函数而让两条判据纠缠。
+ */
+void WtMission_ComputeStatsTrace(WtMission *mission, const WtTraceProfile *profile);
 
 /* ------------------------------------------------------------------ */
 /* 规划器                                                              */
