@@ -1,84 +1,84 @@
 # HANDOFF — 读全文再开始干活
 
-生成时间: 2026-10-15T22:45:33+08:00 · Git HEAD: c116b32
+生成时间: 2026-10-19T23:49:00+08:00 · Git HEAD: 98a4810
 信任规则: [V] = 交接时已用命令验证；[?] = 仅记忆未复核，当线索对待；[X] = 已证伪，别用。
 
 ## 0. 复核（下一会话先做）
 
-- 锚点: `feature/wt-inspection` @ `c116b32` (2026-10-15 22:45)
-- 漂移检查: `git rev-parse HEAD~1` 应 = `c116b32`——HEAD 必是本次 handoff 提交，
+- 锚点: `feature/wt-inspection` @ `98a4810` (2026-10-19 23:49)
+- 漂移检查: `git rev-parse HEAD~1` 应 = `98a4810`——HEAD 必是本次 handoff 提交，
   其 parent 才是本快照记录的 SHA。变了说明快照可能过期。
 - 待重探的 `[?]`: 见第 2、5 节标记
-- 先读: `wt_inspection/README.md`（唯一说明来源）、`CLAUDE.md`（设备与项目约束）
+- 先读: `wt_inspection/README.md`（唯一说明来源）、
+  `~/projects/CLAUDE.md`（设备硬约束，**本次新增 3 条，务必读**）
 
 ## 1. 当前目标
 
-两条线，均未完成：
+**主线已完成**：`wt_inspection_app` 以 `.dpk` 装到妙算3，`APP INSTALL SUCCESS` [V]。
 
-**主线（机载应用）**：让 `wt_inspection_app` 以 `.dpk` 装到妙算3 并正常运行。
-完成定义 = `dji_app_ctl install` 报 `APP INSTALL SUCCESS`，且应用启动后进入作业流程。
-
-**本次会话的产出线（文献研读 → 讲解页）**：把五篇论文的可用方法落成可读的讲解页，
-已完成两页（见第 2 节），第三个议题（视觉跟拍）仍在讨论中，尚未落页。
+**新目标（本会话确立）**：把「沿叶片中线飞行」模式（trace）做成可实飞的功能。
+C 实现与设备编译已完成，**尚未实飞**。
 
 ## 2. 已验证状态 — 工作实际停在哪
 
-### 主线：机载应用（未动代码）
+### 装包成功（主线完成定义达成）
 
-- 根因已定位：安装器会试运行应用并要求走完 SDK 身份校验；应用在
-  `main.c:338`（配置缺失）退出，校验未完成 → 装包失败 [V]
-- **待办 1 仍未做** [V] `sed -n '33p' wt_inspection/app/main.c` →
-  `#define WT_DEFAULT_CONFIG_PATH "/data/wt_inspection/wt_config.ini"`（仍是绝对路径）；
-  `grep -n 'return 1' app/main.c` → 9 处，启动路径仍 fail-closed
-- **待办 1 的第二半也未做** [V] `grep '"/data/wt_inspection"' src/wt_app_config.c`
-  → `:624` 默认 `outputDir` 仍是 `/data/wt_inspection`
+- `dji_app_ctl install` → **`APP INSTALL SUCCESS`**，退出码 0 [V]
+- 应用列表：`Smart3DExplore` + `wt-inspection`（total 2）[V]
+- 装机目录 `/open_app/wt-inspection/`，`data/` 属主 `dji:dji` **可写** [V]
+  （`touch data/.wtest` 成功）
+- 安装期日志含 `dji_identity_verify.c:654 Update dji sdk policy file successfully` [V]
+  —— CLAUDE.md 记的身份校验判据
+- **但配置仍是模板**（`takeoff_lat = 41.5236000` 等样例值，`trace_enable = false`）[V]
+  → **应用装上了，还不能真作业**。带样例坐标起飞比不飞更糟（代码注释明写）。
 
-### 产出线：两个讲解页（本次主要工作）
+### trace 模式（沿叶片中线飞行）
 
-- `papers/d-correction-explainer.html`（48KB）[V]——论文 D §4.5 停机角矫正
-- `papers/wt-closed-loop.html`（36KB）[V]——航线闭环设计
-- 两页均为**本地 `file://` 打开**，未发布 Artifact [V]
-- `papers/` 首次入库：只提交成果（HTML + 6 篇报告 + OCR 脚本，约 440KB）；
-  `img_A/`（34MB）与 `text/`（1.7MB）已加 `.gitignore` [V]
+- `WtPlan_BladeTrace()` 已实现，设备上编译通过、零警告（项目代码）[V]
+- 设备实测与 PC 完全一致：123 航点 / 600.3 m / 96 张 / 5.9 min，
+  `safety: PASS`，min dist to blade axis **9.20 m**（限值 3.00）[V]
+- KMZ 产物：`towardPOI` 21 处、`gimbalYawRotateEnable=0` 21 处、
+  `takePhoto` 96、`Placemark` 123 [V]
+- **POI 精确性已验证**：KMZ 里 3 个 `waypointPoiPoint` 与规划器算出的
+  三片叶尖坐标**逐位一致** [V]
+- 回归测试 5 条新用例，共 163 项检查全过 [V]
+
+### 启动路径修复
+
+- `DjiCore_ApplicationStart` 之后**再无 `return 1`** [V]（`grep -n 'return 1' app/main.c`）
+- 真机实测（配置缺失 + 飞机连接）：进程存活 8 秒以上、返回码 **0**、
+  模板落盘到 `data/wt_config.ini` [V]
 
 ### 工作区
 
-- `git status`：干净，仅 `.handoffs/`（本次归档，随 handoff 提交一起入库）
-- 分支 `feature/wt-inspection` 领先 `fork/feature/wt-inspection` **4 个提交**（未推送）
+- `git status`：干净。分支领先 `fork/feature/wt-inspection` **10 个提交**（未推送）[V]
 
-### 测试/build 输出（本次交接 run 的真实输出）
+### 测试/build 输出（本次交接 run 的真实输出，全新目录）
 
 ```
-$ cmake -S . -B build && cmake --build build -j4
-[100%] Built target wt_test_plan
-构建退出码: 0
-
-$ ctest --test-dir build --output-on-failure
-1/3 Test #1: wt_test_plan .....   Passed    0.01 sec
-2/3 Test #2: wt_test_config ...   Passed    0.00 sec
-3/3 Test #3: wt_test_bridge ...   Passed    0.02 sec
-
-100% tests passed, 0 tests failed out of 3
-ctest 退出码: 0
+cmake -S . -B /tmp/handoff_build     → 退出码 0
+cmake --build /tmp/handoff_build -j4 → 退出码 0，error+warning 0 行
+ctest --test-dir /tmp/handoff_build  → 退出码 0
+  1/3 wt_test_plan   Passed
+  2/3 wt_test_config Passed
+  3/3 wt_test_bridge Passed
+  100% tests passed, 0 tests failed out of 3
 ```
 
 ## 3. 决策与理由
 
-- **旋转轴是风轮主轴，不是塔筒轴** [V]——论文「叶片所在面可视为 y 值固定的平面」
-  的 y 轴即风轮平面法向 = 风轮主轴。**论文选对了轴**；错的是讲解页第一版画的
-  塔筒轴，以及 `reports/D_*.md` §6.1 的转述（后者按用户指示不改，那是论文自身情况）。
-- **「旋转」与「按新相位重算」数学等价** [V]——实测绕 `rotAxis` 转 Δ 与
-  `BuildRotorFrame(spec, Δ)` 重算，站位最大误差 `6e-14 m`（浮点噪声）；
-  `rotAxis`/`rotorCenter` 完全不随相位变（差异精确 `0.00e+00`）。
-  故**不必事后旋转**，喂相位重生成即可。
-- **位置层开环、云台层闭环** [V]——执行单元是 KMZ 预下发（途中改不了位置）；
-  云台是唯一飞行中可实时干预的执行器。转动模式的安全判据是「离盘面轴向距离」
-  （`wt_plan.c:89`），与相位无关，故位置开环是安全的。
-- **不实现「剩余航点热更新」** [V]——V3 整个 API 只有 6 个函数
-  （`dji_waypoint_v3.h`），动作只有 START/STOP/PAUSE/RESUME，**无 `startIndex`**
-  （V2 才有）。且上传是秒级、风轮几秒转几十度，传完即过时。
-- **papers/ 只提交成果** [V]（用户决定）——`img_A/`、`text/` 可由 PDF 与
-  `ocr_paper_a.py` 再生，入库 36MB 不值。
+- **trace 与站位模式互斥、不合并** [V]——两者成像几何完全不同（正对叶面 vs
+  斜视），`WtTraceProfile` 独立于 `WtInspectionProfile`，避免两套采样推导纠缠。
+- **掉头段用 `towardPOI`，云台只控俯仰** [V]——M4T 云台 Pan 轴
+  `Not controllable`，云台 yaw 无法独立于机头偏转。让机头承担偏转是唯一可行做法。
+  否决方案：`gimbalRotate` 的绝对 yaw，M4T 上做不到。
+- **trace 模式 GSD 校验显式跳过** [V]——该模式 GSD 随叶弦变化而非斜距，
+  用斜距公式算出来是错的。置 0 表示「未计算」，若照常走判据会**静默通过**
+  （`0 > 目标GSD` 恒为假）。
+- **启动路径 fail-closed 边界从「进程启动」移到「作业开始」** [V]——安装器要
+  试运行并要求走完身份校验，进程提前退出 = 装不上包。
+- **设备上 app_id 冲突按「同一时间只装一个」处理** [V]（用户 2026-10-19 决定）——
+  见 `~/projects/CLAUDE.md` 的「app_id 冲突」一节。
 
 ## 4. 失败的尝试 — 不要再试
 
@@ -88,61 +88,68 @@ ctest 退出码: 0
   `main.c:437 Please fill in correct user information`，**变量没控住**：
   样例源码里是占位符 `your_app_id`，其 `app.json` 是 `164884`。不能当对照组 [V]。
 - **在 `/tmp` 下打包/编译** → 设备重启后 `/tmp` 被清空 [V]。重要产物别只放 `/tmp`。
-- **用 `-DCMAKE_C_COMPILER` 之外的方式绕 glibc**（静态链接、改 sysroot）
-  → 未尝试 [X]。已选设备本地编译这条路。
 - **Artifact 发布** → 本机走 `ANTHROPIC_AUTH_TOKEN` 认证，报
-  `Artifacts need a claude.ai login` [V]。两处会话共 2 次调用**全部失败**，
-  从未发布成功。别再提发布（用户已定：就用本地文件）。
+  `Artifacts need a claude.ai login` [V]。讲解页就用本地 `file://`，别再提发布。
+- **可视化按「段类型」分组画线** → 把不同叶片的点连成假航段
+  （1 号叶尖 → 2 号叶尖，**141.7 m 直线**）[V]。必须按「叶片 + 段类型」切分。
+  已加回归用例钉死（相邻间距 ≤ 21 m）。
+- **`tar --mtime='@0'` 直接解包后 make** → **make 跳过重编**，跑的还是旧二进制 [V]。
+  源文件时间戳变 1970，比设备上的 `.o` 旧。解法：解包后 `touch` 源文件。
+  详见 `~/projects/CLAUDE.md`。
+- **用 `rm -f /tmp/chk*.sh` 这类 glob 清理共享设备** → 被权限分类器拦下 [V]
+  （理由正当：CLAUDE.md 自己警告过 `/tmp` 会撞名）。清理要写**精确文件名**。
 
 ## 5. 已知坑
 
 - **安装器报错会把死因指向错误方向** [V]——应用启动即退出时报的是
   `verify app user_app_id or version info error`，而凭据和版本都没问题。
-  判据：应用日志里有没有 `dji_identity_verify.c:654 Update dji sdk policy file successfully`。
-- **`dji_app_ctl` 不需要 sudo** [V]——`stop`/`install` 在 dji 用户下直接可用。
-- **`.dpk` 不解决 `/data` 写权限** [V]——应用仍以 `uid=1000` 运行。
-- **设备 RTC 无电池，掉电回 1970** [V]——`tar` 用 `--mtime='@0'`，别去改设备时间。
+- **`dji_app_ctl stop` 报 SUCCESS 但进程仍在** [V]——**要执行两次**，
+  且必须 `pgrep` 复查。见 `~/projects/CLAUDE.md`。
+- **`.dpk` 不解决 `/data` 写权限** [V]——应用以 `uid=1000` 运行，正确落点是
+  包内 `data/`（**应用的工作目录就是包根**）。
+- **设备 RTC 无电池，掉电回 1970** [V]——本次实测落后本机 **6.38 天**。
+- **设备 cmake 3.16.3 不支持 `ctest --test-dir`** [V]——报
+  `No tests were found!!!`（该选项 CMake 3.20 才加入）。要用 `cd build && ctest`。
 - **`app.json` 的 `bin` 是相对 `app.json` 的路径** [V]——目录名必须是 `build`。
 - **`app.json` 的 `user_app_id` 与 `wt_credentials.ini` 是同一信息的两副本** [V]——
-  换 app 必须同时改两处，否则报上面那句误导性错误。
-- **快回路的断点在感知端，不在闭环代码** [V]——`SolvePhaseFromVision` 接口与
-  实现都完整（含逐片试反解、低通、转速估计），但**全仓库无人调用**；
-  `rotor.valid` 唯一置位入口就在它里面。根因是**取图能力不存在**
-  （只有 `StartShootPhoto`，无 liveview 订阅、无照片回传）。
-  这解释了为什么把 `gimbal_track_gain` 调大也没用。
-- **云台跟踪是离散触发的** [V]——挂在航点序号变化上
-  （`HandleWaypointActions` 的 `if (idx == *lastHandledIndex) return;`），
-  航点之间飞行时云台不动。真正的实时跟踪应移到 10Hz 主循环。
+  换 app 必须同时改两处。
+- **trace 模式有固有高度约束** [V]——叶片朝下时（相位 180°）叶尖接近地面，
+  最低航点 U=12.3 m < 默认余量 15 m，安全校验**拒绝**。这是物理约束不是 bug，
+  需调整停用角或等风向。
+- **叶片几何是零厚度轴线模型** [V]——无弦长/厚度剖面（`grep chord|thickness`
+  零命中），故「叶片中线」目前只能用轴线近似（真实中线叶根处离轴线约 2 m）。
+- **快回路的断点在「无人调用」而非「没有能力」** [X] 已更正——
+  `DjiLiveview_StartImageStream`（仅 Manifold 3）、
+  `DjiCameraManager_DownloadFileByIndex` 都存在 [V]，项目没用而已。
+- **云台最大角速度无官方数值** [?]——原文库只给加速度公式
+  `10000 × 0.8^(1+X) deg/s²`。「~100-200 °/s」是消费级典型值，别当官方规格引。
+- **`DjiCore_DeInit` 阶段报 `dji_sdk_state_push.c:175 init error 0x100`** [?]——
+  出现在进程收到 SIGTERM 之后，不在启动路径上，身份校验此前已成功。
+  是否影响装包未单独验证（本次装包成功，故推测无影响）。
 
 ## 6. 下一步（有序）
 
-1. **推送 4 个未推送提交**（仅当用户确认）：
-   `git status` 显示 ahead 4 时执行 `git push fork feature/wt-inspection`。
-2. **改 `app/main.c` 启动路径**（主线待办 1，仍未做）：配置缺失或输出目录
-   不可写时不要退出，要让 SDK 起来走完校验。fail-closed 的边界划在「作业开始」，
-   不是「进程启动」。同时改 `main.c:33` 的 `WT_DEFAULT_CONFIG_PATH` 与
-   `wt_app_config.c:624` 的默认 `outputDir` 为相对应用目录的 `data/`。
-3. **设备上重编译 + 打包 + 安装验证**：预期 `APP INSTALL SUCCESS`。
-   跑前先 `pgrep -x Smart3DExplore >/dev/null || dji_app_ctl stop Smart3DExplore`。
-4. **清理设备实验残留**：`dji_app_ctl uninstall wt-iso-g`、`/tmp/iso*`、
-   `/tmp/wts2`、`/tmp/probe*`、`~/dpk/`。
-5. **用 `wt_plan_demo` 复现 README 引用的数字**（README 已指向该程序，
-   但未复核数值是否与输出一致）。
-6. **（讨论中，未落页）视觉跟拍方案**：见第 7 节。
+1. **填现场台账**：编辑设备 `/open_app/wt-inspection/data/wt_config.ini`，
+   把样例坐标换成真实风机参数。**这是能否实飞的前提**。
+2. **决定 trace 是否启用**：同一文件里 `trace_enable = true` 走沿中线飞行，
+   `false` 走原盘外站位。启用时 `trace_offset`（默认 10 m）必须 > `min_safe_dist`。
+3. **选停用角**：trace 模式在叶片朝下时会被地面余量拒绝，需现场确认叶片姿态。
+4. **清理设备残留**（共享设备，需用户确认可删项）：
+   `wt-iso-g`、`wt-widget-demo` 等更早会话的痕迹、`/tmp/wtsrc`、`/tmp/wtbuild.tar.gz`。
+   **`/home/dji/lz-salvage/` 不要删**（抢救出的 liangzhourenwu 产物）。
+5. **（未做）根治 app_id 冲突**：申请第二个 app，同步改
+   `wt_credentials.ini` 与 `app.json`。
 
 ## 7. 留给用户的开放问题
 
-- **视觉跟拍的两条路**（本次会话末尾在讨论，尚未定论）：
-  1. **无人机位置跟中线**——API 可行（`DjiFlightController_ExecuteJoystickAction`
-     存在），但把整个「离线规划 + 安全校验 + KMZ 下发」架构换成连续摇杆控制，
-     飞行中无预校验安全包络，而无人机正在叶轮扫掠体内。且叶尖处 5rpm 需 40m/s。
-  2. **云台中心跟中线**（推荐）——所需角速度 1rpm 时 2.6°/s，云台能力 ~100-200°/s，
-     余量 10 倍以上。建议走**直接视觉伺服**（像素偏差直接 PID 到云台角），
-     绕开相位估计这一步误差。
-- **两个硬约束待用户确认**：① 视场装不下整支叶片（70mm 中焦在 23m 处仅覆盖
-  11.4m 宽，装下 155m 叶片需退到 313m，GSD 崩到 19.4mm/px）→ 只能跟拍局部；
-  ② 云台跟不全一圈（叶片转到轮毂另一侧时塔筒遮挡），实际覆盖约 Δ∈[−90°,+90°]。
-- **`/data/wt_inspection/` 该不该存在**——已确证官方无此要求，正确位置是应用目录
-  下的 `data/`。但现场部署时作业输出（照片、CSV、报告）希望落在哪，是产品决定。
-- **输出目录要不要做成可配置项**——按 `wt-inspection-config-strictness` 的思路，
+- **`/open_app/wt-inspection/data/` 里 liangzhourenwu 的产物怎么处理**——
+  已备份到 `/home/dji/lz-salvage/`，但原位置那三份（`ground.txt` / `pole.txt` /
+  `orbit.kmz`）是否要移走或删除，未定。
+- **liangzhourenwu 项目本身的状态**——它的应用被本次安装覆盖了。
+  其 `lz/doc/` 里有实飞验证记录，建议去看看是否有未入库的状态。
+- **视觉→控制那一段的取舍**——本会话讨论了「沿中线跟拍」的两条路
+  （无人机位置跟中线 vs 云台跟中线），结论是走云台 + 直接视觉伺服。
+  但取图通路（`DjiLiveview_StartImageStream`）**尚未实测**，M4T 上是否可用
+  未验证。
+- **输出目录是否做成可配置项**——按 `wt-inspection-config-strictness` 的思路，
   能由部署形态决定的不该让现场填。
