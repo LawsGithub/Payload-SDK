@@ -220,7 +220,17 @@ static void TestMissingKeysUseDefaults(void)
         WT_CHECK_NEAR(cfg.profile.inspectSpeedMs, 2.0, 1e-9);
         WT_CHECK_EQ_INT(cfg.profile.bladeSide, WT_BLADE_SIDE_UPSTREAM);
         WT_CHECK_NEAR(cfg.telemetryHz, 10.0, 1e-9);
-        WT_CHECK_STR_EQ(cfg.outputDir, "/data/wt_inspection");
+        /*
+         * 默认输出目录必须是**相对应用目录**的 data/。
+         *
+         * 曾经是绝对路径 /data/wt_inspection —— 那是错的：应用以 uid=1000
+         * （dji）运行，/data/ 不可写，WtRunner_MakeDirs 会静默失败，作业
+         * 产物无处可落。官方打包脚本在包内建好 data/（属主 dji:dji 可写），
+         * 这才是可写的落点。这里连同「不得以 / 开头」一起断言，防止日后
+         * 又有人改回绝对路径。
+         */
+        WT_CHECK_STR_EQ(cfg.outputDir, "data");
+        WT_CHECK(cfg.outputDir[0] != '/');
 
         /* 风机段落的硬编码默认 */
         WT_CHECK_EQ_INT(cfg.turbines[0].spec.bladeCount, 3);
@@ -394,6 +404,99 @@ static void TestSpellingSuggestions(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 部署路径与启动路径                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 部署路径必须是相对路径，且默认输出目录可写落点正确。
+ *
+ * 这条用例守的是一类**会装不上包**的配置错误：应用以 uid=1000（dji）运行，
+ * /data/ 不可写。若默认路径写成绝对路径 /data/...，WtRunner_MakeDirs 会
+ * 静默失败，作业产物无处可落 —— 而现象只是"报告没生成"，很难追。
+ */
+static void TestDeployPathsAreRelative(void)
+{
+    WtAppConfig cfg;
+    const char *tpl = "wt_test_relpath_tpl.ini";
+    const char *tmp = "wt_test_relpath.ini";
+    char line[512];
+    FILE *in;
+    FILE *out;
+
+    WT_CASE("部署路径：默认输出目录必须是相对路径");
+
+    /*
+     * 以模板为基底，只去掉 output_dir 那一行 —— 这样其余字段都合法，
+     * 能确定测的是「默认值」而不是「配置非法」。
+     */
+    if (!WtAppConfig_WriteTemplate(tpl)) {
+        WT_CHECK(0);
+        return;
+    }
+    in = fopen(tpl, "r");
+    out = fopen(tmp, "w");
+    if (in == NULL || out == NULL) {
+        if (in) fclose(in);
+        if (out) fclose(out);
+        WT_CHECK(0);
+        return;
+    }
+    while (fgets(line, sizeof(line), in) != NULL) {
+        if (strncmp(line, "output_dir", 10) == 0) {
+            continue;
+        }
+        fputs(line, out);
+    }
+    fclose(in);
+    fclose(out);
+
+    if (WtAppConfig_Load(tmp, &cfg)) {
+        WT_CHECK_STR_EQ(cfg.outputDir, "data");
+        WT_CHECK(cfg.outputDir[0] != '/');
+        WtAppConfig_Free(&cfg);
+    } else {
+        WT_CHECK(0);
+    }
+
+    remove(tpl);
+    remove(tmp);
+}
+
+/**
+ * 模板里的 output_dir 也必须是相对路径 —— 现场照着模板填，模板写绝对
+ * 路径等于把错误教给操作员。
+ */
+static void TestTemplateOutputDirIsRelative(void)
+{
+    const char *tmp = "wt_test_tpl_rel.ini";
+    FILE *fp;
+
+    WT_CASE("部署路径：模板里的 output_dir 不是绝对路径");
+    WT_CHECK(WtAppConfig_WriteTemplate(tmp));
+
+    fp = fopen(tmp, "r");
+    if (fp != NULL) {
+        char line[512];
+        bool found = false;
+
+        while (fgets(line, sizeof(line), fp) != NULL) {
+            if (strncmp(line, "output_dir", 10) == 0) {
+                found = true;
+                /* 值里不得出现以 '/' 开头的绝对路径 */
+                WT_CHECK(strstr(line, "= /") == NULL);
+                WT_CHECK(strstr(line, "= data") != NULL);
+            }
+        }
+        fclose(fp);
+        WT_CHECK(found);
+    } else {
+        WT_CHECK(0);
+    }
+
+    remove(tmp);
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -410,6 +513,8 @@ int main(void)
     TestDeploymentPaths();
     TestKnownKeyTables();
     TestSpellingSuggestions();
+    TestDeployPathsAreRelative();
+    TestTemplateOutputDirIsRelative();
 
     remove(WT_TEST_TMP_FILE);
     remove(WT_TEST_NESTED_TOP);

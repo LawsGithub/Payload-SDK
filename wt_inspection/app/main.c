@@ -30,13 +30,26 @@
 #include "osal/osal_socket.h"
 #include "wt_runner.h"
 
-#define WT_DEFAULT_CONFIG_PATH "/data/wt_inspection/wt_config.ini"
+/*
+ * 默认配置路径：**相对应用目录**，不是绝对路径。
+ *
+ * 应用以 uid=1000（dji）运行，/data/ 不可写，绝对路径写在那里必然失败。
+ * 官方打包脚本 build_dpk.sh 会在包内建好 data/logs 与 data/media，属主
+ * dji:dji 可写 —— 这就是官方的「相对应用目录」约定，配置也放这里。
+ * 该常量同时是 WtAppConfig 里默认 outputDir 的基准（见 wt_app_config.c）。
+ */
+#define WT_DEFAULT_CONFIG_PATH "data/wt_config.ini"
 #define WT_LOG_PATH            "data/logs/WT"
 #define WT_LOG_PATH_MAX_SIZE   128
 
 static WtRunner s_runner;
 static volatile sig_atomic_t s_stopRequested = 0;
 static FILE *s_logFile = NULL;
+/*
+ * 配置是否就绪。**它不是启动门槛，只是作业门槛** —— 配置缺失时进程仍要
+ * 活着走完 SDK 身份校验，否则 .dpk 装不上（见 main 里步骤 4 的说明）。
+ */
+static bool s_configReady = false;
 
 static T_DjiReturnCode WtApp_PrintConsole(const uint8_t *data, uint16_t dataLen)
 {
@@ -311,12 +324,18 @@ int main(int argc, char **argv)
     }
 
     /*
-     * 步骤 4：作业配置。缺文件时落一份模板，避免"用了默认值却不自知"。
+     * 步骤 4：作业配置。
      *
-     * 全新设备上 /data/wt_inspection/ 并不存在，而 fopen 不会替你建目录 ——
-     * 必须先建目录，否则 WriteTemplate 静默失败，"自动生成模板"就成了空话，
-     * 操作员只看到"配置文件不存在"却拿不到可填的东西。落完模板退出，让现场
-     * 填好参数再重启：带着模板里的样例坐标起飞比不飞更糟。
+     * ⚠️ 这一段**不能退出进程**，哪怕配置缺失或非法。
+     *
+     * `dji_app_ctl install` 会在安装过程中试运行应用，并要求它走完 SDK 身份
+     * 校验。若应用在 DjiCore_ApplicationStart 之后、校验完成之前退出，安装
+     * 就判失败，而报的是一句误导性的 `verify app user_app_id or version info
+     * error` —— 真正的死因（"进程没了"）安装器看不到。
+     *
+     * 所以 fail-closed 的边界划在「作业开始」，不是「进程启动」：
+     * 这里只把问题记下来，让 SDK 起来、把校验走完，等到真正要执行作业时
+     * 再拒绝（见下方 s_configReady 的用法）。
      */
     {
         FILE *probe = fopen(configPath, "r");
@@ -329,31 +348,51 @@ int main(int argc, char **argv)
             }
 
             if (WtAppConfig_WriteTemplate(configPath)) {
-                USER_LOG_WARN("配置文件 %s 不存在，已生成模板，请填写后重启", configPath);
+                USER_LOG_WARN("配置文件 %s 不存在，已生成模板。"
+                              "填写后重启即可作业；本次不执行飞行。", configPath);
             } else {
                 USER_LOG_ERROR("配置文件 %s 不存在，且模板生成失败（目录不可写？）",
                                configPath);
             }
-            DjiCore_DeInit();
-            return 1;
+            s_configReady = false;
+        } else {
+            fclose(probe);
+
+            if (WtRunner_Init(&s_runner, configPath) != WT_RUN_OK) {
+                USER_LOG_ERROR("运行器初始化失败，本次不执行飞行（配置问题，非启动失败）");
+                s_configReady = false;
+            } else if (!WtTelemetry_Init(&s_runner.telemetry,
+                                         s_runner.config.turbineCount > 0
+                                             ? &s_runner.config.turbines[0].spec
+                                             : NULL)) {
+                USER_LOG_ERROR("遥测初始化失败，本次不执行飞行");
+                WtRunner_DeInit(&s_runner);
+                s_configReady = false;
+            } else {
+                s_configReady = true;
+            }
         }
-        fclose(probe);
     }
 
-    if (WtRunner_Init(&s_runner, configPath) != WT_RUN_OK) {
-        USER_LOG_ERROR("运行器初始化失败");
-        DjiCore_DeInit();
-        return 1;
-    }
+    /*
+     * 配置就绪才作业；否则保持进程存活，等安装器（或操作员）决定何时退出。
+     * 这里的等待是**有意**的：进程活着 = SDK 身份校验有机会走完 = 装得上包。
+     */
+    if (!s_configReady) {
+        USER_LOG_WARN("配置未就绪，应用保持运行但不执行飞行。"
+                      "请填好配置后重启应用。");
 
-    if (!WtTelemetry_Init(&s_runner.telemetry,
-                          s_runner.config.turbineCount > 0
-                              ? &s_runner.config.turbines[0].spec
-                              : NULL)) {
-        USER_LOG_ERROR("遥测初始化失败");
-        WtRunner_DeInit(&s_runner);
+        while (!s_stopRequested) {
+            sleep(1);
+        }
+
         DjiCore_DeInit();
-        return 1;
+        if (s_logFile != NULL) {
+            fclose(s_logFile);
+        }
+        printf("[app] 配置未就绪，退出，返回码 0\n");
+
+        return 0;
     }
 
     /* 步骤 5：逐台风机作业 */

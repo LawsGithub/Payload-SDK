@@ -657,7 +657,14 @@ bool WtAppConfig_Load(const char *path, WtAppConfig *config)
         config->telemetryHz = 10.0;
     }
     if (config->outputDir[0] == '\0') {
-        snprintf(config->outputDir, sizeof(config->outputDir), "%s", "/data/wt_inspection");
+        /*
+         * 默认输出目录：**相对应用目录**的 data/，不是绝对路径。
+         *
+         * 应用以 uid=1000（dji）运行，/data/ 不可写；官方打包脚本会在包内
+         * 建好 data/（属主 dji:dji 可写），这是官方的「相对应用目录」约定。
+         * 写绝对路径的结果是 WtRunner_MakeDirs 静默失败、作业产物无处可落。
+         */
+        snprintf(config->outputDir, sizeof(config->outputDir), "%s", "data");
     }
     if (config->takeoff.lat == 0.0 && config->takeoff.lon == 0.0 && config->turbineCount > 0) {
         config->takeoff = config->turbines[0].spec.base;
@@ -810,7 +817,9 @@ bool WtAppConfig_WriteTemplate(const char *path)
             "gimbal_track_gain  = 0\n"
             "track_deadband     = 2.0\n"
             "auto_start         = false\n"
-            "output_dir         = /data/wt_inspection\n"
+            "# 作业产物的输出目录。相对应用目录 —— 应用以 uid=1000 运行，\n"
+            "# 绝对路径 /data/... 不可写。官方包内已建好 data/（可写）。\n"
+            "output_dir         = data\n"
             "\n"
             "# 每台风机一个段落，段落名即风机编号\n"
             "[turbine.WT-A01]\n"
