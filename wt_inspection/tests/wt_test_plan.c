@@ -344,6 +344,222 @@ static void TestAxialShiftValidation(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 沿中线飞行（trace）模式                                             */
+/* ------------------------------------------------------------------ */
+
+/** 统计某类 tag 的点数 */
+static int CountTag(const WtMission *m, const char *tag)
+{
+    int n = 0;
+    size_t i;
+
+    for (i = 0; i < m->count; i++) {
+        if (m->points[i].tag != NULL && strcmp(m->points[i].tag, tag) == 0) {
+            n++;
+        }
+    }
+
+    return n;
+}
+
+/**
+ * 拓扑：每片叶片的往返必须在同一叶片内连续，叶片之间经轮毂转场。
+ *
+ * 这条用例钉死的是一个曾经真实出现过的错误：可视化第一版按「段类型」
+ * 分组画线，把 1 号叶尖与 2 号叶尖连成了一条 141.7 m 的假航段。
+ * 只要生成器出现跨叶片直连，本用例的相邻间距检查就会红。
+ */
+static void TestTraceTopology(void)
+{
+    WtTurbineSpec spec = WtTest_Spec155();
+    WtTraceProfile tp = WtTraceProfile_Default();
+    WtMission m;
+    WtRotorFrame f;
+    size_t i;
+    double maxGap = 0.0;
+
+    WtMission_Init(&m);
+    f = WtTurbine_BuildRotorFrame(&spec, 0.0);
+
+    WT_CASE("trace：航线拓扑与段连续性");
+    WT_CHECK_EQ_INT((int)WtPlan_BladeTrace(&spec, &f, &tp, &m), (int)WT_PLAN_OK);
+
+    /* 三段的数量：去程/回程各 nStep+1 点，掉头 arcSegments-1 点 */
+    WT_CHECK_EQ_INT(CountTag(&m, "trace_capture"), 1);
+    WT_CHECK_EQ_INT(CountTag(&m, "trace_end"), 1);
+    WT_CHECK_EQ_INT(CountTag(&m, "trace_hub"), 4);   /* 进入 + 每叶片收尾 + 末次 */
+
+    /* 相邻点间距：轮毂转场段最长（approach - offset = 20 m），
+     * 任何超过它的间距都意味着跨叶片直连 */
+    for (i = 1; i < m.count; i++) {
+        double d = WtEnu_Distance(m.points[i].enu, m.points[i - 1].enu);
+
+        if (d > maxGap) {
+            maxGap = d;
+        }
+    }
+    WT_CHECK(maxGap <= 21.0);
+
+    /* 掉头段必须归属某片叶片（towardPOI 的兴趣点要靠它定位叶尖） */
+    for (i = 0; i < m.count; i++) {
+        if (strcmp(m.points[i].tag, "trace_arc") == 0) {
+            WT_CHECK(m.points[i].bladeIndex >= 0);
+        }
+    }
+
+    /* 叶尖坐标已记录，供 KMZ 的 towardPOI 使用 */
+    WT_CHECK_EQ_INT((int)m.bladeTipCount, spec.bladeCount);
+    WT_CHECK(m.bladeTips != NULL);
+
+    WtMission_Free(&m);
+}
+
+/** 去程与回程必须分居盘面两侧 —— 这正是「一趟覆盖两面」的判据 */
+static void TestTraceCoversBothSides(void)
+{
+    WtTurbineSpec spec = WtTest_Spec155();
+    WtTraceProfile tp = WtTraceProfile_Default();
+    WtMission m;
+    WtRotorFrame f;
+    int blade;
+
+    WtMission_Init(&m);
+    f = WtTurbine_BuildRotorFrame(&spec, 0.0);
+
+    WT_CASE("trace：每片叶片的去程/回程分居盘面两侧");
+    WT_CHECK_EQ_INT((int)WtPlan_BladeTrace(&spec, &f, &tp, &m), (int)WT_PLAN_OK);
+
+    for (blade = 0; blade < spec.bladeCount; blade++) {
+        double outSum = 0.0, backSum = 0.0;
+        int outN = 0, backN = 0;
+        size_t i;
+
+        for (i = 0; i < m.count; i++) {
+            const WtPlanPoint *p = &m.points[i];
+            double along;
+
+            if (p->bladeIndex != blade) {
+                continue;
+            }
+            along = WtEnu_Dot(WtEnu_Sub(p->enu, f.rotorCenter), f.rotAxis);
+
+            if (strcmp(p->tag, "trace_out") == 0) {
+                outSum += along;
+                outN++;
+            } else if (strcmp(p->tag, "trace_back") == 0) {
+                backSum += along;
+                backN++;
+            }
+        }
+        WT_CHECK(outN > 0 && backN > 0);
+        /* 去程与回程的轴向均值必须异号，否则等于只拍了一面 */
+        WT_CHECK(outSum * backSum < 0.0);
+    }
+
+    WtMission_Free(&m);
+}
+
+/** 偏置量必须真的体现在航点到叶片轴线的距离上 */
+static void TestTraceOffsetRespected(void)
+{
+    WtTurbineSpec spec = WtTest_Spec155();
+    WtTraceProfile tp = WtTraceProfile_Default();
+    WtMission m;
+    WtRotorFrame f;
+    double minD = 1e18;
+    size_t i;
+
+    WtMission_Init(&m);
+    f = WtTurbine_BuildRotorFrame(&spec, 0.0);
+    WT_CASE("trace：航点到叶片轴线的距离 ≈ offset");
+    WT_CHECK_EQ_INT((int)WtPlan_BladeTrace(&spec, &f, &tp, &m), (int)WT_PLAN_OK);
+
+    for (i = 0; i < m.count; i++) {
+        const WtPlanPoint *p = &m.points[i];
+        double d;
+        WtEnu root, tip, ab, ap, c;
+        double t;
+
+        if (p->bladeIndex < 0 || p->side < 0) {
+            continue;   /* 只查叶片巡检点，掉头/转场点不在此列 */
+        }
+        root = WtTurbine_BladePoint(&f, &spec, p->bladeIndex, 0.0);
+        tip = WtTurbine_BladeTip(&f, &spec, p->bladeIndex);
+        ab = WtEnu_Sub(tip, root);
+        ap = WtEnu_Sub(p->enu, root);
+        t = Wt_Clamp(WtEnu_Dot(ap, ab) / WtEnu_Dot(ab, ab), 0.0, 1.0);
+        c = WtEnu_Add(root, WtEnu_Scale(ab, t));
+        d = WtEnu_Distance(p->enu, c);
+        if (d < minD) {
+            minD = d;
+        }
+    }
+    /* 锥角会让偏置略大于设定值（实测 9.20~10.8），故给一个区间而不是等值 */
+    WT_CHECK_BETWEEN(minD, tp.offsetM * 0.9, tp.offsetM * 1.2);
+
+    WtMission_Free(&m);
+}
+
+/** 剖面参数校验 */
+static void TestTraceProfileValidation(void)
+{
+    WtTraceProfile tp = WtTraceProfile_Default();
+
+    WT_CASE("trace：剖面参数校验");
+    WT_CHECK(WtTraceProfile_Validate(&tp).ok);
+
+    tp.offsetM = 0.0;
+    WT_CHECK(!WtTraceProfile_Validate(&tp).ok);
+    tp = WtTraceProfile_Default();
+
+    tp.arcSegments = 1;   /* 1 段退化成直线，等于没有掉头 */
+    WT_CHECK(!WtTraceProfile_Validate(&tp).ok);
+    tp = WtTraceProfile_Default();
+
+    tp.stepM = -1.0;
+    WT_CHECK(!WtTraceProfile_Validate(&tp).ok);
+    tp = WtTraceProfile_Default();
+
+    WT_CHECK(!WtTraceProfile_Validate(NULL).ok);
+}
+
+/**
+ * 地面余量：叶片指向下方时叶尖接近地面，安全校验必须拒绝。
+ *
+ * 这不是缺陷而是本模式固有的物理约束 —— 沿叶片全长飞，叶片朝下时
+ * 航点必然低。用例把它钉住，免得日后有人把 ground 判据放宽。
+ */
+static void TestTraceGroundClearanceRejected(void)
+{
+    WtTurbineSpec spec = WtTest_Spec155();
+    WtTraceProfile tp = WtTraceProfile_Default();
+    WtInspectionProfile prof = WtInspectionProfile_Default();
+    WtMission m;
+    WtRotorFrame f;
+    WtSafetyReport rep;
+
+    WT_CASE("trace：叶片朝下时地面余量判据生效");
+    prof.groundClearanceM = 15.0;
+
+    /* 相位 180°：一片叶片正指下方 */
+    WtMission_Init(&m);
+    f = WtTurbine_BuildRotorFrame(&spec, 180.0);
+    WT_CHECK_EQ_INT((int)WtPlan_BladeTrace(&spec, &f, &tp, &m), (int)WT_PLAN_OK);
+    rep = WtPlan_ValidateMission(&spec, &f, &prof, &m);
+    WT_CHECK(!rep.ok);
+    WT_CHECK(rep.groundViolations > 0);
+    WtMission_Free(&m);
+
+    /* 相位 0°：叶片在 12 点/4 点/8 点方向，全部远离地面 */
+    WtMission_Init(&m);
+    f = WtTurbine_BuildRotorFrame(&spec, 0.0);
+    WT_CHECK_EQ_INT((int)WtPlan_BladeTrace(&spec, &f, &tp, &m), (int)WT_PLAN_OK);
+    rep = WtPlan_ValidateMission(&spec, &f, &prof, &m);
+    WT_CHECK(rep.ok);
+    WtMission_Free(&m);
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -357,6 +573,11 @@ int main(void)
     TestRotatingMode();
     TestDetourPointsAreTransit();
     TestAxialShiftValidation();
+    TestTraceTopology();
+    TestTraceCoversBothSides();
+    TestTraceOffsetRespected();
+    TestTraceProfileValidation();
+    TestTraceGroundClearanceRejected();
 
     return WT_TEST_SUMMARY();
 }

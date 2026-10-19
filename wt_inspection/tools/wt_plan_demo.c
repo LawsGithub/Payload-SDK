@@ -7,6 +7,7 @@
  *     ./wt_plan_demo                              # 用内置样例风机规划一条航线
  *     ./wt_plan_demo mission.csv                  # 同时导出航点 CSV
  *     ./wt_plan_demo mission.csv mission.kmz      # 并导出 PSDK 航点 KMZ
+ *     ./wt_plan_demo --trace                      # 改用「沿叶片中线飞行」模式
  */
 
 #include <stdio.h>
@@ -118,9 +119,39 @@ int main(int argc, char **argv)
         }
     }
 
-    /* 规划 */
+    /*
+     * 规划。
+     *
+     * 默认走「盘外站位斜拍」；加 --trace 则走「沿叶片中线飞行」——
+     * 后者是另一种航线形态（去程/叶尖掉头/回程），用于在桌面上核对
+     * 几何形状，与 papers/blade-trace.html 是同一份数据的两个视图。
+     */
     WtMission_Init(&mission);
-    rc = WtPlan_BuildMission(&spec, &frame, &profile, &mission);
+    {
+        bool useTrace = false;
+        int i;
+
+        for (i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--trace") == 0) {
+                useTrace = true;
+            }
+        }
+
+        if (useTrace) {
+            WtTraceProfile tp = WtTraceProfile_Default();
+            WtValidateResult tv = WtTraceProfile_Validate(&tp);
+
+            printf("== 沿中线飞行模式 ==\n");
+            printf("  离轴线偏置     : %.1f m\n", tp.offsetM);
+            printf("  展向航点间距   : %.1f m\n", tp.stepM);
+            printf("  叶尖掉头分段   : %d\n", tp.arcSegments);
+            printf("  剖面校验       : %s\n\n", tv.ok ? "PASS" : tv.message);
+
+            rc = WtPlan_BladeTrace(&spec, &frame, &tp, &mission);
+        } else {
+            rc = WtPlan_BuildMission(&spec, &frame, &profile, &mission);
+        }
+    }
     if (rc != WT_PLAN_OK) {
         printf("规划失败，错误码 %d\n", (int)rc);
         WtMission_Free(&mission);
@@ -176,16 +207,31 @@ int main(int argc, char **argv)
             printf("  动作条目   : %zu\n", plan.actions.count);
             printf("  飞行参数   : %zu\n", plan.flightParamCount);
 
-            if (argc > 1) {
-                if (WtMission_ExportCsv(&mission, argv[1]) == WT_PLAN_OK) {
-                    printf("  已导出航点 CSV : %s\n", argv[1]);
+            /*
+             * 位置参数：第一个非选项参数是 CSV 路径，第二个是 KMZ 路径。
+             * 跳过 -- 开头的选项，否则 --trace 会被当成 CSV 文件名。
+             */
+            {
+                const char *posArg[2] = {NULL, NULL};
+                int nPos = 0;
+                int i;
+
+                for (i = 1; i < argc && nPos < 2; i++) {
+                    if (argv[i][0] != '-') {
+                        posArg[nPos++] = argv[i];
+                    }
                 }
-            }
-            if (argc > 2) {
-                if (WtBridge_ExportKmz(&mission, &plan, &profile, &takeoff, argv[2]) == WT_PLAN_OK) {
-                    printf("  已导出航点 KMZ : %s\n", argv[2]);
-                } else {
-                    printf("  KMZ 导出失败\n");
+                if (nPos > 0 &&
+                    WtMission_ExportCsv(&mission, posArg[0]) == WT_PLAN_OK) {
+                    printf("  已导出航点 CSV : %s\n", posArg[0]);
+                }
+                if (nPos > 1) {
+                    if (WtBridge_ExportKmz(&mission, &plan, &profile, &takeoff,
+                                           posArg[1]) == WT_PLAN_OK) {
+                        printf("  已导出航点 KMZ : %s\n", posArg[1]);
+                    } else {
+                        printf("  KMZ 导出失败\n");
+                    }
                 }
             }
         }
