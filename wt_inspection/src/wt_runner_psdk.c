@@ -21,6 +21,7 @@
 #include <dji_waypoint_v3.h>
 
 #include "wt_runner.h"
+#include "wt_widget.h"
 
 #define WT_RUNNER_LOOP_PERIOD_MS 100   /*!< 主循环 10Hz */
 #define WT_RUNNER_MISSION_TIMEOUT_S 1800 /*!< 单台风机任务超时 30 分钟 */
@@ -294,6 +295,23 @@ WtRunResult WtRunner_ExecuteTurbine(WtRunner *runner)
 
         if (runner->abortRequested) {
             USER_LOG_WARN("收到中止请求，暂停任务并返航");
+            DjiWaypointV3_Action(DJI_WAYPOINT_V3_ACTION_PAUSE);
+            DjiFlightController_StartGoHome();
+            result = WT_RUN_ERR_ABORTED;
+            break;
+        }
+
+        /*
+         * 控件「中止作业」按钮。
+         *
+         * 在主循环里轮询而不是让控件回调直接置 abortRequested：回调跑在
+         * PSDK 工作线程上，而 `DjiWaypointV3_Action(PAUSE)` 与
+         * `DjiFlightController_StartGoHome()` 都是阻塞的 SDK 调用 ——
+         * 在回调里做会把链路线程卡死（liangzhourenrenwu 项目 2026-09-22
+         * 就是这么闪退的）。所以回调只置标志，这里取走并执行。
+         */
+        if (WtWidget_TakeAbortRequest()) {
+            USER_LOG_WARN("收到控件中止请求，暂停任务并返航");
             DjiWaypointV3_Action(DJI_WAYPOINT_V3_ACTION_PAUSE);
             DjiFlightController_StartGoHome();
             result = WT_RUN_ERR_ABORTED;

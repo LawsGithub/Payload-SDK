@@ -136,6 +136,7 @@ if(WT_BUILD_PSDK_APP)
 
     add_executable(wt_inspection_app
         app/main.c
+        app/wt_widget.c
         src/wt_telemetry_psdk.c
         src/wt_runner_psdk.c
         ${WT_M3_DIR}/hal/hal_usb_bulk.c

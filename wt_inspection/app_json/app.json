@@ -38,5 +38,7 @@
     "ver_min": "00.00.00.00",
     "ver_max": "99.99.99.99",
     "bin": "../build-native/bin/wt_inspection_app",
-    "userconfig": []
+    "userconfig": [
+        "../app/widget_file"
+    ]
 }

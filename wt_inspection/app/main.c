@@ -29,6 +29,7 @@
 #include "osal/osal_fs.h"
 #include "osal/osal_socket.h"
 #include "wt_runner.h"
+#include "wt_widget.h"
 
 /*
  * 默认配置路径：**相对应用目录**，不是绝对路径。
@@ -316,6 +317,21 @@ int main(int argc, char **argv)
     DjiCore_SetFirmwareVersion(firmwareVersion);
     DjiCore_SetSerialNumber("WTINSPECT000001");
 
+    /*
+     * Pilot 2 控件：操作员在遥控器上控制作业，不必 SSH 改配置。
+     *
+     * ⚠️ **必须在这里注册** —— 早于 `DjiCore_ApplicationStart()`，
+     * 否则 Pilot 拉不到控件列表。也早于配置载入，所以停用角的初值
+     * 要等 `WtRunner_Init` 之后再用 `WtWidget_SetParkPhaseInitial` 补。
+     *
+     * 注册失败**不阻断启动**：控件是操作便利性，不是作业前提。
+     * 装包时安装器要试运行应用，这里 fail-closed 会让包装不上 ——
+     * 那正是"安装器报 user_app_id 错误"这类误导性失败的来源。
+     */
+    if (WtWidget_Init() != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+        USER_LOG_WARN("控件初始化失败，作业仍可通过配置文件进行（无 Pilot 控件）");
+    }
+
     rc = DjiCore_ApplicationStart();
     if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
         USER_LOG_ERROR("DjiCore_ApplicationStart 失败: 0x%08X", rc);
@@ -370,6 +386,19 @@ int main(int argc, char **argv)
                 s_configReady = false;
             } else {
                 s_configReady = true;
+
+                /*
+                 * 把配置文件里的值灌进控件作初值。
+                 *
+                 * 不做这一步的话，操作员打开 Payload Settings 看到停用角是 0，
+                 * 而程序实际用配置里的 45 —— 两边对不上，且他一旦点一下输入框
+                 * 就会把 45 覆盖成 0。控件初值必须与配置一致。
+                 */
+                if (s_runner.config.turbineCount > 0) {
+                    WtWidget_SetParkPhaseInitial(
+                        s_runner.config.turbines[0].parkPhaseDeg);
+                }
+                WtWidget_SetDryRunInitial(s_runner.config.dryRun);
             }
         }
     }
@@ -398,36 +427,50 @@ int main(int argc, char **argv)
     /*
      * 步骤 5：作业闸门。
      *
-     * `auto_start` 控制的是**是否开始作业**，不是「出错后是否继续」。
-     * 默认 false —— 装好应用后进程起来、走完 SDK 身份校验、然后停在
-     * 「待命」状态等指令；要真正执行作业必须显式把它改成 true。
+     * 两条启动路径，**都通**：
+     *   ① 配置文件 `auto_start = true`  → 开机即作业（老路径，保留兼容）
+     *   ② Pilot 2 控件「开始作业」拨到 ON → 操作员随时启动（新路径）
      *
-     * 为什么这个语义很重要：安装器会试运行应用并要求它走完身份校验。
+     * 默认都关着。为什么：安装器会试运行应用并要求它走完身份校验。
      * 若默认就开始作业，进程会在上传航线后长时间等待飞控状态（飞机不在
      * 空中时这个等待不会结束），安装器超时 → 装不上包。而且「装上就自动
      * 起飞」本身也是危险默认。
      */
     if (!s_runner.config.autoStart) {
-        USER_LOG_WARN("auto_start = false：配置已就绪，但**不自动开始作业**。");
+        USER_LOG_WARN("auto_start = false：配置已就绪，**不自动开始作业**。");
         USER_LOG_WARN("  应用保持运行并已走完 SDK 身份校验，等待指令。");
-        USER_LOG_WARN("  要执行作业，请在配置里设 auto_start = true 后重启应用。");
+        USER_LOG_WARN("  在 Pilot 2 的 PSDK 菜单里把「开始作业」拨到 ON 即可开始；");
+        USER_LOG_WARN("  停用角在 Payload Settings 里填，飞行中也可改（影响下一台）。");
 
+        /* 待命循环：等控件请求、或进程被要求退出。 */
         while (!s_stopRequested) {
+            if (WtWidget_TakeAbortRequest()) {
+                USER_LOG_WARN("待命状态下收到中止请求，已清除开始请求");
+                WtWidget_ClearStartRequest();
+            }
+            if (WtWidget_IsStartRequested()) {
+                USER_LOG_INFO("收到控件「开始作业」请求，进入作业流程");
+                break;
+            }
             sleep(1);
         }
 
-        WtTelemetry_DeInit(&s_runner.telemetry);
-        WtRunner_DeInit(&s_runner);
-        DjiCore_DeInit();
-        if (s_logFile != NULL) {
-            fclose(s_logFile);
-        }
-        printf("[app] auto_start = false，未执行作业，退出，返回码 0\n");
+        /* 若不是因为"开始作业"而退出循环，走收尾路径。 */
+        if (s_stopRequested || !WtWidget_IsStartRequested()) {
+            WtTelemetry_DeInit(&s_runner.telemetry);
+            WtWidget_Stop();
+            WtRunner_DeInit(&s_runner);
+            DjiCore_DeInit();
+            if (s_logFile != NULL) {
+                fclose(s_logFile);
+            }
+            printf("[app] 待命状态退出，返回码 0\n");
 
-        return 0;
+            return 0;
+        }
     }
 
-    /* 步骤 6：逐台风机作业（仅 auto_start = true 时到达这里） */
+    /* 步骤 6：逐台风机作业 */
     {
         int i;
 
@@ -436,10 +479,31 @@ int main(int argc, char **argv)
             WtRunResult rr;
 
             /*
-             * 停用角由运行器从该风机的配置条目读取（[turbine.xxx]
-             * park_phase），这里不传 —— 曾经在这里硬编码 -1.0，把配置
-             * 静默架空了：现场改了 park_phase 却毫无效果。
+             * 停用角有两个来源，**控件优先**：
+             *   ① Pilot 2 的「停用角」输入框（操作员现场填，飞行中可改）
+             *   ② 配置文件的 [turbine.xxx] park_phase（初值，也会灌进控件）
+             *
+             * 控件未设过（返回负值）时回落到配置文件的值 —— 这样"只改配置
+             * 文件、不碰控件"的老用法依然成立。
+             *
+             * ⚠️ 每台风机都重新取一次：操作员可以在飞 A01 的时候把停用角
+             * 改成 A02 的实测值，作业推进到 A02 时就用新值。
              */
+            {
+                double parkPhase = WtWidget_GetParkPhaseDeg();
+
+                if (parkPhase < 0.0) {
+                    parkPhase = s_runner.config.turbines[i].parkPhaseDeg;
+                    USER_LOG_INFO("停用角取自配置文件（控件未设）：%.1f°", parkPhase);
+                } else {
+                    USER_LOG_INFO("停用角取自 Pilot 控件：%.1f°", parkPhase);
+                }
+                s_runner.config.turbines[i].parkPhaseDeg = parkPhase;
+            }
+
+            /* 干跑开关同样每台重取 —— 操作员可随时切换。 */
+            s_runner.config.dryRun = WtWidget_IsDryRun();
+
             USER_LOG_INFO("---- 开始作业：%s ----", name);
             rr = WtRunner_RunTurbine(&s_runner, name);
 
@@ -452,6 +516,7 @@ int main(int argc, char **argv)
     }
 
     WtTelemetry_DeInit(&s_runner.telemetry);
+    WtWidget_Stop();
     WtRunner_DeInit(&s_runner);
     DjiCore_DeInit();
 
