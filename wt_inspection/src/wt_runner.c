@@ -138,13 +138,12 @@ static bool WtRunner_ParkPhaseKnown(double parkPhaseDeg)
     return parkPhaseDeg >= 0.0 && parkPhaseDeg < 360.0;
 }
 
-WtRunResult WtRunner_PlanTurbine(WtRunner *runner, const char *turbineName,
-                                 double parkPhaseDeg)
+WtRunResult WtRunner_PlanTurbine(WtRunner *runner, const char *turbineName)
 {
     WtTurbineJob *job = &runner->job;
     WtPlanResult prc;
     char buf[512];
-    bool phaseKnown = WtRunner_ParkPhaseKnown(parkPhaseDeg);
+    bool phaseKnown;
 
     memset(&job->mission, 0, sizeof(job->mission));
     WtMission_Init(&job->mission);
@@ -158,11 +157,18 @@ WtRunResult WtRunner_PlanTurbine(WtRunner *runner, const char *turbineName,
     }
 
     /*
+     * 停用角的唯一来源是这台风机的配置条目。不另设函数参数 —— 曾经两边
+     * 并存，调用点写死 -1.0，配置里填什么都不生效，而程序照常告警说
+     * "未提供停用角"，现场完全看不出配置被架空了。
+     */
+    phaseKnown = WtRunner_ParkPhaseKnown(job->turbine->parkPhaseDeg);
+
+    /*
      * 相位未知时的默认假设：叶片停在 12 点方向（一片朝上）。
      * 这是最常见的停用角，也便于视觉反解时定位。但它是**假设**，
      * 下面会把风险写进报告并要求操作员确认。
      */
-    job->parkPhaseDeg = phaseKnown ? Wt_Wrap360(parkPhaseDeg) : 0.0;
+    job->parkPhaseDeg = phaseKnown ? Wt_Wrap360(job->turbine->parkPhaseDeg) : 0.0;
     job->parkPhaseKnown = phaseKnown;
 
     printf("\n[runner] 规划风机 %s\n", job->turbine->name);
@@ -170,7 +176,7 @@ WtRunResult WtRunner_PlanTurbine(WtRunner *runner, const char *turbineName,
         printf("[runner] 警告：未提供停用角，按「叶片停在 12 点方向」假设规划。\n"
                "[runner]       执行前必须用视觉反解或现场目视确认该假设成立。\n");
     } else {
-        printf("[runner] 停用角 %.1f°\n", job->parkPhaseDeg);
+        printf("[runner] 停用角 %.1f°（配置 park_phase）\n", job->parkPhaseDeg);
     }
 
     job->frame = WtTurbine_BuildRotorFrame(&job->turbine->spec, job->parkPhaseDeg);

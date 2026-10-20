@@ -361,14 +361,13 @@ WtRunResult WtRunner_ExecuteTurbine(WtRunner *runner)
     return result;
 }
 
-WtRunResult WtRunner_RunTurbine(WtRunner *runner, const char *turbineName,
-                                double parkPhaseDeg)
+WtRunResult WtRunner_RunTurbine(WtRunner *runner, const char *turbineName)
 {
     WtRunResult rc;
 
     runner->abortRequested = false;
 
-    rc = WtRunner_PlanTurbine(runner, turbineName, parkPhaseDeg);
+    rc = WtRunner_PlanTurbine(runner, turbineName);
     if (rc != WT_RUN_OK) {
         WtRunner_WriteReport(runner); /* 失败也要留痕，便于事后复盘 */
         return rc;

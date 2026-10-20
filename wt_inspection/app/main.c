@@ -433,15 +433,15 @@ int main(int argc, char **argv)
 
         for (i = 0; i < s_runner.config.turbineCount && !s_stopRequested; i++) {
             const char *name = s_runner.config.turbines[i].name;
-            /*
-             * 停用角正常应由地面站经低速数据通道下发；此处传负值表示"未知"，
-             * 运行器会给出告警并要求人工确认后再执行。
-             */
-            double parkPhase = -1.0;
             WtRunResult rr;
 
+            /*
+             * 停用角由运行器从该风机的配置条目读取（[turbine.xxx]
+             * park_phase），这里不传 —— 曾经在这里硬编码 -1.0，把配置
+             * 静默架空了：现场改了 park_phase 却毫无效果。
+             */
             USER_LOG_INFO("---- 开始作业：%s ----", name);
-            rr = WtRunner_RunTurbine(&s_runner, name, parkPhase);
+            rr = WtRunner_RunTurbine(&s_runner, name);
 
             if (rr != WT_RUN_OK) {
                 USER_LOG_ERROR("风机 %s 作业未完成，结果码 %d", name, (int)rr);

@@ -263,6 +263,71 @@ static void TestParkPhaseAccepted(void)
     }
 }
 
+/**
+ * 断点回归：配置里的 park_phase 必须**一路到达运行器**。
+ *
+ * 曾经 WtRunner_PlanTurbine 另有一个 parkPhaseDeg 参数，main.c 里写死
+ * -1.0，于是配置解析结果被完全架空 —— 现场改了 park_phase，程序仍然按
+ * 「叶片停在 12 点方向」规划，还打印"未提供停用角"。这条用例从规划入口
+ * 验证：配置里写多少，运行器就用多少。
+ */
+static void TestParkPhaseReachesRunner(void)
+{
+    char text[512];
+    const char *path;
+    WtRunner runner;
+    WtRunResult rc;
+    char cwd[512];
+    char cfgPath[768];
+
+    WT_CASE("park_phase 从配置一路到达运行器，不接受调用方另传");
+
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        printf("        (跳过：取不到工作目录)\n");
+        return;
+    }
+    snprintf(cfgPath, sizeof(cfgPath), "%s/wt_test_park_phase.ini", cwd);
+
+    path = BuildConfig(text, sizeof(text), "[app]\nauto_start = true\n",
+                       "park_phase = 45.0\n");
+    if (path == NULL) {
+        WT_CHECK(0);
+        return;
+    }
+    /* BuildConfig 写的是相对路径，搬到绝对路径下再载入 */
+    {
+        FILE *src = fopen(path, "r");
+        FILE *dst = fopen(cfgPath, "w");
+        int ch;
+
+        WT_CHECK(src != NULL && dst != NULL);
+        if (src != NULL && dst != NULL) {
+            while ((ch = fgetc(src)) != EOF) {
+                fputc(ch, dst);
+            }
+        }
+        if (src != NULL) {
+            fclose(src);
+        }
+        if (dst != NULL) {
+            fclose(dst);
+        }
+    }
+
+    rc = WtRunner_Init(&runner, cfgPath);
+    WT_CHECK(rc == WT_RUN_OK);
+    if (rc == WT_RUN_OK) {
+        /* 规划阶段即用到停用角；配置写了 45° 就必须按 45° 规划 */
+        rc = WtRunner_PlanTurbine(&runner, "WT-A01");
+        WT_CHECK(rc == WT_RUN_OK);
+        WT_CHECK(runner.job.parkPhaseKnown);
+        WT_CHECK_NEAR(runner.job.parkPhaseDeg, 45.0, 1e-9);
+        WtRunner_DeInit(&runner);
+    }
+
+    remove(cfgPath);
+}
+
 static void TestCommentsAndQuotes(void)
 {
     const char *path;
@@ -635,6 +700,7 @@ int main(void)
     TestBadValuesStillFail();
     TestMissingKeysUseDefaults();
     TestParkPhaseAccepted();
+    TestParkPhaseReachesRunner();
     TestCommentsAndQuotes();
     TestMissingFileFails();
     TestDeploymentPaths();

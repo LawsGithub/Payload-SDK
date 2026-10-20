@@ -65,12 +65,15 @@ void WtRunner_DeInit(WtRunner *runner);
 /**
  * @brief 为指定风机规划航线并做安全校验
  *
- * @param parkPhaseDeg 停用角；若现场无法提供，传入负值表示"未知"，
- *                     此时采用保守假设（叶片停在 12 点方向）并给出告警，
- *                     同时把 rotorMayRotate 视为需要现场确认。
+ * 停用角取自该风机的配置条目 `[turbine.xxx] park_phase`，**不接受调用方
+ * 另传**。曾经的签名带一个 parkPhaseDeg 参数，调用点写死 -1.0，于是配置
+ * 里填了也永远读不到 —— 参数与配置成了两个来源，其中一个静默架空另一个。
+ * 现场改配置却毫无效果，正是本项目最不能容忍的那类失败。
+ *
+ * 配置里的值为负（或未配置）表示"现场未提供"：此时采用保守假设（叶片停在
+ * 12 点方向）并给出告警，`auto_start = true` 时直接拒绝执行。
  */
-WtRunResult WtRunner_PlanTurbine(WtRunner *runner, const char *turbineName,
-                                 double parkPhaseDeg);
+WtRunResult WtRunner_PlanTurbine(WtRunner *runner, const char *turbineName);
 
 /**
  * @brief 执行已规划好的航线
@@ -82,9 +85,10 @@ WtRunResult WtRunner_ExecuteTurbine(WtRunner *runner);
 
 /**
  * @brief 一键作业：规划 + 校验 + 执行
+ *
+ * 停用角同样取自配置条目，见 WtRunner_PlanTurbine。
  */
-WtRunResult WtRunner_RunTurbine(WtRunner *runner, const char *turbineName,
-                                double parkPhaseDeg);
+WtRunResult WtRunner_RunTurbine(WtRunner *runner, const char *turbineName);
 
 /**
  * @brief 请求中止当前任务
