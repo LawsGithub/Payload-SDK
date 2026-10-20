@@ -851,6 +851,7 @@ bool WtAppConfig_WriteTemplate(const char *path)
             "# 不写或写负数 = 现场未提供：规划按「叶片停在 12 点方向」假设，\n"
             "# 并禁止自动启动（auto_start = true 时直接拒绝执行）。\n"
             "# 规划的安全包络完全依赖该值，务必现场实测后再填。\n"
+            "# 这是停用角的唯一来源（运行器直接读本条目，不接受别处另传）。\n"
             "# park_phase      = 45.0\n");
 
     fclose(fp);
