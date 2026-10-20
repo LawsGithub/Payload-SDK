@@ -126,6 +126,35 @@ bash ../tools/build_dpk/build_dpk.sh -i app_json/app.json -o ~/dpk
 `data/`）—— 应用的工作目录就是包根，这也是 `WT_LOG_PATH = "data/logs/WT"`
 这个相对路径成立的前提。
 
+### Pilot 2 控件 —— 操作员界面
+
+停机位相位是**现场实测值**，而飞机在天上时 SSH 改配置这条路根本不存在。
+`app/wt_widget.c` 把作业控制做成 Pilot 2 上的控件，操作员在遥控器上直接操作：
+
+| 界面 | 控件 | 作用 |
+|---|---|---|
+| PSDK 菜单（飞行中） | 开始作业（开关） | ON = 开始，OFF = 清除请求 |
+| PSDK 菜单（飞行中） | 中止作业（按钮） | 暂停任务并返航 |
+| PSDK 菜单（飞行中） | 干跑（开关） | ON = 只上传不启动 |
+| Payload Settings（起飞前） | 停用角（输入框） | 直接填 0–359 度 |
+
+**停用角有两个来源，控件优先**：控件设过就用控件的，没设过回落到配置文件
+`[turbine.xxx] park_phase`。每台风机开始前**重新取一次** —— 飞 A01 时改成的
+值会用在 A02 上。
+
+⚠️ **`int_input_box` 只能放在 `config_interface`**。放进 `main_interface` 时
+SDK 会收下（JSON 解析计数正常）但 Pilot 不渲染成可编辑控件，回调一次都不触发。
+这是 liangzhourenwu 项目 2026-09-28 实测的结论，别"优化"回去。
+
+⚠️ **控件回调跑在 PSDK 工作线程上，只置标志不做动作**。规划 + 导出 KMZ + 上传
+要数秒，中止要调阻塞的 `DjiWaypointV3_Action` / `StartGoHome` —— 在回调里做会
+把 SDK 链路线程卡死（liangzhourenwu 项目 2026-09-22 因此闪退过）。动作一律由
+主循环或执行循环取走执行。
+
+控件注册必须在 `DjiCore_ApplicationStart()` **之前**，否则 Pilot 拉不到列表。
+注册失败**不阻断启动** —— 控件是操作便利性，不是作业前提；在这里 fail-closed
+会让 `.dpk` 装不上。
+
 ---
 
 ## 分层结构
@@ -142,6 +171,7 @@ include/  src/
 └── wt_runner        作业流水线编排          (+ _psdk.c: 下发与监控)
 
 app/main.c           机载应用入口（平台注册 + 作业调度）
+app/wt_widget.c      Pilot 2 自定义控件（操作员界面，+ widget_file/ 配置）
 tools/wt_plan_demo.c PC 侧自检程序
 tests/                PC 侧回归测试（wt_test_plan / _config / _bridge）
 ```
