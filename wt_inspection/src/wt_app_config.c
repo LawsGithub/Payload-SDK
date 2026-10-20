@@ -74,7 +74,7 @@ static const char *const WT_KEYS_INSPECTION[] = {
 
 static const char *const WT_KEYS_APP[] = {
     "telemetry_hz", "gimbal_track_gain", "track_deadband", "auto_start", "output_dir",
-    NULL,
+    "dry_run", NULL,
 };
 
 static const char *const WT_KEYS_TURBINE[] = {
@@ -626,6 +626,8 @@ bool WtAppConfig_Load(const char *path, WtAppConfig *config)
                 } else if (strcmp(key, "output_dir") == 0) {
                     applied = (*value != '\0');
                     snprintf(config->outputDir, sizeof(config->outputDir), "%.255s", value);
+                } else if (strcmp(key, "dry_run") == 0) {
+                    applied = WtConfig_GetBool(value, &config->dryRun);
                 }
             }
 
@@ -816,10 +818,17 @@ bool WtAppConfig_WriteTemplate(const char *path)
             "telemetry_hz       = 10\n"
             "gimbal_track_gain  = 0\n"
             "track_deadband     = 2.0\n"
+            "# 作业总闸门。false = 应用起来后停在待命状态，不执行作业；\n"
+            "# true = 逐台风机执行「规划 → 上传 → 启动任务」。\n"
+            "# 默认 false：装包时安装器要试运行应用，自动开始会挂住导致装不上。\n"
             "auto_start         = false\n"
             "# 作业产物的输出目录。相对应用目录 —— 应用以 uid=1000 运行，\n"
             "# 绝对路径 /data/... 不可写。官方包内已建好 data/（可写）。\n"
             "output_dir         = data\n"
+            "# 干跑：只做「规划 → 生成 KMZ → 上传」，不启动任务、飞机不飞。\n"
+            "# 用于在没有现场时验证飞控能否接受这条航线（上传失败会暴露 KMZ\n"
+            "# 格式/坐标系/航向模式的问题）。验证完记得改回 false。\n"
+            "dry_run            = false\n"
             "\n"
             "# 每台风机一个段落，段落名即风机编号\n"
             "[turbine.WT-A01]\n"

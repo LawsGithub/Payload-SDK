@@ -251,6 +251,22 @@ WtRunResult WtRunner_ExecuteTurbine(WtRunner *runner)
 
     USER_LOG_INFO("航线已上传，启动任务：%s", job->turbine->name);
 
+    /*
+     * 干跑：到此为止。上传成功即证明飞控接受了这条航线 —— KMZ 格式、
+     * 坐标系、航向模式（含 trace 的 towardPOI）都过了飞控的解析。
+     * 不调 Action(START)，飞机不会起飞。
+     *
+     * 这一步的价值在于它验证的东西**仿真器验证不到**：PX4 等模拟的是另一套
+     * 飞控实现，KMZ 能否被 DJI 飞控接受只有真飞控说了算。
+     */
+    if (runner->config.dryRun) {
+        USER_LOG_WARN("dry_run = true：航线上传成功，但**不启动任务**，飞机不飞。");
+        USER_LOG_WARN("  上传成功 = 飞控已接受该航线（格式/坐标系/航向模式均通过）。");
+        USER_LOG_WARN("  验证完成后请把配置里的 dry_run 改回 false 再执行作业。");
+        DjiWaypointV3_DeInit();
+        return WT_RUN_OK;
+    }
+
     s_missionFinished = false;
     s_missionBroken = false;
 

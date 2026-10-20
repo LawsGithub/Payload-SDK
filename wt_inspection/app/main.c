@@ -395,7 +395,39 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* 步骤 5：逐台风机作业 */
+    /*
+     * 步骤 5：作业闸门。
+     *
+     * `auto_start` 控制的是**是否开始作业**，不是「出错后是否继续」。
+     * 默认 false —— 装好应用后进程起来、走完 SDK 身份校验、然后停在
+     * 「待命」状态等指令；要真正执行作业必须显式把它改成 true。
+     *
+     * 为什么这个语义很重要：安装器会试运行应用并要求它走完身份校验。
+     * 若默认就开始作业，进程会在上传航线后长时间等待飞控状态（飞机不在
+     * 空中时这个等待不会结束），安装器超时 → 装不上包。而且「装上就自动
+     * 起飞」本身也是危险默认。
+     */
+    if (!s_runner.config.autoStart) {
+        USER_LOG_WARN("auto_start = false：配置已就绪，但**不自动开始作业**。");
+        USER_LOG_WARN("  应用保持运行并已走完 SDK 身份校验，等待指令。");
+        USER_LOG_WARN("  要执行作业，请在配置里设 auto_start = true 后重启应用。");
+
+        while (!s_stopRequested) {
+            sleep(1);
+        }
+
+        WtTelemetry_DeInit(&s_runner.telemetry);
+        WtRunner_DeInit(&s_runner);
+        DjiCore_DeInit();
+        if (s_logFile != NULL) {
+            fclose(s_logFile);
+        }
+        printf("[app] auto_start = false，未执行作业，退出，返回码 0\n");
+
+        return 0;
+    }
+
+    /* 步骤 6：逐台风机作业（仅 auto_start = true 时到达这里） */
     {
         int i;
 
@@ -403,7 +435,7 @@ int main(int argc, char **argv)
             const char *name = s_runner.config.turbines[i].name;
             /*
              * 停用角正常应由地面站经低速数据通道下发；此处传负值表示"未知"，
-             * 运行器会给出告警并禁止自动启动，必须人工确认后再执行。
+             * 运行器会给出告警并要求人工确认后再执行。
              */
             double parkPhase = -1.0;
             WtRunResult rr;
@@ -414,9 +446,7 @@ int main(int argc, char **argv)
             if (rr != WT_RUN_OK) {
                 USER_LOG_ERROR("风机 %s 作业未完成，结果码 %d", name, (int)rr);
                 exitCode = (int)rr;
-                if (!s_runner.config.autoStart) {
-                    break; /* 非自动模式下出错即停，等待人工介入 */
-                }
+                break; /* 出错即停，等待人工介入 */
             }
         }
     }

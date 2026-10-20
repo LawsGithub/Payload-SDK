@@ -90,7 +90,24 @@ typedef struct {
     double telemetryHz;      /*!< 遥测订阅频率 Hz */
     double gimbalTrackGain;  /*!< 云台实时跟踪增益，0 = 不跟踪 */
     double trackDeadbandDeg; /*!< 跟踪死区，小于该角度不动作，避免云台抖动 */
-    bool autoStart;          /*!< 上电后是否自动开始（false 则等待遥控器指令） */
+    /*
+     * 是否自动开始作业。**这是作业的总闸门**：
+     *   false（默认）→ 进程起来、走完 SDK 身份校验、停在待命状态，不执行作业
+     *   true          → 逐台风机执行「规划 → 上传 → 启动任务」
+     *
+     * 默认 false 有两个理由：安装器试运行应用时要它活着走完校验（自动开始
+     * 作业会因等待飞控状态而挂住，导致装不上包）；以及"装上就自动起飞"
+     * 本身是危险默认。
+     */
+    bool autoStart;
+    /*
+     * 干跑：只走「规划 → 生成 KMZ → 上传」，**不调 Action(START)**，飞机不飞。
+     *
+     * 用途是在没有现场/不方便真飞时验证飞控能否接受这条航线 —— 上传失败
+     * 会把 KMZ 格式、坐标系、航向模式这类问题暴露出来，而这些恰恰是
+     * 仿真器（PX4 等）验证不到的（飞控实现不同）。默认 false。
+     */
+    bool dryRun;
     char outputDir[WT_CONFIG_MAX_PATH]; /*!< 航线与照片索引的输出目录 */
 } WtAppConfig;
 

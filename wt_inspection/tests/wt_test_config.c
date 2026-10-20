@@ -496,6 +496,133 @@ static void TestTemplateOutputDirIsRelative(void)
     remove(tmp);
 }
 
+/**
+ * dry_run 必须是可解析的布尔，且默认 false。
+ *
+ * 这个开关决定「上传后是否调 Action(START)」—— 也就是**飞机飞不飞**。
+ * 默认值必须是 false（安全侧）：若解析出意外为 true，作业会静默地
+ * 只上传不飞，现象是"任务启动了但飞机没动"，比反过来的错误难查得多。
+ */
+static void TestDryRunFlag(void)
+{
+    WtAppConfig cfg;
+    const char *tpl = "wt_test_dryrun_tpl.ini";
+    const char *tmp = "wt_test_dryrun.ini";
+    char line[512];
+
+    WT_CASE("dry_run：默认 false，且可被配置打开");
+
+    /* 以模板为基底改写，保证其余字段合法 —— 测的是这个键而不是配置合法性 */
+    if (!WtAppConfig_WriteTemplate(tpl)) { WT_CHECK(0); return; }
+
+    /* 1) 模板默认（模板里写了 dry_run = false） */
+    if (WtAppConfig_Load(tpl, &cfg)) {
+        WT_CHECK(!cfg.dryRun);
+        WtAppConfig_Free(&cfg);
+    } else {
+        WT_CHECK(0);
+    }
+
+    /* 2) 改成 true 应被读进来 */
+    {
+        FILE *in = fopen(tpl, "r");
+        FILE *out = fopen(tmp, "w");
+
+        if (in == NULL || out == NULL) {
+            if (in) fclose(in);
+            if (out) fclose(out);
+            WT_CHECK(0);
+        } else {
+            while (fgets(line, sizeof(line), in) != NULL) {
+                if (strncmp(line, "dry_run", 7) == 0) {
+                    fputs("dry_run            = true\n", out);
+                } else {
+                    fputs(line, out);
+                }
+            }
+            fclose(in);
+            fclose(out);
+
+            if (WtAppConfig_Load(tmp, &cfg)) {
+                WT_CHECK(cfg.dryRun);
+                WtAppConfig_Free(&cfg);
+            } else {
+                WT_CHECK(0);
+            }
+        }
+    }
+
+    /* 3) 取值非法必须拒绝（与其它键同一套严格性） */
+    {
+        FILE *in = fopen(tpl, "r");
+        FILE *out = fopen(tmp, "w");
+
+        if (in == NULL || out == NULL) {
+            if (in) fclose(in);
+            if (out) fclose(out);
+            WT_CHECK(0);
+        } else {
+            while (fgets(line, sizeof(line), in) != NULL) {
+                if (strncmp(line, "dry_run", 7) == 0) {
+                    fputs("dry_run            = 也许\n", out);
+                } else {
+                    fputs(line, out);
+                }
+            }
+            fclose(in);
+            fclose(out);
+            WT_CHECK(!WtAppConfig_Load(tmp, &cfg));
+        }
+    }
+
+    remove(tpl);
+    remove(tmp);
+}
+
+/**
+ * auto_start 是**作业总闸门**，默认必须是 false。
+ *
+ * 曾经它只控制「出错后是否继续下一台风机」，名字与行为不符 —— 配置已存在
+ * 时进程会直接进作业流程并长时间等待飞控状态，导致安装器试运行超时、
+ * 装不上包（2026-10-20 实测）。默认 false 是安全侧：装上后待命，不自动起飞。
+ */
+static void TestAutoStartGate(void)
+{
+    WtAppConfig cfg;
+
+    WT_CASE("auto_start：默认 false（作业闸门关闭）");
+
+    if (!WtAppConfig_WriteTemplate(WT_TEST_TMP_FILE)) {
+        WT_CHECK(0);
+        return;
+    }
+    if (WtAppConfig_Load(WT_TEST_TMP_FILE, &cfg)) {
+        WT_CHECK(!cfg.autoStart);
+        WtAppConfig_Free(&cfg);
+    } else {
+        WT_CHECK(0);
+    }
+
+    /* 模板里的注释必须说明它是作业闸门，而不是"出错后继续" */
+    {
+        FILE *fp = fopen(WT_TEST_TMP_FILE, "r");
+        char line[512];
+        bool sawGate = false;
+
+        if (fp != NULL) {
+            while (fgets(line, sizeof(line), fp) != NULL) {
+                if (strstr(line, "作业总闸门") != NULL) {
+                    sawGate = true;
+                }
+            }
+            fclose(fp);
+            WT_CHECK(sawGate);
+        } else {
+            WT_CHECK(0);
+        }
+    }
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -515,6 +642,8 @@ int main(void)
     TestSpellingSuggestions();
     TestDeployPathsAreRelative();
     TestTemplateOutputDirIsRelative();
+    TestDryRunFlag();
+    TestAutoStartGate();
 
     remove(WT_TEST_TMP_FILE);
     remove(WT_TEST_NESTED_TOP);
