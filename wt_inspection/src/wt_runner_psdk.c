@@ -259,11 +259,17 @@ WtRunResult WtRunner_ExecuteTurbine(WtRunner *runner)
      *
      * 这一步的价值在于它验证的东西**仿真器验证不到**：PX4 等模拟的是另一套
      * 飞控实现，KMZ 能否被 DJI 飞控接受只有真飞控说了算。
+     *
+     * ⚠️ **在这里实时读控件，不要用 config.dryRun 的快照**。
+     * 2026-10-20 实测：操作员在 11:54:57 拨开「干跑」，而作业在 11:54:24
+     * 就已开始、11:55:37 上传 —— 若只在作业开始时取一次值，这次拨动会被
+     * 完全忽略，飞机就真的起飞了。上传是"最后一道可拦的地方"，
+     * 判断必须紧贴它。
      */
-    if (runner->config.dryRun) {
+    if (WtWidget_IsDryRun() || runner->config.dryRun) {
         USER_LOG_WARN("dry_run = true：航线上传成功，但**不启动任务**，飞机不飞。");
         USER_LOG_WARN("  上传成功 = 飞控已接受该航线（格式/坐标系/航向模式均通过）。");
-        USER_LOG_WARN("  验证完成后请把配置里的 dry_run 改回 false 再执行作业。");
+        USER_LOG_WARN("  验证完成后请把「干跑」开关拨回 OFF 再执行作业。");
         DjiWaypointV3_DeInit();
         return WT_RUN_OK;
     }
@@ -384,6 +390,34 @@ WtRunResult WtRunner_RunTurbine(WtRunner *runner, const char *turbineName)
     WtRunResult rc;
 
     runner->abortRequested = false;
+
+    /*
+     * 停用角在**规划前一刻**才取，不在调用方提前快照。
+     *
+     * 2026-10-20 实测的时序缺口：调用方在 `main.c` 的循环开头取一次值，
+     * 而操作员是在作业已经开始之后才在 Payload Settings 里填 60° 的 ——
+     * 那次输入被完全忽略，程序仍按 -1.0（未知）规划。
+     * 取值越靠近使用点，操作员的有效窗口就越大。
+     *
+     * 两个来源，控件优先：
+     *   ① Pilot 2 的「停用角」输入框（操作员现场填）
+     *   ② 配置文件 [turbine.xxx] park_phase（初值，也会灌进控件）
+     * 控件未设过时返回负值，此时保留配置里的值不动。
+     */
+    {
+        WtTurbineEntry *t = WtAppConfig_FindTurbineMutable(&runner->config, turbineName);
+
+        if (t != NULL) {
+            const double fromWidget = WtWidget_GetParkPhaseDeg();
+
+            if (fromWidget >= 0.0) {
+                t->parkPhaseDeg = fromWidget;
+                USER_LOG_INFO("停用角取自 Pilot 控件：%.1f°", t->parkPhaseDeg);
+            } else {
+                USER_LOG_INFO("停用角取自配置文件（控件未设）：%.1f°", t->parkPhaseDeg);
+            }
+        }
+    }
 
     rc = WtRunner_PlanTurbine(runner, turbineName);
     if (rc != WT_RUN_OK) {

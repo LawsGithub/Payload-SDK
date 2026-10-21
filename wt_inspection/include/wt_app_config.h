@@ -108,6 +108,18 @@ typedef struct {
      * 仿真器（PX4 等）验证不到的（飞控实现不同）。默认 false。
      */
     bool dryRun;
+    /*
+     * 诊断：生成**不含任何云台/相机动作**的航线。
+     *
+     * 只用于在 DJI Assistant 2 模拟器里排查「START 被拒」—— 模拟器只模拟
+     * 飞控，不模拟云台和相机，带动作的航点任务会被拒
+     * （实测 `Start waypoint v3 mission failed, error_code: 4`），
+     * 分不清是几何问题还是动作问题。关掉动作能隔离这个变量。
+     *
+     * ⚠️ **真机作业绝不能开**：没有拍照动作的巡检航线毫无意义。
+     * 默认 false，模板里以注释形式给出并写明这一点。
+     */
+    bool noActions;
     char outputDir[WT_CONFIG_MAX_PATH]; /*!< 航线与照片索引的输出目录 */
 } WtAppConfig;
 
@@ -122,6 +134,15 @@ void WtAppConfig_Free(WtAppConfig *config);
 
 /** @brief 按名称查找风机条目，找不到返回 NULL */
 const WtTurbineEntry *WtAppConfig_FindTurbine(const WtAppConfig *config, const char *name);
+
+/**
+ * @brief 按名称查找风机条目，返回**可写**指针；找不到返回 NULL
+ *
+ * 与只读版并存而不是替换它：绝大多数调用点只需要读（规划、报告、校验），
+ * 给它们 const 能挡住误写。只有"作业运行期由操作员改写参数"这一处
+ * （控件改停用角）需要写权限，单独一个入口让意图显式。
+ */
+WtTurbineEntry *WtAppConfig_FindTurbineMutable(WtAppConfig *config, const char *name);
 
 /** @brief 打印配置摘要，便于现场核对 */
 void WtAppConfig_Dump(const WtAppConfig *config);

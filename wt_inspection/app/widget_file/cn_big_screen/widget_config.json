@@ -46,16 +46,20 @@
                     "is_enable": true,
                     "mapping_config_display_order": 2
                 }
-            }
-        ]
-    },
-    "config_interface": {
-        "widget_list": [
+            },
             {
                 "widget_index": 3,
-                "widget_type": "int_input_box",
+                "widget_type": "scale",
                 "widget_name": "停用角",
-                "int_input_box_hint": "度 0-359"
+                "icon_file_set": {
+                    "icon_file_name_selected": "icon_scale.png",
+                    "icon_file_name_unselected": "icon_scale.png"
+                },
+                "customize_rc_buttons_config": {
+                    "is_enable": true,
+                    "mapping_config_display_order": 3,
+                    "button_value_step_length": 1
+                }
             }
         ]
     }

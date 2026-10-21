@@ -328,6 +328,80 @@ static void TestParkPhaseReachesRunner(void)
     remove(cfgPath);
 }
 
+/**
+ * 安全回归：停用角未知时必须拒绝执行，**与 auto_start 无关**。
+ *
+ * 2026-10-20 实测暴露的缺口：原判据是
+ *     if (!phaseKnown && runner->config.autoStart) { 拒绝 }
+ * 把保护挂在了"配置自动启动"这个开关上。而 Pilot 2 控件「开始作业」是
+ * 另一条启动路径，走它时 autoStart 仍是 false —— 保护完全失效：
+ * 停用角 -1.0（未知）时照样规划、校验通过、上传航线。
+ *
+ * 这条用例同时覆盖两个 auto_start 取值：保护不能因为开关是 false 就消失。
+ */
+static void TestUnknownParkPhaseAlwaysRejected(void)
+{
+    static const char *const heads[] = {
+        "[app]\nauto_start = true\n",   /* 老路径：配置自动启动 */
+        "[app]\nauto_start = false\n",  /* 新路径：控件启动 */
+    };
+    size_t i;
+    char cwd[512];
+    char cfgPath[768];
+
+    WT_CASE("停用角未知时必须拒绝执行，auto_start 为 false 也不放行");
+
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        printf("        (跳过：取不到工作目录)\n");
+        return;
+    }
+
+    for (i = 0; i < sizeof(heads) / sizeof(heads[0]); i++) {
+        char text[512];
+        const char *path = BuildConfig(text, sizeof(text), heads[i], NULL);
+        WtRunner runner;
+        WtRunResult rc;
+
+        if (path == NULL) {
+            WT_CHECK(0);
+            continue;
+        }
+
+        snprintf(cfgPath, sizeof(cfgPath), "%s/wt_test_nophase.ini", cwd);
+        {
+            FILE *src = fopen(path, "r");
+            FILE *dst = fopen(cfgPath, "w");
+            int ch;
+
+            WT_CHECK(src != NULL && dst != NULL);
+            if (src != NULL && dst != NULL) {
+                while ((ch = fgetc(src)) != EOF) {
+                    fputc(ch, dst);
+                }
+            }
+            if (src != NULL) {
+                fclose(src);
+            }
+            if (dst != NULL) {
+                fclose(dst);
+            }
+        }
+
+        rc = WtRunner_Init(&runner, cfgPath);
+        WT_CHECK(rc == WT_RUN_OK);
+        if (rc == WT_RUN_OK) {
+            /* 配置里没写 park_phase → parkPhaseDeg 为负 → 未知 */
+            WT_CHECK(runner.config.turbines[0].parkPhaseDeg < 0.0);
+
+            rc = WtRunner_PlanTurbine(&runner, "WT-A01");
+            WT_CHECK(rc == WT_RUN_ERR_SAFETY);
+            WT_CHECK(!runner.job.parkPhaseKnown);
+            WtRunner_DeInit(&runner);
+        }
+        remove(cfgPath);
+    }
+}
+
 static void TestCommentsAndQuotes(void)
 {
     const char *path;
@@ -701,6 +775,7 @@ int main(void)
     TestMissingKeysUseDefaults();
     TestParkPhaseAccepted();
     TestParkPhaseReachesRunner();
+    TestUnknownParkPhaseAlwaysRejected();
     TestCommentsAndQuotes();
     TestMissingFileFails();
     TestDeploymentPaths();

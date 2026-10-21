@@ -37,25 +37,33 @@
 #define WT_WIDGET_IDX_ABORT_BUTTON 1
 #define WT_WIDGET_IDX_DRY_RUN      2
 
-/* ---- config_interface（Payload Settings，起飞前配置）----
+/*
+ * 停用角：**滑块**，0–100 百分比映射到 0–359 度。
  *
- * ⚠️ **索引共用一个编号序列，不重叠** —— PSDK 的 handler 列表是**一个扁平的
- * 索引表**，不区分界面，所以两边的 index 必须能在同一张表里唯一对上。
+ * ⚠️ 为什么不用 `int_input_box` 直接填角度（2026-10-20 实测）：
+ * 输入框放在 `config_interface`（Payload Settings）时，SDK 解析正常
+ * （日志 `config interface widget count = 1`）但 **Pilot 不渲染它** ——
+ * 操作员在界面上根本看不到那个框，反复退出重进也没有。而 `scale` 滑块
+ * 在同一个界面（main）里是验证过能显示的（liangzhourenwu 项目用它做过
+ * 半径/高度）。
  *
- * ⚠️ **停用角必须放在 config_interface**：`int_input_box` 在 main_interface
- * 里会被 SDK 收下但 Pilot 不渲染成可编辑控件（liangzhourenwu 项目 2026-09-28
- * 实测，日志里 type=5 的回调零命中）。而且停用角本来就是"起飞前定的参数"，
- * 不该在飞行中改。 */
+ * 代价是精度：滑块只有 0–100 整数档，映射到 0–359 度后每档约 3.6°。
+ * 这对"停用角"够用 —— 该值来自现场目视/台账，本来就不是精密测量，
+ * 而且安全包络按 12 点方向假设留了余量。需要精确值时仍可改配置文件。
+ */
 #define WT_WIDGET_IDX_PARK_PHASE   3
 
 #define WT_WIDGET_COUNT            4
 
+/* 滑块 0–100 → 角度 0–359 的映射上限 */
+#define WT_PARK_PHASE_MAX_DEG      359
+
 #define WT_MSG_MAX_LEN  256
 #define WT_MSG_PERIOD_MS 500    /* 浮窗消息推送周期，远低于 2 KB/s 上限 */
 
-/* 停用角的合法范围。负值保留给"未知"语义 —— 与 wt_runner 的判据一致。 */
-#define WT_PARK_PHASE_MIN 0
-#define WT_PARK_PHASE_MAX 359
+/* 滑块百分比范围（SDK 规定 scale 类型固定 0–100） */
+#define WT_SCALE_MIN 0
+#define WT_SCALE_MAX 100
 
 /* ------------------------------------------------------------------ */
 /* 状态                                                                */
@@ -68,14 +76,17 @@ static volatile bool s_startRequested = false;
  * `WtRunner_RequestAbort()` 完成。 */
 static volatile bool s_abortPending = false;
 
-/* 停用角：**整数度**，与控件语义一致（int_input_box 只能填整数）。
+/* 停用角：内部存**滑块百分比**（0–100），对外换算成角度（0–359）。
+ *
+ * 为什么存百分比而不是角度：控件本身是 `scale` 类型，SDK 规定它的值域就是
+ * 0–100（`dji_widget.h` 原文："the value is range from 0 to 100, which
+ * represents the percentage of the scale slider"）。存百分比让「控件值 ↔
+ * 状态」是一一对应、无损的；若存角度再反推百分比，界面上显示的位置会因
+ * 取整而跳动。
  *
  * 初值由 main.c 从配置读入后调 `WtWidget_SetParkPhaseInitial()` 设置，
- * 默认 -1 表示"未知"（配置里没写）。操作员填了就覆盖它。
- *
- * ⚠️ 它是**共享状态**：PSDK 回调线程写、主循环读。写入时夹取保证永远合法，
- * 读取时再夹一次是**防御**（不假设上游一定守规矩）。 */
-static volatile int32_t s_parkPhaseDeg = -1;
+ * -1 表示"未知"（配置里没写，操作员也没动过滑块）。 */
+static volatile int32_t s_parkPhasePercent = -1;
 
 /* 干跑开关。初值来自配置的 `dry_run`。 */
 static volatile bool s_dryRun = false;
@@ -84,15 +95,29 @@ static T_DjiTaskHandle s_msgTask = NULL;
 static volatile bool s_msgTaskRun = false;
 static char s_msgBuf[WT_MSG_MAX_LEN];
 
-static int32_t wt_clamp_park_phase(int32_t v)
+static int32_t wt_clamp_percent(int32_t v)
 {
-    if (v < WT_PARK_PHASE_MIN) {
-        return WT_PARK_PHASE_MIN;
+    if (v < WT_SCALE_MIN) {
+        return WT_SCALE_MIN;
     }
-    if (v > WT_PARK_PHASE_MAX) {
-        return WT_PARK_PHASE_MAX;
+    if (v > WT_SCALE_MAX) {
+        return WT_SCALE_MAX;
     }
     return v;
+}
+
+/** 百分比 → 角度（0–100 → 0–359） */
+static double wt_percent_to_deg(int32_t pct)
+{
+    return (double)pct * (double)WT_PARK_PHASE_MAX_DEG / (double)WT_SCALE_MAX;
+}
+
+/** 角度 → 百分比（四舍五入，供设置初值用） */
+static int32_t wt_deg_to_percent(double deg)
+{
+    const double pct = deg * (double)WT_SCALE_MAX / (double)WT_PARK_PHASE_MAX_DEG;
+
+    return wt_clamp_percent((int32_t)(pct + 0.5));
 }
 
 /* ------------------------------------------------------------------ */
@@ -158,29 +183,21 @@ static T_DjiReturnCode WtWidget_SetWidgetValue(E_DjiWidgetType widgetType, uint3
                              s_dryRun ? "（只上传航线，不启动任务）" : "");
         break;
 
-    /* ---- 停用角输入框 ----
+    /* ---- 停用角滑块 ----
      *
-     * ⚠️ 输入框的 value 是操作员**任意敲的整数**，可能远超合理范围
-     * （甚至为负）。所以这里必须夹取，且夹取后要**回一条消息**告诉操作员
-     * 实际生效值 —— 否则他填了 400、界面显示 400、而程序按 359 飞，
-     * 这个差异要等到航线画出来才发现。
-     *
-     * 为什么不在回调里直接拒绝非法值：控件是"设置"语义，不是"提交"语义，
-     * 拒绝会让输入框停在那个非法值上不动。夹取 + 告知符合操作员预期。 */
+     * SDK 规定 scale 的 value 就是 0–100 百分比，这里换算成角度告诉操作员
+     * 实际生效值 —— 否则界面上只有一个 0–100 的数字，操作员不知道它对应
+     * 多少度，得自己心算。浮窗回一条实际角度是最省事的做法。 */
     case WT_WIDGET_IDX_PARK_PHASE: {
-        const int32_t clamped = wt_clamp_park_phase(value);
+        int32_t clamped;
 
-        if (widgetType != DJI_WIDGET_TYPE_INT_INPUT_BOX) {
+        if (widgetType != DJI_WIDGET_TYPE_SCALE) {
             return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
         }
-        s_parkPhaseDeg = clamped;
-        if (clamped != value) {
-            WtWidget_PostMessage("停用角 %d 超出 %d–%d，已按 %d 使用",
-                                 (int)value, WT_PARK_PHASE_MIN, WT_PARK_PHASE_MAX,
-                                 (int)clamped);
-        } else {
-            WtWidget_PostMessage("停用角设为 %d°", (int)clamped);
-        }
+        clamped = wt_clamp_percent(value);
+        s_parkPhasePercent = clamped;
+        WtWidget_PostMessage("停用角设为 %.0f°（滑块 %d%%）",
+                             wt_percent_to_deg(clamped), (int)clamped);
         break;
     }
 
@@ -225,10 +242,10 @@ static T_DjiReturnCode WtWidget_GetWidgetValue(E_DjiWidgetType widgetType, uint3
     /* 打开界面时要把当前值推给 Pilot —— 不实现的话它会显示 0，
      * 与主循环实际用的配置值不一致。 */
     case WT_WIDGET_IDX_PARK_PHASE:
-        if (widgetType != DJI_WIDGET_TYPE_INT_INPUT_BOX) {
+        if (widgetType != DJI_WIDGET_TYPE_SCALE) {
             return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
         }
-        *value = (s_parkPhaseDeg < 0) ? 0 : s_parkPhaseDeg;
+        *value = (s_parkPhasePercent < 0) ? 0 : s_parkPhasePercent;
         break;
     default:
         return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
@@ -246,13 +263,9 @@ static const T_DjiWidgetHandlerListItem s_widgetHandlerList[WT_WIDGET_COUNT] = {
     {WT_WIDGET_IDX_DRY_RUN,      DJI_WIDGET_TYPE_SWITCH, WtWidget_SetWidgetValue,
      WtWidget_GetWidgetValue, NULL},
 
-    /* ---- config_interface（Payload Settings）----
-     * ⚠️ handler 列表**不区分界面**，是一张扁平表 —— 所以两边的 index
-     * 必须共用一个编号序列（理由见上面的索引定义处）。
-     *
-     * 类型必须与 json 里的 "widget_type": "int_input_box" 一致，
+    /* 停用角滑块。类型必须与 json 里的 "widget_type": "scale" 一致，
      * 否则 PSDK 分派时会因类型不匹配拒绝（回调里我们对 widgetType 做了校验）。 */
-    {WT_WIDGET_IDX_PARK_PHASE,   DJI_WIDGET_TYPE_INT_INPUT_BOX, WtWidget_SetWidgetValue,
+    {WT_WIDGET_IDX_PARK_PHASE,   DJI_WIDGET_TYPE_SCALE, WtWidget_SetWidgetValue,
      WtWidget_GetWidgetValue, NULL},
 };
 
@@ -461,25 +474,25 @@ bool WtWidget_TakeAbortRequest(void)
 
 double WtWidget_GetParkPhaseDeg(void)
 {
-    /* 读时再夹一次：s_parkPhaseDeg 由回调线程写，主循环可能读到回调
+    /* 读时再夹一次：s_parkPhasePercent 由回调线程写，主循环可能读到回调
      * 尚未执行时的初值。夹取是纯函数、开销可忽略，
      * 不做"上游一定守规矩"的假设。
      *
-     * 负值原样返回 —— 那是"未知"语义，由运行器判风险并拒绝自动启动。 */
-    if (s_parkPhaseDeg < 0) {
+     * 负值原样返回 —— 那是"未知"语义，由运行器判风险并拒绝执行。 */
+    if (s_parkPhasePercent < 0) {
         return -1.0;
     }
 
-    return (double)wt_clamp_park_phase(s_parkPhaseDeg);
+    return wt_percent_to_deg(wt_clamp_percent(s_parkPhasePercent));
 }
 
 void WtWidget_SetParkPhaseInitial(double deg)
 {
     if (deg < 0.0) {
-        s_parkPhaseDeg = -1;    /* 配置里未提供，保持"未知" */
+        s_parkPhasePercent = -1;    /* 配置里未提供，保持"未知" */
         return;
     }
-    s_parkPhaseDeg = wt_clamp_park_phase((int32_t)(deg + 0.5));
+    s_parkPhasePercent = wt_deg_to_percent(deg);
 }
 
 bool WtWidget_IsDryRun(void)

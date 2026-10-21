@@ -74,7 +74,7 @@ static const char *const WT_KEYS_INSPECTION[] = {
 
 static const char *const WT_KEYS_APP[] = {
     "telemetry_hz", "gimbal_track_gain", "track_deadband", "auto_start", "output_dir",
-    "dry_run", NULL,
+    "dry_run", "no_actions", NULL,
 };
 
 static const char *const WT_KEYS_TURBINE[] = {
@@ -628,6 +628,8 @@ bool WtAppConfig_Load(const char *path, WtAppConfig *config)
                     snprintf(config->outputDir, sizeof(config->outputDir), "%.255s", value);
                 } else if (strcmp(key, "dry_run") == 0) {
                     applied = WtConfig_GetBool(value, &config->dryRun);
+                } else if (strcmp(key, "no_actions") == 0) {
+                    applied = WtConfig_GetBool(value, &config->noActions);
                 }
             }
 
@@ -708,6 +710,23 @@ void WtAppConfig_Free(WtAppConfig *config)
 const WtTurbineEntry *WtAppConfig_FindTurbine(const WtAppConfig *config, const char *name)
 {
     int i;
+
+    for (i = 0; i < config->turbineCount; i++) {
+        if (strcmp(config->turbines[i].name, name) == 0) {
+            return &config->turbines[i];
+        }
+    }
+
+    return NULL;
+}
+
+WtTurbineEntry *WtAppConfig_FindTurbineMutable(WtAppConfig *config, const char *name)
+{
+    int i;
+
+    if (config == NULL || name == NULL) {
+        return NULL;
+    }
 
     for (i = 0; i < config->turbineCount; i++) {
         if (strcmp(config->turbines[i].name, name) == 0) {
@@ -829,6 +848,10 @@ bool WtAppConfig_WriteTemplate(const char *path)
             "# 用于在没有现场时验证飞控能否接受这条航线（上传失败会暴露 KMZ\n"
             "# 格式/坐标系/航向模式的问题）。验证完记得改回 false。\n"
             "dry_run            = false\n"
+            "# 诊断用：生成不含云台/相机动作的航线，仅用于在 DJI Assistant 2\n"
+            "# 模拟器里排查「START 被拒」（模拟器不模拟云台与相机）。\n"
+            "# ⚠️ 真机作业绝不能开 —— 没有拍照动作的巡检航线毫无意义。\n"
+            "# no_actions        = false\n"
             "\n"
             "# 每台风机一个段落，段落名即风机编号\n"
             "[turbine.WT-A01]\n"

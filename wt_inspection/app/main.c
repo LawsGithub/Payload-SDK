@@ -443,16 +443,31 @@ int main(int argc, char **argv)
         USER_LOG_WARN("  停用角在 Payload Settings 里填，飞行中也可改（影响下一台）。");
 
         /* 待命循环：等控件请求、或进程被要求退出。 */
-        while (!s_stopRequested) {
-            if (WtWidget_TakeAbortRequest()) {
-                USER_LOG_WARN("待命状态下收到中止请求，已清除开始请求");
-                WtWidget_ClearStartRequest();
+        {
+            /*
+             * ⚠️ 这里**不调 `WtTelemetry_Poll()`**。
+             *
+             * 2026-10-20 实测：在待命循环里每秒调一次 Poll，进程进入循环后
+             * 3 秒内稳定 SEGV/ABRT（`journalctl` 里 `code=dumped, status=11`）。
+             * 同一函数在执行循环里调用是安全的 —— 差别在于待命阶段飞机在地面，
+             * 部分话题订阅本就失败（`subscribe topic 11/26 failed`），
+             * 且遥测尚未经历稳定期。
+             *
+             * 断连检测因此不用遥测做判据：待命阶段本来就没有"必须收到位置"
+             * 的业务需求，用它会引入一个新的崩溃面。真要判链路存活，
+             * 交给 SDK 自己的错误日志与 systemd 的进程监管即可。
+             */
+            while (!s_stopRequested) {
+                if (WtWidget_TakeAbortRequest()) {
+                    USER_LOG_WARN("待命状态下收到中止请求，已清除开始请求");
+                    WtWidget_ClearStartRequest();
+                }
+                if (WtWidget_IsStartRequested()) {
+                    USER_LOG_INFO("收到控件「开始作业」请求，进入作业流程");
+                    break;
+                }
+                sleep(1);
             }
-            if (WtWidget_IsStartRequested()) {
-                USER_LOG_INFO("收到控件「开始作业」请求，进入作业流程");
-                break;
-            }
-            sleep(1);
         }
 
         /* 若不是因为"开始作业"而退出循环，走收尾路径。 */
@@ -479,38 +494,99 @@ int main(int argc, char **argv)
             WtRunResult rr;
 
             /*
-             * 停用角有两个来源，**控件优先**：
-             *   ① Pilot 2 的「停用角」输入框（操作员现场填，飞行中可改）
-             *   ② 配置文件的 [turbine.xxx] park_phase（初值，也会灌进控件）
+             * 停用角与干跑开关都在 `WtRunner_RunTurbine` 内部、**规划前一刻**
+             * 才取，不在这里提前快照。
              *
-             * 控件未设过（返回负值）时回落到配置文件的值 —— 这样"只改配置
-             * 文件、不碰控件"的老用法依然成立。
-             *
-             * ⚠️ 每台风机都重新取一次：操作员可以在飞 A01 的时候把停用角
-             * 改成 A02 的实测值，作业推进到 A02 时就用新值。
+             * 2026-10-20 实测的时序缺口：原先在这里取一次，而操作员是在
+             * 作业已经开始之后才填停用角的 —— 那次输入被完全忽略。
+             * 取值越靠近使用点，操作员的有效窗口越大。
              */
-            {
-                double parkPhase = WtWidget_GetParkPhaseDeg();
-
-                if (parkPhase < 0.0) {
-                    parkPhase = s_runner.config.turbines[i].parkPhaseDeg;
-                    USER_LOG_INFO("停用角取自配置文件（控件未设）：%.1f°", parkPhase);
-                } else {
-                    USER_LOG_INFO("停用角取自 Pilot 控件：%.1f°", parkPhase);
-                }
-                s_runner.config.turbines[i].parkPhaseDeg = parkPhase;
-            }
-
-            /* 干跑开关同样每台重取 —— 操作员可随时切换。 */
-            s_runner.config.dryRun = WtWidget_IsDryRun();
-
             USER_LOG_INFO("---- 开始作业：%s ----", name);
             rr = WtRunner_RunTurbine(&s_runner, name);
 
             if (rr != WT_RUN_OK) {
                 USER_LOG_ERROR("风机 %s 作业未完成，结果码 %d", name, (int)rr);
                 exitCode = (int)rr;
-                break; /* 出错即停，等待人工介入 */
+
+                /*
+                 * 被拒绝（尤其是"停用角未知"这类**操作员当场就能修好**的
+                 * 原因）不该让整个应用退出。
+                 *
+                 * 2026-10-20 实测：操作员拨了「开始作业」→ 因停用角未设被
+                 * 拒绝 → 应用退出重启 → Payload Settings 界面消失，
+                 * 操作员**没有机会把角度填进去**，陷入死循环。
+                 *
+                 * 现在的行为：回到待命，清掉开始请求，让操作员改完再拨。
+                 * 只有执行阶段的失败（已上传、已在飞）才真的退出 ——
+                 * 那种情况需要人工介入，继续待命没有意义。
+                 */
+                if (rr == WT_RUN_ERR_SAFETY || rr == WT_RUN_ERR_CONFIG) {
+                    USER_LOG_WARN("作业被拒绝（可在界面上修正后重试）："
+                                  "清空「开始作业」开关，请修正参数后再拨一次。");
+                    WtWidget_ClearStartRequest();
+                    exitCode = 0;
+                    break;   /* 跳出风机循环，走下面的待命等待 */
+                }
+                break; /* 执行阶段出错：交给人工介入，退出 */
+            }
+        }
+    }
+
+    /*
+     * 被拒绝后回到待命，而不是退出。
+     *
+     * 这样操作员能在 Pilot 2 里改停用角/干跑、拨回开关、再拨一次 ——
+     * 不用重启应用、不用重新拉控件列表。
+     *
+     * ⚠️ 这个循环**必须响应「开始作业」**，不能只等退出信号。
+     * 2026-10-20 实测的缺陷：初版这里只有 `sleep(1)`，操作员拨了开关后
+     * 日志停在「收到开始请求」就再无下文，进程活着但毫无反应 ——
+     * 从外面看和"卡死"完全一样。回到待命的意义就是"能再试一次"，
+     * 不会响应请求等于没回。
+     */
+    while (exitCode == 0 && !s_stopRequested) {
+        USER_LOG_WARN("作业未执行，应用回到待命状态。修正参数后可再次拨「开始作业」。");
+
+        /* 等一次新请求。先清掉上一轮残留，否则会立刻重入。 */
+        WtWidget_ClearStartRequest();
+
+        while (!s_stopRequested) {
+            if (WtWidget_TakeAbortRequest()) {
+                USER_LOG_WARN("待命状态下收到中止请求");
+                WtWidget_ClearStartRequest();
+            }
+            if (WtWidget_IsStartRequested()) {
+                break;
+            }
+            sleep(1);
+        }
+
+        if (s_stopRequested) {
+            break;
+        }
+
+        /* 再跑一轮作业。失败会重新落到这里，形成"改参数 → 重试"的循环。 */
+        USER_LOG_INFO("收到控件「开始作业」请求，重新进入作业流程");
+        exitCode = 0;
+        {
+            int i;
+
+            for (i = 0; i < s_runner.config.turbineCount && !s_stopRequested; i++) {
+                const char *name = s_runner.config.turbines[i].name;
+                WtRunResult rr;
+
+                USER_LOG_INFO("---- 开始作业：%s ----", name);
+                rr = WtRunner_RunTurbine(&s_runner, name);
+
+                if (rr != WT_RUN_OK) {
+                    USER_LOG_ERROR("风机 %s 作业未完成，结果码 %d", name, (int)rr);
+                    if (rr == WT_RUN_ERR_SAFETY || rr == WT_RUN_ERR_CONFIG) {
+                        WtWidget_ClearStartRequest();
+                        break;   /* 可修正：回到外层待命 */
+                    }
+                    exitCode = (int)rr;
+                    break;       /* 执行阶段出错：退出 */
+                }
             }
         }
     }
