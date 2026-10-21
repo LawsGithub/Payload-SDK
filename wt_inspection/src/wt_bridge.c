@@ -383,7 +383,8 @@ static void WtStr_Free(WtStr *s)
 
 /** 生成一个 Placemark（两种 wpml 文件共用） */
 static bool WtBridge_WritePlacemark(WtStr *s, const WtMission *mission,
-                                    const WtMissionPlan *plan, size_t idx)
+                                    const WtMissionPlan *plan, size_t idx,
+                                    double nacelleHeadingDeg)
 {
     const WtPlanPoint *p = &mission->points[idx];
     const WtWaypointAction *a = &plan->actions.items[idx];
@@ -406,12 +407,26 @@ static bool WtBridge_WritePlacemark(WtStr *s, const WtMission *mission,
     if (!WtStr_Append(s, "        <wpml:waypointSpeed>%.2f</wpml:waypointSpeed>\n", speed))
         return false;
     /*
-     * 航向：默认沿航线（followWayline）。
+     * 航向：巡检段锁定为「正对风轮盘面」，叶尖掉头段朝叶尖。
      *
-     * 例外是「沿中线飞行」模式的叶尖掉头段 —— 那一段要求机头绕着叶尖转
-     * 180°，做法是把该航点的 waypointHeadingMode 置 towardPOI、POI 填叶尖
-     * 坐标，机头就会在飞向下一航点的途中始终朝向叶尖（这正是 DJI Pilot 2
-     * 「兴趣点环绕」的机制）。
+     * ## 为什么是 smoothTransition + 固定角，而不是 towardPOI
+     *
+     * 需求是"机头始终对着风机叶片那一整个平面"，好让相机正对叶面拍图。
+     *
+     * - `towardPOI` 是**朝一个点**：飞机从轮毂飞向叶尖时机头会持续转向那个点，
+     *   方位一路在变。拍叶面要的是方位不变，它做不到。
+     * - `smoothTransition` + `waypointHeadingAngle` 是**每个航点给定目标角**，
+     *   航段间均匀过渡。所有巡检点填同一个角 → 过渡过程中角度恒定，
+     *   正是"朝向平面"的效果。
+     *
+     * 角度值来自 `nacelleHeadingDeg`，由调用方按**每台风机的机舱朝向**传入
+     * （取自 `WtRotorFrame.rotAxis` 的方位角）。多台风机朝向不同，
+     * 所以这里绝不能写死常量。
+     *
+     * ## 叶尖掉头段仍然用 towardPOI
+     *
+     * 那一段的语义是"机头绕叶尖转 180° 换面"，本来就该跟着叶尖转 ——
+     * 用固定角反而转不过去。这也是需求里明确排除的部分。
      *
      * 为什么不用 gimbalRotate 的 yaw 去转：M4T 的云台 Pan 轴标着
      * 「Not controllable」，云台 yaw 无法独立于机头偏转。让机头承担偏转、
@@ -438,6 +453,33 @@ static bool WtBridge_WritePlacemark(WtStr *s, const WtMission *mission,
                           poiLat, poiLon,
                           (idx % 2 == 0) ? "clockwise" : "counterClockwise"))
             return false;
+    } else if (nacelleHeadingDeg >= 0.0) {
+        /*
+         * 巡检段：锁定机头正对风轮盘面。
+         *
+         * `waypointHeadingAngle` 的取值范围是 [-180, 180]（官方规范），
+         * 而方位角是 [0, 360)。这里换算到 [-180, 180]，否则飞控会因
+         * 越界拒绝整条航线。
+         */
+        double heading = nacelleHeadingDeg;
+        const char *pathMode = "followBadArc";
+
+        while (heading > 180.0) {
+            heading -= 360.0;
+        }
+        while (heading < -180.0) {
+            heading += 360.0;
+        }
+
+        if (!WtStr_Append(s,
+                          "        <wpml:waypointHeadingParam>\n"
+                          "          <wpml:waypointHeadingMode>smoothTransition</wpml:waypointHeadingMode>\n"
+                          "          <wpml:waypointHeadingAngle>%.2f</wpml:waypointHeadingAngle>\n"
+                          "          <wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>\n"
+                          "          <wpml:waypointHeadingPathMode>%s</wpml:waypointHeadingPathMode>\n"
+                          "        </wpml:waypointHeadingParam>\n",
+                          heading, pathMode))
+            return false;
     } else if (!WtStr_Append(s,
                       "        <wpml:waypointHeadingParam>\n"
                       "          <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>\n"
@@ -447,15 +489,32 @@ static bool WtBridge_WritePlacemark(WtStr *s, const WtMission *mission,
                       "        </wpml:waypointHeadingParam>\n")) {
         return false;
     }
+    /*
+     * 航点类型：**平滑过点，提前转弯**。
+     *
+     * 官方规范《共用元素信息》写明 Pilot 2/司空 2 上这个模式的设置方法：
+     *   1) waypointTurnMode = toPointAndPassWithContinuityCurvature
+     *   2) useStraightLine   = 1
+     * 两条都要满足，缺一条 Pilot 会显示成别的模式。
+     *
+     * 原先用的是 toPointAndStopWithDiscontinuityCurvature（直线飞行、到点停），
+     * 每个航点都要刹车再加速，巡检拍图时姿态抖动大、耗电也高。
+     */
     if (!WtStr_Append(s,
                       "        <wpml:waypointTurnParam>\n"
-                      "          <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>\n"
+                      "          <wpml:waypointTurnMode>toPointAndPassWithContinuityCurvature</wpml:waypointTurnMode>\n"
                       "          <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>\n"
                       "        </wpml:waypointTurnParam>\n"
                       "        <wpml:useStraightLine>1</wpml:useStraightLine>\n"))
         return false;
 
-    /* 云台动作组：先摆云台，再按需拍照，顺序不可颠倒 */
+    /* 云台动作组：先摆云台，再按需拍照，顺序不可颠倒
+     *
+     * 诊断开关 `no_actions` 不在这里处理 —— 它由 `wt_runner.c` 在生成动作后
+     * 抹掉内容实现。放在那边的原因：`BuildFlightParams` 与动作共用同一个
+     * plan，跳过生成会让结构不完整；生成后清零是"改内容不改结构"，
+     * KMZ 导出仍走同一条已验证的路径。
+     */
     if (a->setGimbal || a->camera != WT_ACTION_NONE) {
         if (!WtStr_Append(s,
                           "        <wpml:actionGroup>\n"
@@ -522,7 +581,8 @@ static bool WtBridge_WritePlacemark(WtStr *s, const WtMission *mission,
 
 /** 生成一份完整的 wpml 文档 */
 static bool WtBridge_BuildWpml(const WtMission *mission, const WtMissionPlan *plan,
-                               const WtInspectionProfile *profile, WtStr *out)
+                               const WtInspectionProfile *profile,
+                               double nacelleHeadingDeg, WtStr *out)
 {
     size_t i;
 
@@ -539,9 +599,23 @@ static bool WtBridge_BuildWpml(const WtMission *mission, const WtMissionPlan *pl
                       "      <wpml:takeOffSecurityHeight>%.1f</wpml:takeOffSecurityHeight>\n"
                       "      <wpml:globalTransitionalSpeed>%.1f</wpml:globalTransitionalSpeed>\n"
                       "      <wpml:droneInfo>\n"
-                      "        <wpml:droneEnumValue>99</wpml:droneEnumValue>\n"
+                      "        <wpml:droneEnumValue>1100</wpml:droneEnumValue>\n"
                       "        <wpml:droneSubEnumValue>0</wpml:droneSubEnumValue>\n"
                       "      </wpml:droneInfo>\n"
+                      /*
+                       * 负载声明。**没有它 Pilot 2 会按机型去猜相机**，
+                       * 表现为：同一份 KMZ 在 Pilot 里切 M4E 显示 0 个航点、
+                       * 切 M4T 才显示正常（2026-10-20 实测）。
+                       *
+                       * 取值依据官方 template.kml 示例：M4T = 1100、
+                       * 负载 10052（M4T 的相机）。原先写 droneEnumValue=99
+                       * 且完全没有 payloadInfo，是 Pilot 认不出机型与相机的直接原因。
+                       */
+                      "      <wpml:payloadInfo>\n"
+                      "        <wpml:payloadEnumValue>10052</wpml:payloadEnumValue>\n"
+                      "        <wpml:payloadSubEnumValue>0</wpml:payloadSubEnumValue>\n"
+                      "        <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>\n"
+                      "      </wpml:payloadInfo>\n"
                       "    </wpml:missionConfig>\n"
                       "    <Folder>\n"
                       "      <wpml:templateType>waypoint</wpml:templateType>\n"
@@ -557,7 +631,7 @@ static bool WtBridge_BuildWpml(const WtMission *mission, const WtMissionPlan *pl
         return false;
 
     for (i = 0; i < mission->count; i++) {
-        if (!WtBridge_WritePlacemark(out, mission, plan, i)) {
+        if (!WtBridge_WritePlacemark(out, mission, plan, i, nacelleHeadingDeg)) {
             return false;
         }
     }
@@ -569,6 +643,7 @@ WtPlanResult WtBridge_ExportKmz(const WtMission *mission,
                                 const WtMissionPlan *plan,
                                 const WtInspectionProfile *profile,
                                 const WtGeo *takeoffGeo,
+                                double nacelleHeadingDeg,
                                 const char *outPath)
 {
     WtStr wpml = {0};
@@ -580,7 +655,7 @@ WtPlanResult WtBridge_ExportKmz(const WtMission *mission,
 
     (void)takeoffGeo;
 
-    if (!WtBridge_BuildWpml(mission, plan, profile, &wpml)) {
+    if (!WtBridge_BuildWpml(mission, plan, profile, nacelleHeadingDeg, &wpml)) {
         WtStr_Free(&wpml);
         return WT_PLAN_ERR_NOMEM;
     }

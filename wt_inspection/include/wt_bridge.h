@@ -135,12 +135,25 @@ void WtBridge_FreePlan(WtMissionPlan *plan);
  * @param plan       动作与飞行参数
  * @param profile     作业剖面（提供安全起飞高度与全局速度）
  * @param takeoffGeo 起飞点 WGS84 坐标，用于换算相对高度
+ * @param nacelleHeadingDeg 机舱头部方位角（度，自正北顺时针）。
+ *        用于把巡检段的机头朝向锁定为「正对风轮盘面」——
+ *        `smoothTransition` 模式下每个航点的目标偏航角都取这个值，
+ *        机头方向因此在整个轮毂↔叶尖航段上保持不变，相机始终正对叶面。
+ *
+ *        **必须由调用方按每台风机各自的机舱朝向传入**，不能是写死的常量：
+ *        多台风机朝向各不相同，写死会让其余风机的拍摄角全部错掉。
+ *        取值来源是 `WtRotorFrame.rotAxis` 的方位角（见调用点），
+ *        而不是 `spec.headingDeg` —— 后者没算进主轴仰角与锥角的影响。
+ *
+ *        传负值表示"不锁定"（回退到 followWayline），供不需要正对叶面的
+ *        模式使用。
  * @param outPath    输出 .kmz 路径
  */
 WtPlanResult WtBridge_ExportKmz(const WtMission *mission,
                                 const WtMissionPlan *plan,
                                 const WtInspectionProfile *profile,
                                 const WtGeo *takeoffGeo,
+                                double nacelleHeadingDeg,
                                 const char *outPath);
 
 /** @brief 把动作列表与飞行参数导出为 CSV，便于人工核对 */

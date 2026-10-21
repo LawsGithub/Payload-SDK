@@ -232,9 +232,25 @@ WtRunResult WtRunner_PlanTurbine(WtRunner *runner, const char *turbineName)
         return WT_RUN_ERR_SAFETY;
     }
 
-    /* 未提供停用角时，即使几何校验通过也不能自动起飞 */
-    if (!phaseKnown && runner->config.autoStart) {
-        fprintf(stderr, "[runner] 停用角未知，禁止自动启动；请人工确认后手动下发。\n");
+    /*
+     * 未提供停用角时**一律拒绝执行**，不看是从哪条路径启动的。
+     *
+     * 2026-10-20 实测暴露的缺口：这里原先写的是
+     * `if (!phaseKnown && runner->config.autoStart)`，把保护挂在"配置自动
+     * 启动"这个开关上。但 Pilot 控件「开始作业」是另一条启动路径，
+     * 走它时 autoStart 仍是 false —— 于是保护**完全失效**：停用角为 -1.0
+     * （未知）时照样规划、校验通过、上传航线。日志里就是
+     * `停用角取自配置文件（控件未设）：-1.0°` 紧跟着 `safety : PASS`。
+     *
+     * 停用角决定整个安全包络：航线按「叶片停在 12 点方向」假设画出来，
+     * 一旦实际叶片不在那个位置，贴叶航线就是撞机。这个前提不能靠
+     * "操作员走的是哪条路径"来兜底，必须在规划出口无条件拦住。
+     */
+    if (!phaseKnown) {
+        fprintf(stderr,
+                "[runner] 停用角未知，拒绝执行。请在 Pilot 2 的 Payload Settings\n"
+                "[runner] 里填「停用角」（现场实测值，0~359°），或在配置文件的\n"
+                "[runner] [turbine.xxx] 段填 park_phase 后重试。\n");
         return WT_RUN_ERR_SAFETY;
     }
 
@@ -250,6 +266,25 @@ WtRunResult WtRunner_PlanTurbine(WtRunner *runner, const char *turbineName)
         if (brc != WT_PLAN_OK) {
             fprintf(stderr, "[runner] 动作生成失败，错误码 %d\n", (int)brc);
             return WT_RUN_ERR_PLAN;
+        }
+
+        /*
+         * 诊断开关 `no_actions`：抹掉所有云台/相机动作，只留纯航点。
+         *
+         * 为什么在生成之后再抹，而不是跳过生成：`WtBridge_BuildFlightParams`
+         * 与动作共用同一个 plan，跳过生成会让 plan 结构不完整；生成后清零
+         * 是"改内容不改结构"，KMZ 导出仍走同一条已验证的路径。
+         *
+         * ⚠️ 真机作业绝不能开 —— 没有拍照动作的巡检航线毫无意义。
+         */
+        if (runner->config.noActions) {
+            size_t k;
+
+            for (k = 0; k < job->plan.actions.count; k++) {
+                job->plan.actions.items[k].camera = WT_ACTION_NONE;
+                job->plan.actions.items[k].setGimbal = false;
+            }
+            printf("[runner] ⚠ no_actions = true：已抹掉全部云台/相机动作（诊断用）\n");
         }
     }
 
@@ -267,10 +302,29 @@ WtRunResult WtRunner_PlanTurbine(WtRunner *runner, const char *turbineName)
     snprintf(job->reportPath, sizeof(job->reportPath), "%.160s/%.56s_report.txt",
              runner->config.outputDir, job->turbine->name);
 
-    if (WtBridge_ExportKmz(&job->mission, &job->plan, &runner->config.profile,
-                           &runner->config.takeoff, job->kmzPath) != WT_PLAN_OK) {
-        fprintf(stderr, "[runner] KMZ 导出失败\n");
-        return WT_RUN_ERR_PLAN;
+    /*
+     * 机头朝向：**每台风机各自算**，取自风轮旋转轴的方位角。
+     *
+     * 需求是"机头正对风轮盘面"好拍叶面，而多台风机的机舱朝向各不相同，
+     * 所以这个角绝不能写死。`rotAxis` 指向机舱（下游），机头要迎着盘面，
+     * 因此取其**反向**的方位角 —— 即飞机在盘面外侧朝里看。
+     *
+     * 用 `frame.rotAxis` 而不是 `spec.headingDeg`：后者没算进主轴仰角与
+     * 锥角的影响，与真正规划出来的盘面朝向有偏差。
+     */
+    {
+        const WtEnu inward = WtEnu_Scale(job->frame.rotAxis, -1.0);
+        const double nacelleHeadingDeg = WtEnu_Azimuth(inward);
+
+        printf("[runner] 机头朝向锁定为正对盘面：%.1f°（由 rotAxis 反算）\n",
+               nacelleHeadingDeg);
+
+        if (WtBridge_ExportKmz(&job->mission, &job->plan, &runner->config.profile,
+                               &runner->config.takeoff, nacelleHeadingDeg,
+                               job->kmzPath) != WT_PLAN_OK) {
+            fprintf(stderr, "[runner] KMZ 导出失败\n");
+            return WT_RUN_ERR_PLAN;
+        }
     }
     WtBridge_ExportActionCsv(&job->mission, &job->plan, job->csvPath);
 

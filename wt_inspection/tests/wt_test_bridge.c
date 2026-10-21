@@ -194,7 +194,8 @@ static void TestKmzSpeedTags(void)
     WtBridge_InitPlan(&plan);
     WT_CHECK_EQ_INT(WtBridge_BuildActions(&m, WT_GIMBAL_FREE_YAW, &plan), WT_PLAN_OK);
     WT_CHECK_EQ_INT(WtBridge_BuildFlightParams(&m, &takeoff, &profile, &plan), WT_PLAN_OK);
-    WT_CHECK_EQ_INT(WtBridge_ExportKmz(&m, &plan, &profile, &takeoff, WT_TEST_KMZ_FILE),
+    WT_CHECK_EQ_INT(WtBridge_ExportKmz(&m, &plan, &profile, &takeoff, -1.0,
+                                       WT_TEST_KMZ_FILE),
                     WT_PLAN_OK);
 
     for (i = 1; i < m.count; i++) {

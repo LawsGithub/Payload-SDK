@@ -226,7 +226,9 @@ int main(int argc, char **argv)
                     printf("  已导出航点 CSV : %s\n", posArg[0]);
                 }
                 if (nPos > 1) {
-                    if (WtBridge_ExportKmz(&mission, &plan, &profile, &takeoff,
+                    /* 演示程序没有真实风机朝向，用 -1 表示"不锁定机头"，
+                     * 回退到 followWayline。真机由 runner 按每台风机算。 */
+                    if (WtBridge_ExportKmz(&mission, &plan, &profile, &takeoff, -1.0,
                                            posArg[1]) == WT_PLAN_OK) {
                         printf("  已导出航点 KMZ : %s\n", posArg[1]);
                     } else {
