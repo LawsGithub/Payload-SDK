@@ -136,20 +136,34 @@ bash ../tools/build_dpk/build_dpk.sh -i app_json/app.json -o ~/dpk
 | PSDK 菜单（飞行中） | 开始作业（开关） | ON = 开始，OFF = 清除请求 |
 | PSDK 菜单（飞行中） | 中止作业（按钮） | 暂停任务并返航 |
 | PSDK 菜单（飞行中） | 干跑（开关） | ON = 只上传不启动 |
-| Payload Settings（起飞前） | 停用角（输入框） | 直接填 0–359 度 |
+| PSDK 菜单（飞行中） | 停用角（滑块） | 0–100% 映射到 0–359° |
 
 **停用角有两个来源，控件优先**：控件设过就用控件的，没设过回落到配置文件
-`[turbine.xxx] park_phase`。每台风机开始前**重新取一次** —— 飞 A01 时改成的
-值会用在 A02 上。
+`[turbine.xxx] park_phase`。取值在 `WtRunner_RunTurbine` 内部、**规划前一刻**
+才做，不是作业开始时快照 —— 操作员在作业进行中填的值也能生效。
 
-⚠️ **`int_input_box` 只能放在 `config_interface`**。放进 `main_interface` 时
-SDK 会收下（JSON 解析计数正常）但 Pilot 不渲染成可编辑控件，回调一次都不触发。
-这是 liangzhourenwu 项目 2026-09-28 实测的结论，别"优化"回去。
+**停用角未知（负值）时一律拒绝执行**，不看是从哪条路径启动的。这条判据
+曾经挂在 `autoStart` 上，而控件启动时该开关仍为 false，导致保护完全失效
+（停用角 -1.0 却照样上传航线）。
+
+**作业被拒绝后回到待命，不退出**：清空开始请求，操作员改完参数可再拨一次，
+不必重启应用、不用重新拉控件列表。
+
+⚠️ **`int_input_box` 两个界面都不渲染**。放 `main_interface` 会被 SDK 收下
+但 Pilot 不显示（liangzhourenwu 2026-09-28）；放 `config_interface` 时日志
+解析计数正常、Pilot 2 界面上同样看不到那个框（本项目 2026-10-20 实测，
+反复退出重进也没有）。⇒ 要让操作员改数值，**用 `scale` 滑块放 main 界面**，
+滑块在 main 验证过能正常显示。代价是精度约 3.6°/档，对来自现场目视/台账的
+停用角够用。
 
 ⚠️ **控件回调跑在 PSDK 工作线程上，只置标志不做动作**。规划 + 导出 KMZ + 上传
 要数秒，中止要调阻塞的 `DjiWaypointV3_Action` / `StartGoHome` —— 在回调里做会
 把 SDK 链路线程卡死（liangzhourenwu 项目 2026-09-22 因此闪退过）。动作一律由
 主循环或执行循环取走执行。
+
+⚠️ **待命循环不要调 `WtTelemetry_Poll()`**。该函数在执行循环里安全，但在
+待命阶段（飞机在地面、部分话题订阅本就失败）会稳定 SEGV/ABRT，
+进程进入循环后 3 秒内崩溃。
 
 控件注册必须在 `DjiCore_ApplicationStart()` **之前**，否则 Pilot 拉不到列表。
 注册失败**不阻断启动** —— 控件是操作便利性，不是作业前提；在这里 fail-closed
@@ -219,6 +233,26 @@ grep -rn "dji_" include/ src/wt_geometry.c src/wt_turbine.c \
 偏航变化」一致，也是 M4T 上唯一可行的做法（M4T 的云台 Pan 轴 `Not controllable`，
 云台 yaw 无法独立于机头偏转）。
 
+**巡检段（轮毂↔叶尖）的机头朝向锁定为正对风轮盘面**，用
+`waypointHeadingMode = smoothTransition` + 每点相同的 `waypointHeadingAngle`。
+所有巡检点填同一个角，航段间过渡过程角度恒定 —— 相机因此始终正对叶面。
+
+为什么不用 `towardPOI`：它是**朝一个点**，飞机从轮毂飞向叶尖时机头会持续转向
+该点，方位一路在变；拍叶面要的是方位不变。
+
+**这个角度不写死**：由 `wt_runner.c` 按每台风机的 `rotAxis` 反算后传入
+（`WtEnu_Azimuth(WtEnu_Scale(frame.rotAxis, -1.0))`）。多台风机机舱朝向不同，
+写死会让其余风机的拍摄角全错。用 `rotAxis` 而不是 `spec.headingDeg`，因为后者
+没算进主轴仰角与锥角的影响。
+
+航点类型统一为**平滑过点，提前转弯**（`toPointAndPassWithContinuityCurvature`
++ `useStraightLine = 1`，官方规范要求两条都满足）。原先用「直线飞行、到点停」，
+每个航点刹车再加速，巡检拍图时姿态抖动大、耗电也高。
+
+KMZ 里同时声明机型与负载（`droneEnumValue = 1100`、`payloadInfo` 的
+`payloadEnumValue = 10052`）。**缺 `payloadInfo` 时 Pilot 2 只能按机型猜相机**，
+表现为同一份 KMZ 切 M4E 显示 0 个航点、切 M4T 才正常。
+
 ⚠️ **该模式有固有的高度约束**：沿叶片全长飞，当某片叶片指向下方时叶尖接近地面，
 航点会低于 `ground_clearance` 而被安全校验拒绝。规划器会打印是哪片叶片、低到多少，
 此时应调整停用角或等待风向使叶片转开。
@@ -234,11 +268,14 @@ grep -rn "dji_" include/ src/wt_geometry.c src/wt_turbine.c \
 ## 已知限制
 
 - 停用角取自每台风机的 `[turbine.xxx] park_phase`。未填（或填负数）时按
-  「叶片停在 12 点方向」假设规划并告警，且在 `auto_start = true` 下**直接
-  拒绝执行**（`WtRunner_PlanTurbine` 返回 `WT_RUN_ERR_SAFETY`）。现场必须
-  实测填值后才能自动作业
-- 停用角的地面站下发通道仍未实现：目前只有配置文件一个来源，改值后需重启
-  应用；视觉反解（`wt_telemetry`）已有接口但无人调用
+  「叶片停在 12 点方向」假设规划并告警，且**一律拒绝执行**
+  （`WtRunner_PlanTurbine` 返回 `WT_RUN_ERR_SAFETY`，不看是从配置还是控件启动）。
+  现场必须实测填值后才能作业
+- 停用角的地面站下发通道仍未实现：目前只有配置文件与 Pilot 控件两个来源；
+  视觉反解（`wt_telemetry`）已有接口但无人调用
+- **`template.kml` 与 `waylines.wpml` 内容完全相同**（`wt_bridge.c` 把同一个
+  buffer 写了两次）。PSDK 上传不受影响（飞控只读 `waylines.wpml`），但导入
+  Pilot 2 时统计栏会显示 0 m / 0 航点 —— Pilot 需要两份文件各司其职。
 - 转动模式下塔筒巡检段被整体跳过（塔筒必然在叶轮圆盘内，无法规避）
 - 相位视觉反解只提供接口，**目前无人调用**，故闭环叶尖跟踪尚未真正生效；
   像素级换算需由视觉模块接入相机内参
