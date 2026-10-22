@@ -21,6 +21,9 @@ add_library(wt_core STATIC
     src/wt_geometry.c
     src/wt_turbine.c
     src/wt_camera.c
+    src/wt_blade_id.c
+    src/wt_projection.c
+    src/wt_ai_solve.c
     src/wt_plan.c
     src/wt_bridge.c
     src/wt_app_config.c
@@ -52,7 +55,7 @@ option(WT_BUILD_TESTS "编译并注册 PC 侧回归测试" ON)
 if(WT_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     enable_testing()
 
-    foreach(wt_test wt_test_plan wt_test_config wt_test_bridge)
+    foreach(wt_test wt_test_plan wt_test_config wt_test_bridge wt_test_blade_id wt_test_projection wt_test_ai_solve)
         add_executable(${wt_test} tests/${wt_test}.c)
         target_include_directories(${wt_test} PRIVATE tests)
         target_link_libraries(${wt_test} PRIVATE wt_core)
@@ -136,6 +139,8 @@ if(WT_BUILD_PSDK_APP)
 
     add_executable(wt_inspection_app
         app/main.c
+        app/wt_ai_overlay.c
+        app/wt_ai_stream_probe.c
         app/wt_widget.c
         src/wt_telemetry_psdk.c
         src/wt_runner_psdk.c
