@@ -29,6 +29,8 @@
 #include "osal/osal_fs.h"
 #include "osal/osal_socket.h"
 #include "wt_runner.h"
+#include "wt_ai_overlay.h"
+#include "wt_ai_stream_probe.h"
 #include "wt_widget.h"
 
 /*
@@ -400,6 +402,26 @@ int main(int argc, char **argv)
                 }
                 WtWidget_SetDryRunInitial(s_runner.config.dryRun);
             }
+
+            /*
+             * AI 叠加验证（诊断用，默认关）。
+             *
+             * 放在配置载入之后 —— 它要读 config.aiOverlay。也放在
+             * ApplicationStart 之后 —— liveview 模块依赖 SDK 已起来。
+             * 失败不阻断：这是验证功能，不是作业前提。
+             */
+            if (WtAiOverlay_Start(s_runner.config.aiOverlay)) {
+                USER_LOG_INFO("AI 叠加验证已启动，请在 Pilot 2 画面上观察框与标签");
+            }
+
+            /*
+             * 取流探针（诊断用，默认关）：验证能否拿到相机实时画面。
+             * 与 AI 叠加独立 —— 两者可分别开启，用于区分"通道不通"与
+             * "Pilot 2 渲染条件不满足"。
+             */
+            if (WtAiStreamProbe_Start(s_runner.config.streamProbe)) {
+                USER_LOG_INFO("取流探针已启动，等待相机帧…");
+            }
         }
     }
 
@@ -592,6 +614,8 @@ int main(int argc, char **argv)
     }
 
     WtTelemetry_DeInit(&s_runner.telemetry);
+    WtAiStreamProbe_Stop();
+    WtAiOverlay_Stop();
     WtWidget_Stop();
     WtRunner_DeInit(&s_runner);
     DjiCore_DeInit();

@@ -74,7 +74,7 @@ static const char *const WT_KEYS_INSPECTION[] = {
 
 static const char *const WT_KEYS_APP[] = {
     "telemetry_hz", "gimbal_track_gain", "track_deadband", "auto_start", "output_dir",
-    "dry_run", "no_actions", NULL,
+    "dry_run", "no_actions", "ai_overlay", "stream_probe", NULL,
 };
 
 static const char *const WT_KEYS_TURBINE[] = {
@@ -630,6 +630,10 @@ bool WtAppConfig_Load(const char *path, WtAppConfig *config)
                     applied = WtConfig_GetBool(value, &config->dryRun);
                 } else if (strcmp(key, "no_actions") == 0) {
                     applied = WtConfig_GetBool(value, &config->noActions);
+                } else if (strcmp(key, "ai_overlay") == 0) {
+                    applied = WtConfig_GetBool(value, &config->aiOverlay);
+                } else if (strcmp(key, "stream_probe") == 0) {
+                    applied = WtConfig_GetBool(value, &config->streamProbe);
                 }
             }
 
@@ -852,6 +856,14 @@ bool WtAppConfig_WriteTemplate(const char *path)
             "# 模拟器里排查「START 被拒」（模拟器不模拟云台与相机）。\n"
             "# ⚠️ 真机作业绝不能开 —— 没有拍照动作的巡检航线毫无意义。\n"
             "# no_actions        = false\n"
+            "# 诊断用：往 Pilot 2 画面发固定的识别框（PSDK liveview AI 叠加），\n"
+            "# 用于验证 DjiLiveview_SendAiMetaToPilot 是否可用、自定义标签的\n"
+            "# type 索引从几开始。开启后每秒发 3 个框（type 0/1/2，左/中/右）。\n"
+            "# ⚠️ 不是生产功能，框的位置和标签都是写死的。验证完关掉。\n"
+            "# ai_overlay        = false\n"
+            "# 诊断用：启动相机图像流并统计收到的帧，判定能否拿到实时画面。\n"
+            "# 用于确认「持续跟踪」方案是否可行。验证完关掉。\n"
+            "# stream_probe      = false\n"
             "\n"
             "# 每台风机一个段落，段落名即风机编号\n"
             "[turbine.WT-A01]\n"

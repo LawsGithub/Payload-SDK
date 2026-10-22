@@ -120,6 +120,26 @@ typedef struct {
      * 默认 false，模板里以注释形式给出并写明这一点。
      */
     bool noActions;
+    /*
+     * 诊断：把固定的识别框发到 Pilot 2 画面上（PSDK liveview AI 叠加）。
+     *
+     * 只用于验证 `DjiLiveview_SendAiMetaToPilot` 在本机可用、以及自定义
+     * 标签的 type 索引从几开始 —— 这两件事静态查不出来。开启后每秒发
+     * 3 个框（type 0/1/2，位置左/中/右），在 Pilot 2 上观察哪些显示。
+     *
+     * ⚠️ **不是生产功能**：框的位置和标签都是写死的，跟实际识别无关。
+     * 验证完必须关掉。默认 false。
+     */
+    bool aiOverlay;
+    /*
+     * 诊断：启动相机图像流并统计收到的帧（`DjiLiveview_StartImageStream`）。
+     *
+     * 用途是判定「持续跟踪」方案是否可行 —— 拿不到实时画面就谈不上
+     * 「取流 → 推理 → 定位 → 规划」。与 `aiOverlay` 相互独立，可以只开一个。
+     *
+     * ⚠️ **不是生产功能**，只打日志。验证完关掉。默认 false。
+     */
+    bool streamProbe;
     char outputDir[WT_CONFIG_MAX_PATH]; /*!< 航线与照片索引的输出目录 */
 } WtAppConfig;
 
