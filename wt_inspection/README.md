@@ -178,6 +178,9 @@ include/  src/
 ├── wt_geometry      WGS84 ↔ ENU 切平面、矢量与角度运算
 ├── wt_turbine       塔筒/机舱/叶片解析几何、风轮参考系、相位反解
 ├── wt_camera        等效画幅 GSD、视场角、重叠率 ↔ 站位间距
+├── wt_blade_id      叶片编号：角度 → NO.1/2/3（按 park_phase 匹配）
+├── wt_projection    像素 ↔ 三维：相机反投影、射线与叶轮盘面求交
+├── wt_ai_solve      端到端：AI 关键点 → 叶片编号 + 三维位置
 ├── wt_plan          三阶段航线规划 + 安全校验 + 危险航段修补
 ├── wt_bridge        航线 → KMZ(wpml)、动作表、飞行参数表
 ├── wt_app_config    作业配置解析与模板生成
@@ -186,8 +189,11 @@ include/  src/
 
 app/main.c           机载应用入口（平台注册 + 作业调度）
 app/wt_widget.c      Pilot 2 自定义控件（操作员界面，+ widget_file/ 配置）
+app/wt_ai_stream_probe.c 诊断：相机取流探针（统计帧数与分辨率）
+app/wt_ai_overlay.c      诊断：向 Pilot 2 发识别框（见下方"已知限制"）
 tools/wt_plan_demo.c PC 侧自检程序
-tests/                PC 侧回归测试（wt_test_plan / _config / _bridge）
+tests/                PC 侧回归测试（wt_test_plan / _config / _bridge
+                      / _blade_id / _projection / _ai_solve）
 ```
 
 **分层准则**：`wt_core` 里任何一行都不包含 PSDK 头文件。
@@ -288,3 +294,108 @@ KMZ 里同时声明机型与负载（`droneEnumValue = 1100`、`payloadInfo` 的
 - 叶片几何是**零厚度轴线模型**，没有弦长/厚度剖面。因此「叶片中线」目前只能用
   轴线近似 —— 真实中线在叶根处离轴线约 2 m、叶尖处约 0.02 m。要精确实现需给
   风机模型加弦长剖面
+
+## AI 识别（进行中）
+
+目标是识别**整个风机**：轮毂位置 + 三片叶片并编号 NO.1/NO.2/NO.3，用于把
+视觉结果换算成航线规划需要的三维坐标。
+
+### 硬件底座（2026-10-22 实测）
+
+妙算3 是 **NVIDIA Orin NX**（`/proc/device-tree/model`），L4T R35.5.0。
+DJI 出厂镜像已预装 **CUDA 11.4 / TensorRT 8 / cuDNN 8**，`dji` 用户无 sudo
+也能用。`nvcc` 与 `trtexec` 不在 PATH 里，全路径分别是
+`/usr/local/cuda-11.4/bin/nvcc`、`/usr/src/tensorrt/bin/trtexec`。
+
+### 两条通道的实测结论
+
+| API | 结果 |
+|---|---|
+| `DjiLiveview_StartImageStream` | ✅ **30fps 1440×1080 RGB_PACKED**（446 ms 出首帧） |
+| `DjiLiveview_SendAiMetaToPilot` | 发送返回 SUCCESS，但 **Pilot 2 不渲染** |
+
+后者不是 API 不可用：**Pilot 2 的「AI 识别」与妙算3 上的 PSDK 应用互斥**
+（实测弹窗"请先关闭已运行 AI 应用再开启"）。开着 DJI AI 时不收外部框，
+关掉又不在 AI 模式。所以自研识别的结果**自己用**，不要指望画给操作员看。
+
+⚠️ **调用 liveview 前必须先 `DjiLiveview_Init()`。** 漏掉时
+`RegUserAiTargetLableList` 返回 `0xE0` 且日志打
+`Ai target Lable only support on manifold3` —— 看起来像硬件不支持，实际只是
+SDK 内部缓存的 `s_mountPositionType` 还是 0（该变量正是在 `DjiLiveview_Init`
+里由 `DjiAccessAdapter_GetMountPositionType()` 填充的）。
+
+### 模型与关键点
+
+模型来自 RWTH Aachen 开源项目
+[`rwth-irt/Wind-Turbine-Synthetic-Vision`](https://github.com/rwth-irt/Wind-Turbine-Synthetic-Vision)
+（ICMV 2025，`arXiv:2507.21611`），YOLOv11-pose，用 BlenderProc 合成数据训练。
+公开数据集几乎全是叶片缺陷，没有整机正面视角的；而风机是刚性几何体，
+合成图训练后在真实图上 mPose mAP50 = 0.99。
+
+7 个关键点（顺序从 `generator.py:472-486` 确认）：
+
+| 索引 | 名称 | 用途 |
+|---|---|---|
+| 0 | 机舱后部 | — |
+| 1 | 塔顶 | 辅助估距 |
+| 2 | 塔底 | 辅助估距 |
+| **3** | **机舱前部 = 轮毂中心** | ★ 定位 |
+| **4/5/6** | **三个叶尖** | ★ 编号与径向 |
+
+**三片叶尖是无序的**：模型用排列不变损失训练（对 3 个点枚举 6 种排列取
+误差最小者），因为三片叶片旋转对称、视觉上本就无法区分。
+**编号由几何决定**，见下节。
+
+### 编号为什么要靠几何
+
+1 号叶片的物理定义是「相位角 = `park_phase` 的那片」。流程是：
+
+```
+叶尖像素 → 反投影到叶轮盘面 → 盘面内相位角 → 与 park_phase 匹配 → NO.1
+```
+
+**不能直接用图像极角编号** —— 实际拍摄总有透视。实测（正面特写但非完美
+正对）三片叶尖的图像径向距离是 874 / 1069 / 848 px，差 22%，极角间隔因此
+不均（偏差 24.7°）。反投影后径向散布归零。
+
+`wt_test_ai_solve` 的斜视用例是这个结论的直接证据：
+
+```
+图像径向散布 29.5%  →  反投影后 0.00%
+```
+
+### 部署链路
+
+```
+PC:   .pt → .onnx          （ultralytics export，opset 12）
+设备: .onnx → .engine      （trtexec --fp16）
+```
+
+**engine 必须在设备上构建** —— 它与 GPU 架构和 TensorRT 版本强绑定，
+x86 上转的在 Orin 上加载会直接失败。
+
+### 集成时三个必须注意的点
+
+1. **帧回调线程不能做重活**。`DjiLiveview_ImageCallback` 是 SDK 回调线程，
+   在里面推理会阻塞取流。只把帧指针塞进无锁队列，推理在独立线程消费；
+   队列满则丢帧。
+2. **letterbox 必须还原**。模型输入 640×640 是等比缩放 + 灰边填充得到的，
+   关键点要从 640×640 坐标按 `orig = (pred - pad) / scale` 还原回原图。
+   漏了这步关键点会系统性偏移，且偏移量随长宽比变化，很难察觉。
+3. **关键点没有置信度**。`kpt_shape: [7,2]` 只有 x,y。下游要 conf 门槛时
+   用框的置信度代替。
+
+### 尚未完成
+
+- TensorRT engine 构建与 C++ 推理封装
+- 与取流回调对接
+- **相机内参标定**：当前 `WtCameraGeometry` 由规格页等效焦距推得，未标定。
+  这是反投影精度的瓶颈 —— 对 50 m 外目标，标定前后可能是米级 vs 分米级
+- **现场标定**：`park_phase` 与图像角度的对应关系（`sign` / `offset`）。
+  方法：让风机停在已知相位（如 0°，一片竖直向上），拍一张，读出该叶片的
+  图像极角 θ，则 `offset = 0 - θ * sign`
+
+### 许可
+
+模型代码含 YOLOv11（**AGPL-3.0**）与 BlenderProc（GPLv3）。内部使用不受影响；
+对外分发需评估 AGPL 传染性，或向 Ultralytics 购买商业许可。
