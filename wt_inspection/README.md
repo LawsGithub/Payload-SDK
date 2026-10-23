@@ -191,6 +191,7 @@ app/main.c           机载应用入口（平台注册 + 作业调度）
 app/wt_widget.c      Pilot 2 自定义控件（操作员界面，+ widget_file/ 配置）
 app/wt_ai_stream_probe.c 诊断：相机取流探针（统计帧数与分辨率）
 app/wt_ai_overlay.c      诊断：向 Pilot 2 发识别框（见下方"已知限制"）
+app/wt_trt_pose.{h,cpp}  TensorRT YOLOv8-pose 推理封装（C 接口 / C++ 实现）
 tools/wt_plan_demo.c PC 侧自检程序
 tests/                PC 侧回归测试（wt_test_plan / _config / _bridge
                       / _blade_id / _projection / _ai_solve）
@@ -374,6 +375,45 @@ PC:   .pt → .onnx          （ultralytics export，opset 12）
 **engine 必须在设备上构建** —— 它与 GPU 架构和 TensorRT 版本强绑定，
 x86 上转的在 Orin 上加载会直接失败。
 
+构建命令（实测约 13 分钟）：
+
+```bash
+/usr/src/tensorrt/bin/trtexec \
+  --onnx=model-s.onnx --saveEngine=model-s.engine \
+  --fp16 --workspace=2048
+```
+
+⚠️ **不要加 `--verbose`**：日志量巨大且拖慢构建；首次实测跑了 15 分钟还没完，
+去掉后 13 分钟完成。
+
+⚠️ **engine 别放 `/tmp`**：设备重启会清空。实测产物 22 MB，
+重建要 13 分钟。放到 `~/wt-models/` 之类的持久位置。
+
+### 推理封装（`app/wt_trt_pose.{h,cpp}`）
+
+对外 C 接口，内部 C++（TensorRT API 是 C++ 的）。
+
+实测性能（Orin NX，TensorRT 8.5.2，FP16，engine 22 MB）：
+
+| 指标 | 值 |
+|---|---|
+| GPU 计算 | **8.6 ms/帧**（`trtexec` 中位） |
+| 端到端 | **16.1 ms/帧**（含 letterbox + H2D/D2H + NMS） |
+| 吞吐 | 110~114 QPS |
+
+30fps 每帧预算 33.3 ms，占用约 48%。预处理（CPU letterbox）占 7.5 ms，
+是端到端与纯推理之差的主要来源；上 GPU 能再省，但要引入 CUDA kernel，
+当前不值得。
+
+张量形状（`trtexec` 实测确认）：
+
+```
+输入  images   1 × 3 × 640 × 640   float32 NCHW
+输出  output0  1 × 19 × 8400       float32
+```
+
+`19 = 4 (bbox) + 1 (conf) + 14 (7 关键点 × 2)`。
+
 ### 集成时三个必须注意的点
 
 1. **帧回调线程不能做重活**。`DjiLiveview_ImageCallback` 是 SDK 回调线程，
@@ -387,13 +427,28 @@ x86 上转的在 Orin 上加载会直接失败。
 
 ### 尚未完成
 
-- TensorRT engine 构建与 C++ 推理封装
-- 与取流回调对接
+- 与取流回调对接（帧队列 + 独立推理线程）
+- 把 `WtTrtPose` 的输出接给 `WtAiSolve_FromDetection`（两者语义一致，只差字段转换）
 - **相机内参标定**：当前 `WtCameraGeometry` 由规格页等效焦距推得，未标定。
   这是反投影精度的瓶颈 —— 对 50 m 外目标，标定前后可能是米级 vs 分米级
 - **现场标定**：`park_phase` 与图像角度的对应关系（`sign` / `offset`）。
   方法：让风机停在已知相位（如 0°，一片竖直向上），拍一张，读出该叶片的
   图像极角 θ，则 `offset = 0 - θ * sign`
+
+### 编号的质量指标（`dev`）
+
+`WtAiSolveResult.angleGapDevDeg` 是**相邻叶片角度间隔与理想值 360/n 的最大偏差**。
+真实风机三片叶片等间隔 120°，所以：
+
+| dev | 含义 | 处置 |
+|---|---|---|
+| 0–5° | 基本正对盘面 | 编号可信 |
+| 5–15° | 轻微透视 | 可用 |
+| 15–30° | 明显透视 | 需反投影修正 |
+| >30° | 严重斜视 | 拒绝采信 |
+
+实测（5 张公开图、29 个目标）：7 个 dev<5°，13 个 5–15°，6 个 15–30°，
+3 个 >30°。**目前尚未在代码里设阈值**——调用方需自行判断。
 
 ### 许可
 
