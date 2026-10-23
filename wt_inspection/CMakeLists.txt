@@ -24,6 +24,8 @@ add_library(wt_core STATIC
     src/wt_blade_id.c
     src/wt_projection.c
     src/wt_ai_solve.c
+    src/wt_rotor_fit.c
+    src/wt_aim.c
     src/wt_plan.c
     src/wt_bridge.c
     src/wt_app_config.c
@@ -55,7 +57,7 @@ option(WT_BUILD_TESTS "编译并注册 PC 侧回归测试" ON)
 if(WT_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     enable_testing()
 
-    foreach(wt_test wt_test_plan wt_test_config wt_test_bridge wt_test_blade_id wt_test_projection wt_test_ai_solve)
+    foreach(wt_test wt_test_plan wt_test_config wt_test_bridge wt_test_blade_id wt_test_projection wt_test_ai_solve wt_test_rotor_fit wt_test_aim)
         add_executable(${wt_test} tests/${wt_test}.c)
         target_include_directories(${wt_test} PRIVATE tests)
         target_link_libraries(${wt_test} PRIVATE wt_core)
@@ -93,6 +95,20 @@ endif()
 # ---------------------------------------------------------------------------
 option(WT_BUILD_PSDK_APP "编译 PSDK 机载应用（需要 PSDK 静态库）" OFF)
 set(WT_TARGET_ARCH "aarch64" CACHE STRING "PSDK 目标架构：aarch64 | x86_64")
+
+# TensorRT 推理与激光采集链路。只能在妙算3 上开（见下方 if 块的说明）。
+option(WT_BUILD_TRT "编译 TensorRT 推理与激光采集链路（仅设备上可编译）" OFF)
+
+# 妙算3 出厂镜像的实测路径（2026-10-22 核实）：nvcc 与 trtexec 不在 PATH 里，
+# CUDA 在 /usr/local/cuda-11.4，TensorRT 头文件在系统 include 路径下。
+set(WT_CUDA_INCLUDE_DIR "/usr/local/cuda-11.4/include"
+    CACHE PATH "CUDA 头文件目录（设备上）")
+set(WT_CUDA_LIB_DIR "/usr/local/cuda-11.4/lib64"
+    CACHE PATH "CUDA 库目录（设备上）")
+set(WT_TRT_INCLUDE_DIR "/usr/include/aarch64-linux-gnu"
+    CACHE PATH "TensorRT 头文件目录（设备上）")
+set(WT_TRT_LIB_DIR "/usr/lib/aarch64-linux-gnu"
+    CACHE PATH "TensorRT 库目录（设备上）")
 
 if(WT_BUILD_PSDK_APP)
     if(NOT PSDK_ROOT)
@@ -152,6 +168,8 @@ if(WT_BUILD_PSDK_APP)
         app/wt_ai_bridge.c
         app/wt_ai_overlay.c
         app/wt_ai_stream_probe.c
+        app/wt_frame_pump.c
+        app/wt_laser.c
         app/wt_widget.c
         src/wt_telemetry_psdk.c
         src/wt_runner_psdk.c
@@ -160,6 +178,63 @@ if(WT_BUILD_PSDK_APP)
         ${WT_COMMON_DIR}/osal/osal_fs.c
         ${WT_COMMON_DIR}/osal/osal_socket.c
     )
+
+    # -----------------------------------------------------------------------
+    # TensorRT 推理与激光采集链路（默认关闭）
+    #
+    # 为什么是开关而不是直接编进去：engine 与 TensorRT 库只在妙算3 上有，
+    # 而仓库级 CLAUDE.md 的硬约束 3 是「绝不交叉编译」—— 本机 glibc 2.35
+    # 高于设备 2.31，交叉产物在设备上 ldd 直接报 not found。所以这部分
+    # **只能在设备上开启编译**，本机构建保持可用。
+    #
+    #   设备上：cmake -S . -B build -DWT_BUILD_PSDK_APP=ON -DWT_BUILD_TRT=ON \
+    #                 -DPSDK_ROOT=<...>
+    #
+    # frame_pump 与 laser 不在这个开关里 —— 它们只依赖 PSDK，不碰 TensorRT，
+    # 因此可以先单独验证取流与激光链路，再接推理。
+    # -----------------------------------------------------------------------
+    if(WT_BUILD_TRT)
+        enable_language(CXX)
+        set(CMAKE_CXX_STANDARD 14)
+        set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+        target_sources(wt_inspection_app PRIVATE
+            app/wt_trt_pose.cpp
+            app/wt_vision.c
+            app/wt_survey.c
+        )
+
+        target_include_directories(wt_inspection_app PRIVATE
+            ${WT_CUDA_INCLUDE_DIR}
+            ${WT_TRT_INCLUDE_DIR}
+        )
+
+        # 用 find_library 取全路径，不用 target_link_directories ——
+        # 后者要 CMake 3.13+，而本工程声明的最低版本是 3.10。
+        # 顺带好处：库缺失在**配置阶段**就报错，而不是等到链接才失败。
+        find_library(WT_NVINFER_LIB nvinfer
+                     HINTS ${WT_TRT_LIB_DIR} /usr/lib/aarch64-linux-gnu)
+        find_library(WT_CUDART_LIB cudart
+                     HINTS ${WT_CUDA_LIB_DIR} /usr/local/cuda/lib64)
+
+        if(NOT WT_NVINFER_LIB)
+            message(FATAL_ERROR "找不到 libnvinfer。设备上应在 /usr/lib/aarch64-linux-gnu；"
+                                "可用 -DWT_TRT_LIB_DIR=<路径> 指定")
+        endif()
+        if(NOT WT_CUDART_LIB)
+            message(FATAL_ERROR "找不到 libcudart。可用 -DWT_CUDA_LIB_DIR=<路径> 指定")
+        endif()
+
+        target_link_libraries(wt_inspection_app PRIVATE
+            ${WT_NVINFER_LIB}
+            ${WT_CUDART_LIB}
+            stdc++
+        )
+
+        target_compile_definitions(wt_inspection_app PRIVATE WT_WITH_TRT=1)
+
+        message(STATUS "已启用 TensorRT 链路：CUDA=${WT_CUDA_INCLUDE_DIR} TRT=${WT_TRT_INCLUDE_DIR}")
+    endif()
 
     target_include_directories(wt_inspection_app PRIVATE
         ${WT_APP_INFO_DIR}
