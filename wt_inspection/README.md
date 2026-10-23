@@ -425,10 +425,17 @@ x86 上转的在 Orin 上加载会直接失败。
 3. **关键点没有置信度**。`kpt_shape: [7,2]` 只有 x,y。下游要 conf 门槛时
    用框的置信度代替。
 
+### 字段转换（`app/wt_ai_bridge.{h,c}`）
+
+`WtAiBridge_FromTrtResult` 把 `WtTrtResult` 转成 `WtAiSolve_FromDetection` 的
+输入：取 `items[0]`（conf 最高，NMS 已按 conf 降序排列），按关键点索引
+3→hub、4/5/6→tip 搬运字段。只依赖 `wt_trt_pose.h` 的类型声明，不链接
+TensorRT，所以能在桌面独立测试（`wt_test_ai_bridge`，含一个故意错位索引
+验证测试会变红的变异测试）。
+
 ### 尚未完成
 
 - 与取流回调对接（帧队列 + 独立推理线程）
-- 把 `WtTrtPose` 的输出接给 `WtAiSolve_FromDetection`（两者语义一致，只差字段转换）
 - **相机内参标定**：当前 `WtCameraGeometry` 由规格页等效焦距推得，未标定。
   这是反投影精度的瓶颈 —— 对 50 m 外目标，标定前后可能是米级 vs 分米级
 - **现场标定**：`park_phase` 与图像角度的对应关系（`sign` / `offset`）。

@@ -64,6 +64,16 @@ if(WT_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
         set_tests_properties(${wt_test} PROPERTIES
             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
     endforeach()
+
+    # wt_test_ai_bridge 需要 app/ 的 include 路径（WtTrtPose 的类型定义在
+    # 那里）且要多编一个源文件，不满足上面 foreach 的统一假设，单独写。
+    # 只依赖 wt_trt_pose.h 的类型声明，不链接 TensorRT，因此可在桌面编译测试。
+    add_executable(wt_test_ai_bridge tests/wt_test_ai_bridge.c app/wt_ai_bridge.c)
+    target_include_directories(wt_test_ai_bridge PRIVATE tests app)
+    target_link_libraries(wt_test_ai_bridge PRIVATE wt_core)
+    add_test(NAME wt_test_ai_bridge COMMAND wt_test_ai_bridge)
+    set_tests_properties(wt_test_ai_bridge PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -139,6 +149,7 @@ if(WT_BUILD_PSDK_APP)
 
     add_executable(wt_inspection_app
         app/main.c
+        app/wt_ai_bridge.c
         app/wt_ai_overlay.c
         app/wt_ai_stream_probe.c
         app/wt_widget.c
