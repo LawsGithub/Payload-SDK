@@ -238,6 +238,32 @@ bool WtLaser_Read(WtLaserSample *out)
     return out->valid;
 }
 
+bool WtLaser_RotateRel(double dPitchDeg, double dYawDeg)
+{
+    T_DjiGimbalManagerRotation rot;
+    T_DjiReturnCode rc;
+
+    if (!s_gimbalInited) {
+        return false;
+    }
+
+    memset(&rot, 0, sizeof(rot));
+    rot.rotationMode = DJI_GIMBAL_ROTATION_MODE_RELATIVE_ANGLE;
+    rot.pitch = (dji_f32_t)dPitchDeg;
+    rot.yaw = (dji_f32_t)dYawDeg;
+    rot.roll = 0.0f;
+    rot.time = 0.0;
+
+    rc = DjiGimbalManager_Rotate(WT_LASER_MOUNT, rot);
+    if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+        USER_LOG_ERROR("激光：相对转动 pitch%+.1f° yaw%+.1f° 被拒 rc=0x%08X",
+                       dPitchDeg, dYawDeg, (unsigned)rc);
+        return false;
+    }
+
+    return true;
+}
+
 bool WtLaser_SetGimbalAbs(double pitchDeg, double yawDeg)
 {
     T_DjiGimbalManagerRotation rot;

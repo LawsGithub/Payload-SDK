@@ -221,6 +221,31 @@ static void WtApp_RunGimbalLaserSelfTest(void)
         }
     }
 
+    /*
+     * ---- ②b 相对角大幅转动：验证云台到底动不动 ----
+     *
+     * 绝对角模式下，如果读不到当前角，我们连"目标角是否真的不同于当前角"
+     * 都无法确定（云台可能本来就在那个位置）。相对角模式不需要这个前提 ——
+     * 直接"在当前基础上转 40°"，若云台真能动，肉眼一定看得见。
+     *
+     * 这是对「返回 SUCCESS ≠ 真的转了」最直接的检验（issue #555/#563）。
+     */
+    {
+        USER_LOG_WARN("自检：即将用**相对角**大幅转动云台 —— 请盯着云台看");
+        USER_LOG_WARN("自检：  ① 先向下 40°（俯仰）");
+        (void)WtLaser_RotateRel(-40.0, 0.0);
+        sleep(3);
+
+        USER_LOG_WARN("自检：  ② 再向左 40°（偏航）");
+        (void)WtLaser_RotateRel(0.0, -40.0);
+        sleep(3);
+
+        USER_LOG_WARN("自检：  ③ 回中（右 40°、上 40°）");
+        (void)WtLaser_RotateRel(40.0, 40.0);
+        sleep(3);
+        USER_LOG_WARN("自检：相对转动结束 —— 云台动了吗？");
+    }
+
     /* ---- ③ 激光 ---- */
     {
         WtLaserSample sample;

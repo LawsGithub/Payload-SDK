@@ -282,7 +282,8 @@ bool WtTelemetry_Init(WtTelemetry *telemetry, const WtTurbineSpec *spec)
          * （见文件上方的大段说明）。
          *
          * 预算核对（头文件约束：同频率话题种类 ≤ 4 组、数据长度和 ≤ 242 字节）：
-         * 本表 9 个话题全走 10Hz（= 1 种频率），合计约 105 字节，余量充足。
+         * 8 个走 10Hz（约 93 字节），2 个云台话题走 50Hz（各 12 字节）
+         * —— 两组频率，都在限额内。
          *
          * ⚠️ **M4T 上 `GIMBAL_ANGLES`(26) 订不上（0xE0 NONSUPPORT）** ——
          * 2026-10-22 上机实测。对照事实：同一次 Init 里 `QUATERNION` 的
@@ -319,12 +320,34 @@ bool WtTelemetry_Init(WtTelemetry *telemetry, const WtTurbineSpec *spec)
         size_t i;
 
         for (i = 0; i < sizeof(subs) / sizeof(subs[0]); i++) {
-            rc = DjiFcSubscription_SubscribeTopic(subs[i].topic, WT_TELE_TOPIC_FREQ,
-                                                 subs[i].cb);
+            /*
+             * ⚠️ **云台话题只接受 50Hz。**
+             *
+             * 2026-10-22 上机实测的真相：`GIMBAL_ANGLES` 用 10Hz 订阅返回
+             * `0xE0`，而 SDK 内部日志写着：
+             *
+             *   dji_gimbal_subscription.c:78
+             *   This topic subscribe data only support 'DJI_DATA_SUBSCRIPTION_TOPIC_50_HZ'.
+             *
+             * 所以那个 `0xE0` 是**频率不被接受**，不是"机型不支持"。
+             * 排查时我先后怀疑过「模块未初始化」「话题编号不对」「订阅机制坏了」
+             * —— 三项都不是。**SDK 自己已经把原因打在日志里了，只是它落在
+             * Debug 级、被我们的关键字过滤掉了。**
+             *
+             * 教训：订阅失败时不要只看返回值，去日志里搜该模块的 Warn/Debug。
+             */
+            const bool isGimbal =
+                (subs[i].topic == DJI_FC_SUBSCRIPTION_TOPIC_GIMBAL_ANGLES ||
+                 subs[i].topic == DJI_FC_SUBSCRIPTION_TOPIC_GIMBAL_ANGLES_ON_POS_NO1);
+            const E_DjiDataSubscriptionTopicFreq freq =
+                isGimbal ? DJI_DATA_SUBSCRIPTION_TOPIC_50_HZ : WT_TELE_TOPIC_FREQ;
+
+            rc = DjiFcSubscription_SubscribeTopic(subs[i].topic, freq, subs[i].cb);
             if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
                 USER_LOG_WARN("订阅 %s 失败: 0x%08X", subs[i].name, (unsigned)rc);
             } else {
-                USER_LOG_INFO("订阅 %s 成功", subs[i].name);
+                USER_LOG_INFO("订阅 %s 成功（%s）", subs[i].name,
+                              isGimbal ? "50Hz" : "10Hz");
             }
         }
     }

@@ -132,6 +132,19 @@ bool WtLaser_Read(WtLaserSample *out);
  */
 bool WtLaser_SetGimbalAbs(double pitchDeg, double yawDeg);
 
+/**
+ * @brief 相对角下发（诊断用）。
+ *
+ * 与绝对角模式的区别：不需要知道当前角度，直接"在当前基础上转多少"。
+ * 在**读不回云台角**的情况下，这是唯一还能验证"云台到底动不动"的手段 ——
+ * 绝对角模式下如果读不到当前角，我们连"目标角是不是真的不同于当前角"
+ * 都无法确定。
+ *
+ * @param dPitchDeg 俯仰增量（度，负 = 向下）
+ * @param dYawDeg   偏航增量（度，相对当前）
+ */
+bool WtLaser_RotateRel(double dPitchDeg, double dYawDeg);
+
 #ifdef __cplusplus
 }
 #endif
