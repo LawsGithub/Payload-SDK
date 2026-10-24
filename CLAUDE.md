@@ -110,3 +110,19 @@ tar czf /tmp/wtbuild.tar.gz --mtime='@0' \
 - **`dji_app_ctl` 不需要 sudo** [V]——`stop` / `install` 在 dji 用户下直接可用。
 - **`.dpk` 不解决 `/data` 写权限** [V]——应用仍以 `uid=1000` 运行。
 - **设备 RTC 无电池，掉电回 1970** [V]——进一次 Pilot 2 飞行界面会经飞机校时。
+- **`dji_app_ctl stop` 直接杀进程，不执行收尾路径** [V]——日志里收尾那几行
+  一行都不会有。⇒ 诊断计数必须在**运行中**周期性打印；借用型全局状态
+  （云台模式等）必须在**会话结束**就还，不能挂在 `DeInit` 上。
+  见 memory `psdk-runtime-diagnostics-must-be-live`。
+- **云台话题只接受 50Hz** [V]——用 10Hz 订阅返回 `0xE0`，而 SDK 内部
+  Debug 日志早就写着 `only support 'DJI_DATA_SUBSCRIPTION_TOPIC_50_HZ'`。
+  ⇒ 订阅失败先搜 SDK 日志的 Warn/Debug，别只信返回码。
+  见 memory `subscription-failure-check-sdk-log`。
+- **绝对角模式下云台 `yaw = 0` 会拒掉整条命令** [V]——0 意为"转到正北"，
+  机头不朝北够不到 ⇒ 连 pitch 都不转。不想动 yaw 要**回填当前值**，
+  读不到时用机头朝向兜底。见 memory `gimbal-yaw-zero-rejects-whole-command`。
+- **`HEIGHT_RELATIVE` 在 M4T 上订不上** [V]——`0x100 NOT_FOUND`，
+  与云台话题是两条独立失败。`aircraft.heightAboveGroundM` 恒为 0；
+  当前无代码依赖它做决策（采集用激光测距）。
+- **`app.json` 的 `bin` 指向 `build-native/`**，而本文档要求目录名为
+  `build`。打包前需 `ln -sfn build build-native`（或统一改掉这个不一致）。
