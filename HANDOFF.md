@@ -1,106 +1,101 @@
 # HANDOFF — 读全文再开始干活
 
-生成时间: 2026-10-24T00:52:00+08:00 · Git HEAD: `f9ce6cc`
+生成时间: 2026-10-24T19:42+08:00 · Git HEAD: `858ca0a`
 信任规则: [V] = 交接时已用命令验证；[?] = 仅记忆未复核，当线索对待；[X] = 已证伪，别用。
 
 ## 0. 复核（下一会话先做）
 
-- 锚点: `feature/wt-inspection` @ `f9ce6cc` (2026-10-24 00:52)
-- 漂移检查: `git rev-parse HEAD~1` 应 = `f9ce6cc`——HEAD 必是本次 handoff 提交，
+- 锚点: `feature/wt-inspection` @ `858ca0a`（2026-10-24 19:41）
+- 漂移检查: `git rev-parse HEAD~1` 应 = `858ca0a`——HEAD 必是本次 handoff 提交，
   其 parent 才是本快照记录的 SHA。
-- 待重探的 `[?]`: 第 5 节 2 条
-- 先读: `wt_inspection/README.md` §"AI 识别"（唯一说明来源）、`~/projects/CLAUDE.md`
+- 待重探的 `[?]`: 第 5 节 3 条
+- 先读: `wt_inspection/README.md` §"激光采集"与§"上机验证到哪一步"（唯一说明来源）、
+  `~/projects/CLAUDE.md`（设备硬约束）、`~/projects/.psdk-apiref/wt_inspection/API-MAP.md`
+  （本轮上机踩坑的完整记录）
 
 ## 1. 当前目标
 
 **在妙算3 上做「整机识别 → 叶片编号 → 三维位置 → 航线规划」的闭环。**
-完成定义 = 取流 → 推理 → 反投影 → 编号全链路在设备上跑通，
-且能在真实风机上给出 NO.1/2/3 的位置。
+完成定义 = 取流 → 推理 → 对准 → 激光 → 拟合全链路在设备上跑通，
+并能在真实风机上给出 NO.1/2/3 的位置与实测停用角。
 
 ## 2. 已验证状态 — 工作实际停在哪
 
-### 几何链（PC，纯算法，27 个测试）
+### 本轮（2026-10-23/24）新增并上机验证
 
-- `wt_blade_id` 角度 → NO.1/2/3，8 个用例 [V] `ctest` 6/6 通过
-- `wt_projection` 像素 ↔ 三维（内参/姿态/射线求交），11 个用例 [V]
-- `wt_ai_solve` 端到端，4 个用例 [V]
-- **透视修正的直接证据** [V]：`wt_test_ai_solve` 斜视用例
-  ```
-  图像径向散布 29.5%  →  反投影后 0.00%
-  ```
+- **AI 链路首次串联** [V]：`WtTrtPose → WtAiBridge → WtAiSolve` 此前从未连起来
+  （`WtAiSolveContext` 生产代码里一次都没构造过、`wt_trt_pose.cpp` 不在任何 CMake target）
+- **激光采集链路从零建成** [V]：`wt_rotor_fit`（盘面拟合）+ `wt_aim`（像素→云台角）
+  + `wt_frame_pump` + `wt_vision` + `wt_laser` + `wt_survey_logic` + `wt_survey`
+- **接入 main.c** [V]：拨「开始作业」时先采集盘面，再规划
+- **设备本地编译（含 `-DWT_BUILD_TRT=ON`）** [V] 零 error/warning
+- **aarch64 回归 11/11** [V]（此前只在 x86 跑过）
+- **`.dpk` 安装成功** [V]（顺带证明采集链路没破坏启动路径）
+- **取流** [V] 1440×1080 pixFmt=5 4,665,600 字节/帧；150→450 帧耗时 10.009s ⇒ 30fps；
+  收 450 丢 394（87.6%，latest-frame-wins 的预期值）
+- **推理** [V] 4.7 次/秒（配置 200ms 间隔）
+- **云台两轴闭环** [V] pitch −30/−45° 与 yaw 相对机头 ±20° 均读回**偏差 0.0°**
+- **激光** [V] 室内对墙 `exception=3`（打空，正常，非故障）
 
-### PSDK 通道（设备实测）
+### 未验证（这是下一步的全部内容）
 
-- `DjiLiveview_StartImageStream` **30fps 1440×1080 RGB_PACKED** [V]
-  446 ms 出首帧，30 秒 300 帧
-- `DjiLiveview_SendAiMetaToPilot` 发送返回 SUCCESS，**但 Pilot 2 不渲染** [V]
-  原因：Pilot 2 的 AI 识别与妙算3 应用互斥（用户实测弹窗）
-
-### 模型与推理
-
-- 开源模型 `model-s.pt` 19.8 MB（RWTH Aachen，YOLOv11-pose）[V]
-- 7 个关键点语义从 `generator.py:472-486` 源码确认 [V]
-  索引 3 = 轮毂，4/5/6 = 三叶尖（**无序**，排列不变损失训练）
-- 真实图实测 **29/29 目标全部检出**（5 张公开图）[V]
-- ONNX 导出 37.4 MB（opset 12）[V]
-- **TensorRT engine 22 MB，设备上构建成功** [V]
-  ```
-  GPU 计算 8.6 ms/帧 · 端到端 16.1 ms · 110~114 QPS（Orin NX，FP16）
-  ```
-- `wt_trt_pose.{h,cpp}` 推理封装 [V] 设备上 g++ 编译通过、链接运行成功
-
-### 设备环境
-
-- 妙算3 = **NVIDIA Orin NX**，L4T R35.5.0 [V]
-- 预装 CUDA 11.4 / TensorRT 8.5.2 / cuDNN 8 [V]
-- `nvcc` 与 `trtexec` 不在 PATH：`/usr/local/cuda-11.4/bin/nvcc`、
-  `/usr/src/tensorrt/bin/trtexec` [V]
-- engine 已存到 `~/wt-models/`（不在 `/tmp`）[V]
-
-### Blender / BlenderProc（本会话最后在做）
-
-- Blender **4.2.1 LTS** 已装到 `~/blender/blender-4.2.1-linux-x64/` [V]
-  `--version` 正常；补装了 `libsm6`/`libice6`
-- BlenderProc 2.8.0 pip 装好 [V]
-- **Blender 内置 Python 的依赖已装齐**（用阿里云镜像）[V]
-  ```
-  Successfully installed imageio-2.38.1 lazy-loader-0.6 networkx-3.6.1
-  numpy-2.4.6 packaging-26.3 pillow-13.0.0 scikit-image-0.23.2
-  scipy-1.17.1 tifffile-2026.3.3
-  ```
-- **`blenderproc run` 仍未确认成功** [?]：最后一次跑 EXIT=124（超时），
-  日志被 pip 进度条淹没，尾部有 `/dev/shm/...` 清理报错。
-  尚未确认是启动成功还是卡在别处
+- **对准 → 打激光 → 拟合** 这一段**从未跑过**——需要真实风机在画面里。
+  室内没有可测目标，激光必然 `exception=3`。
 
 ### 工作区
 
-- 干净（除 `WEEKLY-2026-10-20.md` 是用户自己的文件，未跟踪，不要动）[V]
+- 干净（仅 `WEEKLY-2026-10-20.md` 是用户自己的文件，未跟踪，**不要动**）[V]
+- 分支领先远端 `fork/feature/wt-inspection` **15 个提交未推送** [V]
 
-### 测试输出（本次交接 run 的真实输出）
+### 测试输出（本次交接 run）
 
 ```
-$ cd /tmp/wt-bid && ctest
-100% tests passed, 0 tests failed out of 6
-Total Test time (real) =   0.05 sec
+$ cmake --build build -j4        → 退出码 0，error/warning 数 0
+$ ctest --test-dir build --output-on-failure → 退出码 0
+100% tests passed, 0 tests failed out of 11
+Total Test time (real) =   0.06 sec
 ```
 
 ## 3. 决策与理由
 
-- **编号由几何决定，不由视觉** [V]——模型用排列不变损失训练，三叶尖输出无序；
-  三片叶片旋转对称，视觉上本就无法区分。按 `park_phase` 匹配才有物理意义。
-- **演示脚本改用纯几何编号**（最小角度 = NO.1）[V]——用户明确要求
-  「东为 0°，逆时针增大，以最小角度为基准」。这版不依赖 `park_phase`，
-  同一张图永远得到同一组编号。否决方案：按 park 匹配，否决原因是
-  演示里没有真实停用角，假设值会让结果看起来对但语义错。
-- **`dev` 当质量指标而非错误** [V]——它是相邻角度间隔与理想值 360/n 的偏差，
-  纯几何量，不受 `park`/`offset` 影响。实测 29 个目标：7 个 <5°、13 个 5–15°、
-  6 个 15–30°、3 个 >30°。
-- **预处理留在 CPU** [V]——letterbox 约 7.5 ms，上 GPU 能再省但要引 CUDA
-  kernel，当前 16.1 ms 端到端已够 30fps，不值得。
-- **NMS 自己实现** [V]——不依赖 `opencv_dnn`，设备上 OpenCV 4.2/4.5 并存，
-  版本不统一。
+- **实测只修正盘面姿态与相位，不反推塔基** [V]——从 4 点反推 `WtTurbineSpec.base`
+  有自由度问题（`hubHeight` 与 `nacelleOffset` 不可分）。台账提供坐标系与名义尺寸，
+  实测修正台账给不了的两样：停用角、盘面实际朝向。
+- **借用云台模式的作用域 = 一次采集会话，不是进程生命周期** [V]——
+  `dji_app_ctl stop` 直接杀进程，放 `DeInit` 里归还等于永远不还。
+  否决方案：放 `DeInit`，否决原因见 §4。
+- **对准判据用图像（目标是否到画面中心），不用云台角度读数** [V]——
+  这样云台角话题订不上时功能也不受损（当时以为订不上，见 §4）。
+- **采集先于规划** [V]——采集产出的停用角正是 `WtRunner_PlanTurbine` 在未知时
+  无条件拒绝规划的那个前提。反过来则规划必然被拒、采集白做。
+- **判据抽进 `wt_core`** [V]——`wt_rotor_fit` / `wt_aim` / `wt_survey_logic` 桌面可测，
+  `app/` 只剩接线。与规划/安全校验同一条分界线。
 
 ## 4. 失败的尝试 — 不要再试
+
+### 本轮新增
+
+- **云台话题用 10Hz 订阅** → `0xE0 NONSUPPORT` [V]——**真因是频率**。
+  只接受 50Hz（`dji_gimbal_subscription.c:78`）。改 50Hz 后立刻成功。
+  不要再试 10Hz。
+- **"0xE0 = 模块未初始化"这个推断** → 把 `DjiGimbalManager_Init()` 提到订阅之前，
+  仍是 `0xE0` [V]。那是 liveview 的教训，不适用于云台话题。
+- **"0xE0 = 话题编号不对"** → 换 `GIMBAL_ANGLES_ON_POS_NO1`(48)，仍 `0xE0` [V]。
+- **"0xE0 = 订阅机制坏了"** → 同批 `QUATERNION` 正常推送 [V]，排除。
+  ⇒ 三项假设全错，真因在 SDK 日志里。**订阅失败先搜日志的 Warn/Debug。**
+- **绝对角模式下 `rot.yaw = 0`** → 整条命令被拒（`0x600000004`），**连 pitch 都不转** [V]。
+  本项目自检两次实证。不要再写 0。
+- **只在 `Stop`/`DeInit` 里打诊断计数** → `dji_app_ctl stop` 直接杀进程，
+  那些数字永远看不到 [V]。我据此**误判"取流没收到帧"**，白查一轮。
+- **`pgrep -f wt_inspection_a` 判残留进程** → 匹配到执行它的 SSH 命令自身 [V]。
+  用 `ps -eo pid,etime,comm | grep`。
+- **`dji_app_ctl install <dpk>`** → 打印的是帮助文本，实际没装 [V]。
+  必须 `install -i <dpk>`。
+- **把 survey 配置追加到文件末尾** → 该文件末尾已是 `[turbine.WT-A01]` 段，
+  结果塞进了 turbine 段里并造出重复段 [V]。已回滚。改配置前先看**全文**段落结构，
+  别用 `head -40` 截断判断。
+
+### 继承（仍有效，全部前向搬运）
 
 - **交叉编译**（`aarch64-linux-gnu-gcc` 在 WSL）→ 产物要求 `GLIBC_2.34`，
   设备只有 2.31，`ldd` 报 not found [V]。不要再试。
@@ -109,80 +104,71 @@ Total Test time (real) =   0.05 sec
 - **在 `/tmp` 下打包/编译** → 设备重启后 `/tmp` 被清空 [V]。
 - **`tar --mtime='@0'` 直接解包后 make** → make 跳过重编，跑旧二进制 [V]。
   解包后要 `touch` 源文件。
-- **`timeout 15 ./app` 想杀掉卡住的进程** → 不生效，进程活 9 小时并占住
-  通道 [V]。要 `kill -9`。
-- **`pgrep -x wt_inspection_app` 判断残留进程** → 永远匹配不到：Linux 进程名
-  上限 15 字符，实际是 `wt_inspection_a` [V]。查谁打开了 `/dev/uv-ffs/bulk*`。
-- **`pkill -f wt_inspection_app`** → 会匹配到执行它的 SSH 命令自身 [V]。
+- **`timeout 15 ./app` 想杀掉卡住的进程** → 不生效，进程活 9 小时并占住通道 [V]。
+  要 `kill -9`。
 - **`dji_app_ctl stop` 后立刻 `start`** → 通道未释放 [V]。stop 后等 10 秒。
 - **用 `strings` 查二进制里有没有中文串** → 默认只抓 ASCII [V]。用 `md5sum`。
 - **在模拟器里验证 `DjiWaypointV3_Action(START)`** → `error_code: 4` [V]。
-- **`trtexec --verbose` 构建 engine** → 日志量巨大且拖慢，首次跑 15 分钟没完 [V]。
+- **`trtexec --verbose` 构建 engine** → 日志量巨大且拖慢，15 分钟没完 [V]。
   去掉后 13 分钟完成。
-- **SSH 前台跑长任务**（`trtexec` 15 分钟）→ SSH 断开后输出丢失，
-  但进程还在跑 [V]。用 `nohup` + 输出重定向到设备文件。
-- **`pip install torch` 走 PyPI 直连** → 下载卡死（速度 0 B/s）[V]。
-  最终用 `pypi.org` 装 torch 成功（耗时很长），但 ultralytics 直连失败，
-  改用**阿里云镜像** `https://mirrors.aliyun.com/pypi/simple` 才通 [V]。
-- **清华 PyPI 镜像装 torch** → `No matching distribution found` [V]。
-  阿里云/腾讯镜像查 ultralytics 正常，清华不行。
+- **SSH 前台跑长任务** → SSH 断开后输出丢失但进程还在 [V]。用 `nohup` + 重定向。
+- **`pip install torch` 走 PyPI 直连** → 卡死 0 B/s [V]。用阿里云镜像才通；
+  清华镜像 `No matching distribution found` [V]。
 - **`jadx --single-class` 反编译 Pilot 2** → `Input class not found` [V]。
-  120 MB DEX 上该选项不工作，只能用全量反编译。
-- **Pilot 2 的 `classes.dex` 静态分析** → 被 **AppGuard 加固** [V]。
-  DEX 头 `class_defs=1684`、`data_size=1.5 MB` 但文件 120 MB，
-  真实业务代码在加密段。`com.dji.drone.*` 读不到。
+- **Pilot 2 的 `classes.dex` 静态分析** → 被 AppGuard 加固 [V]。
 - **`DjiLiveview_SendAiMetaToPilot` 画框给操作员看** → Pilot 2 不渲染 [V]。
-  与 AI 识别模式互斥。识别结果自己用，不要指望显示。
-- **新建 `doc/` 下的方案文档** → 违反项目 CLAUDE.md「README 是唯一说明来源」，
-  已删除 [V]。
+  与 AI 识别模式互斥。识别结果自己用。
+- **新建 `doc/` 下的方案文档** → 违反项目 CLAUDE.md「README 是唯一说明来源」[V]。
+- **M4T 不支持热插拔**（飞机与妙算3 的 E-Port 线必须在上电前接好）[V]——
+  违反时 USB 虚拟网卡不建立，`192.168.42.120` 无响应。
 
 ## 5. 已知坑
 
-- **PSDK liveview 调用前必须 `DjiLiveview_Init()`** [V]——漏掉时
-  `RegUserAiTargetLableList` 返回 `0xE0` + 日志
-  `Ai target Lable only support on manifold3`，看起来像硬件不支持。
-  见 memory `psdk-liveview-must-init-first`。
-- **Pilot 2 的 AI 识别与妙算3 应用互斥** [V]——见 memory
-  `pilot2-ai-vs-psdk-app-mutually-exclusive`。
-- **安装器两条失败路径** [V]：① 应用提前退出 → 误导性的
-  `verify app user_app_id or version info error`；② 长时间阻塞 → 安装超时。
-- **安装超时且日志 0 字节 = `DjiCore_Init` 之前就失败** [V]——最常见是
-  通道被占（`Smart3DExplore` 或自己的残留进程）。
-- **`dji_app_ctl stop` 报 SUCCESS 但进程仍在** [V]——要执行两次 + 复查。
-- **`.dpk` 不解决 `/data` 写权限** [V]——落点是包内 `data/`。
-- **设备 RTC 无电池** [V]——掉电回 1970，`tar` 报时间戳在未来。
-- **设备 cmake 3.16.3 不支持 `ctest --test-dir`** [V]——用 `cd build && ctest`。
-- **设备 SSH 不稳** [V]——USB 网络共享链路丢包 33%、RTT 最高 1.2 s，
-  经常 `Connection timed out`，重试即可。
-- **`blenderproc run` 的输出被 pip 进度条淹没** [?]——日志 400 KB 全是
-  `\r` 刷新的进度条，`tail` 拿不到有效信息。要看结果得先过滤 `\r`。
-- **`/dev/shm` 清理报错** [?]——`blenderproc` 退出时
-  `FileNotFoundError: /dev/shm/blender_proc_xxx`，是否影响功能未验证。
+- **云台话题只接受 50Hz** [V]——见 §4。已修。
+- **`dji_app_ctl stop` 直接杀进程** [V]——诊断要运行中打、借用状态要会话结束还。已修。
+- **绝对角模式下 `yaw = 0` 拒掉整条命令** [V]——已修，测试钉住。
+- **`HEIGHT_RELATIVE` 订不上** [V]——`0x100 NOT_FOUND`。`heightAboveGroundM` 恒为 0，
+  当前无代码依赖它做决策。
+- **`app.json` 的 `bin` 指向 `build-native/`**，而 CLAUDE.md 要求目录名 `build` [V]。
+  打包前 `ln -sfn build build-native`。**未统一**，是个待清理的不一致。
+- **设备 SSH 链路会重新枚举** [?]——本轮遇到 `eth2` 从 `192.168.42.1/24` 变成
+  `198.18.0.1/30`，随后新出现 `eth3=192.168.42.1/24`。设备上电顺序变化会触发。
+  连不上时先看本机接口，再怀疑设备。
+- **`blenderproc run` 的输出被 pip 进度条淹没** [?]——日志 400 KB 全是 `\r`。
+  过滤后看。另：`generator.py` 违反 blenderproc「`import blenderproc` 必须第一条」
+  的规则，需要薄入口脚本。
+- **`/dev/shm` 清理报错** [?]——`blenderproc` 退出时 `FileNotFoundError`，未验证影响。
 - **Pilot 2 的 `cloud_config_RC701.json` 权限 `root:root 600`** [V]——非 root 读不了。
 - **`template.kml` 与 `waylines.wpml` 内容完全相同** [?]（继承，未重验）。
-  PSDK 上传不受影响，但导入 Pilot 2 统计栏显示 0 m / 0 航点。**未修**。
+  导入 Pilot 2 统计栏显示 0 m / 0 航点。**未修**。
 
 ## 6. 下一步（有序）
 
-1. **确认 `blenderproc run` 是否真的能跑**——上次 EXIT=124（超时），
-   用 `tr '\r' '\n'` 过滤日志后再看。若卡住，先查是不是首次启动初始化。
-2. **用合成生成器造正对盘面数据**（用户要求的下一步）：改
-   `gen_config.yaml` 的 `ANGLE_BOUND: 2`，固定 `ROTOR_ROTATION`，
-   生成带真值的数据集。生成器在 `~/projects/refs/wt-synth/`。
-3. **把 `WtTrtPose` 输出接给 `WtAiSolve_FromDetection`**——两者语义一致，
-   只差字段转换（`WtTrtDetection` → `WtAiDetection`）。
-4. **与取流回调对接**：帧指针塞无锁队列，独立推理线程消费，队列满丢帧。
-5. **给 `angleGapDevDeg` 加采信阈值**（README 已写建议值 15°），
-   目前只计算不判断。
+1. **到真实风机现场，跑完整的采集会话**：关掉 `survey_selftest`（只用于验云台），
+   拨「开始作业」，观察日志里四个目标依次对准 → 打激光 → 拟合。
+   判据：日志出现「采集：拟合结果」且 `radiusSpreadPct < 5`、`axisAngleErrDeg` 合理。
+2. **若拟合失败，按 `WtRotorFit_CheckLimits` 的拒绝原因定位**：
+   `radius spread too large` ⇒ 某个叶尖打偏；`centerOffsetHorizM` 过大 ⇒ 台账错或认错风机。
+3. **把实测盘面朝向注入规划**：`WtRunner_PlanTurbine` 里 `WtTurbine_BuildRotorFrame()`
+   那一行改用 `WtSurvey_GetRotorFrame()`。现在只写回了停用角。
+4. **统一 `app.json` 的 `bin` 路径**（`build-native` vs `build`），去掉打包时的软链。
+5. **剩余审查项**：B2/B3/B4（`WtTelemetry_SolvePhaseFromVision` 里球面角度直接相加、
+   用叶轮半径硬当距离、首帧相位建立不起来）。**先决定该函数去留**——它做的事已被
+   激光采集取代，修一个即将废弃的函数是浪费。B5（mission 内存泄漏）、
+   B6（反投影无半径闸门）、B7（`ideal = 360/检出数`）仍未修。
 
 ## 7. 留给用户的开放问题
 
-- **Blender 装 WSL 已成功，但 `blenderproc run` 是否正常未确认**。
-  如果一直卡住，可能需要改用 Windows 侧 Blender 或调 `/dev/shm` 大小。
-- **相机内参标定**：当前 `WtCameraGeometry` 来自规格页等效焦距，未标定。
-  这是反投影精度的瓶颈——对 50 m 外目标可能是米级 vs 分米级。
-- **现场标定 `park_phase` 与图像角度的 `sign`/`offset`**：方法已写进 README，
-  但需要真实风机配合。
+- **`~/projects/.psdk-apiref/wt_inspection/` 的去留**：我按 `~/projects/CLAUDE.md`
+  的约定建的（那里明文写着该路径是"项目的 API 路由图与踩坑记录"）。你曾说
+  "`.psdk-apiref` 是爬官网 API 概览的，不可能有 wt_inspection"——但 `docs/` 才是爬来的，
+  `<项目名>/API-MAP.md` 是手写的，且同目录已有 `liangzhourenwu/`、`Payload-SDK/`。
+  我保留了它并持续维护。**要不要挪进仓库或删掉？**
+- **相机内参标定**：当前 `WtCameraGeometry` 由规格页等效焦距推得，未标定。
+  对 50 m 外目标可能是米级 vs 分米级。
+- **`park_phase` 与图像角度的 `sign`/`offset` 现场标定**：激光采集跑通后可直接实测
+  停用角，这条标定就只用于交叉校验。
 - **多台风机作业**：设备上只配了 `WT-A01` 一台。
-- **`/open_app/wt-inspection/data/` 里 liangzhourenwu 的遗留产物**——
-  已备份到 `/home/dji/lz-salvage/`，原位置三份是否移走未定。
+- **`/open_app/wt-inspection/data/` 里 liangzhourenwu 的遗留产物**
+  （`ground.txt` / `orbit.kmz` / `pole.txt`）——已备份到 `/home/dji/lz-salvage/`，
+  原位置三份是否移走未定。
