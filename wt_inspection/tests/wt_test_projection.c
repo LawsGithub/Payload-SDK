@@ -9,6 +9,8 @@
 
 #include "wt_projection.h"
 
+#include "wt_camera.h"
+
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -37,9 +39,18 @@ static int s_failures = 0;
 #define IMG_W 1440
 #define IMG_H 1080
 
-/* M4T 广角：约 84° 水平 × 66° 垂直 */
-#define FOV_H 84.0
-#define FOV_V 66.0
+/*
+ * FOV 由相机模型算出，**不写字面量**。原先是 `84.0 / 66.0` ——
+ * 84° 是 DJI 标注的**对角线** FOV，水平值是 71.59°。详见
+ * `wt_test_ai_solve.c` 里同一处的说明。
+ */
+static WtCameraGeometry TestCamGeom(void)
+{
+    return WtCamera_ComputeGeometry(&WT_CAMERA_M4T_WIDE);
+}
+
+#define FOV_H (TestCamGeom().fovHorizDeg)
+#define FOV_V (TestCamGeom().fovVertDeg)
 
 /* ------------------------------------------------------------------ */
 

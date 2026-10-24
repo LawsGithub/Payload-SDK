@@ -54,7 +54,25 @@ bool WtBladeId_AssignFromAngles(const WtBladeIdInput *in, WtBladeIdResult *out)
     double sorted[WT_BLADE_ID_MAX];
     int sortedIdx[WT_BLADE_ID_MAX];
 
-    if (in == NULL || out == NULL) {
+    if (out == NULL) {
+        return false;
+    }
+
+    /*
+     * 先把输出置成明确的"失败"状态，再往下算。
+     *
+     * 原先 early-return 的几条路径完全不碰 out —— 调用方拿到的是栈上的
+     * 残留值，而头文件却声明「oneBasedIndex = -1 表示失败」。更糟的是
+     * worstGapDeg 可能恰好是 0，而 0 在质量表里是"最可信"那一档。
+     *
+     * 360.0 而不是 NaN：NaN 参与任何比较都返回 false，会让下游的
+     * `if (dev > 阈值) reject` 静默失效。
+     */
+    memset(out, 0, sizeof(*out));
+    out->oneBasedIndex = -1;
+    out->worstGapDeg = 360.0;
+
+    if (in == NULL) {
         return false;
     }
     if (in->count <= 0 || in->count > WT_BLADE_ID_MAX) {

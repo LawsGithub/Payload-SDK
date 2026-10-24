@@ -11,6 +11,8 @@
 
 #include "wt_ai_solve.h"
 
+#include "wt_camera.h"
+
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -38,8 +40,28 @@ static int s_failures = 0;
 
 #define IMG_W 1440
 #define IMG_H 1080
-#define FOV_H 84.0
-#define FOV_V 66.0
+
+/*
+ * FOV 由相机模型算出，**不写字面量**。
+ *
+ * 这里原先是 `FOV_H 84.0 / FOV_V 66.0`。84° 是 DJI 规格页标的**对角线**
+ * FOV，水平值其实是 71.59°（`WtCamera_ComputeGeometry` 的输出，
+ * `wt_plan_demo` 自己就是拿 FOV_d 去和官方标注比对的）。把对角线当水平用，
+ * 视场被算宽约 17%。
+ *
+ * 而这个错误**测试抓不到**：正向投影与反投影用的是同一组 FOV，往返必然
+ * 闭合，填任何值都能过。所以必须让数字由代码产出，而不是靠人眼核对。
+ *
+ * 1440×1080 与相机模型的 8000×6000 都是 4:3，所以 FOV 一致。
+ * （若视频流实为裁切而非下采样，FOV 另算 —— 该项待设备实测。）
+ */
+static WtCameraGeometry TestCamGeom(void)
+{
+    return WtCamera_ComputeGeometry(&WT_CAMERA_M4T_WIDE);
+}
+
+#define FOV_H (TestCamGeom().fovHorizDeg)
+#define FOV_V (TestCamGeom().fovVertDeg)
 
 /* 叶片半径：从轮毂中心到叶尖 */
 #define BLADE_R 40.0

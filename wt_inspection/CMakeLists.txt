@@ -26,6 +26,7 @@ add_library(wt_core STATIC
     src/wt_ai_solve.c
     src/wt_rotor_fit.c
     src/wt_aim.c
+    src/wt_survey_logic.c
     src/wt_plan.c
     src/wt_bridge.c
     src/wt_app_config.c
@@ -57,7 +58,7 @@ option(WT_BUILD_TESTS "编译并注册 PC 侧回归测试" ON)
 if(WT_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     enable_testing()
 
-    foreach(wt_test wt_test_plan wt_test_config wt_test_bridge wt_test_blade_id wt_test_projection wt_test_ai_solve wt_test_rotor_fit wt_test_aim)
+    foreach(wt_test wt_test_plan wt_test_config wt_test_bridge wt_test_blade_id wt_test_projection wt_test_ai_solve wt_test_rotor_fit wt_test_aim wt_test_telemetry wt_test_survey_logic)
         add_executable(${wt_test} tests/${wt_test}.c)
         target_include_directories(${wt_test} PRIVATE tests)
         target_link_libraries(${wt_test} PRIVATE wt_core)

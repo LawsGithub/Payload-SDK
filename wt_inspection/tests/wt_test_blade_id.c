@@ -177,6 +177,53 @@ static void Test_RejectInvalid(void)
     CHECK(!WtBladeId_AssignFromAngles(&in, &out), "count 超限应被拒绝");
 
     CHECK(!WtBladeId_AssignFromAngles(NULL, &out), "NULL 输入应被拒绝");
+    CHECK(!WtBladeId_AssignFromAngles(&in, NULL), "NULL 输出应被拒绝");
+}
+
+/**
+ * 失败时输出必须是**明确的失败值**，不能留着调用方栈上的残留。
+ *
+ * 原先 early-return 的几条路径完全不碰 out：
+ *   - 头文件声明「oneBasedIndex = -1 表示失败」，而代码从不写它
+ *   - worstGapDeg 可能恰好是 0，而 0 在 README 的质量表里是"编号可信"
+ *     那一档 —— 于是"编号失败"会被下游读成"质量最好"
+ *
+ * 这里刻意把 out 预填成"看起来成功"的值再调用，验证失败路径会覆盖它们。
+ * 另外验证**不用 NaN**：NaN 参与任何比较都返回 false，下游
+ * `if (dev > 阈值) reject` 会静默失效（fail-open）。360 则必然被拒。
+ */
+static void Test_FailureLeavesExplicitValues(void)
+{
+    WtBladeIdInput in;
+    WtBladeIdResult out;
+    int i;
+
+    printf("Test_FailureLeavesExplicitValues\n");
+
+    memset(&in, 0, sizeof(in));
+    in.count = 0; /* 非法 */
+
+    /* 预填成"成功且质量完美"的样子 */
+    memset(&out, 0, sizeof(out));
+    out.oneBasedIndex = 2;
+    out.worstGapDeg = 0.0;
+    for (i = 0; i < WT_BLADE_ID_MAX; i++) {
+        out.bladeNoOf[i] = 7;
+    }
+
+    CHECK(!WtBladeId_AssignFromAngles(&in, &out), "应返回失败");
+
+    CHECK(out.oneBasedIndex == -1,
+          "失败时 oneBasedIndex 应为 -1（得到 %d）", out.oneBasedIndex);
+    CHECK(out.worstGapDeg > 180.0,
+          "失败时 worstGapDeg 应是必然被拒的大值，而不是 0（得到 %.1f）",
+          out.worstGapDeg);
+    CHECK(out.worstGapDeg == out.worstGapDeg,
+          "不应是 NaN —— NaN 会让下游的阈值比较静默失效");
+    for (i = 0; i < WT_BLADE_ID_MAX; i++) {
+        CHECK(out.bladeNoOf[i] == 0,
+              "失败时 bladeNoOf[%d] 应清零（得到 %d）", i, out.bladeNoOf[i]);
+    }
 }
 
 /**
@@ -238,6 +285,7 @@ int main(void)
     Test_NearestWins();
     Test_NoisyAngles();
     Test_RejectInvalid();
+    Test_FailureLeavesExplicitValues();
     Test_PixelPath();
     Test_PixelSignFlip();
 

@@ -20,12 +20,47 @@
 extern "C" {
 #endif
 
+/**
+ * @brief 高度基准。
+ *
+ * ## 为什么必须显式区分
+ *
+ * PSDK 的两个定位话题给的是**不同基准**的高度，而头文件里只有一句英文说明：
+ *
+ * ```
+ * PositionFused.altitude : "Altitude, WGS 84 reference ellipsoid"   ← 椭球高
+ * RtkPosition.hfsl       : "Height above mean sea level"            ← 海拔高
+ * ```
+ *
+ * 中国境内大地水准面相对椭球面的起伏是 **−10 ~ −40 m**。而 ENU 的天向分量
+ * 是 `geo->alt − frame->origin.alt` 这样一个**减法** —— 只要两边同基准，
+ * 差值就对，基准偏移被抵消；一旦不同基准，就凭空多出几十米误差。
+ *
+ * 原先两条路径的值都写进同一个 `position.alt` 字段，注释写着"视为一致"。
+ * 姊妹项目 `liangzhourenwu` 为完全同类的问题（气压高 vs 椭球高差 38 m）
+ * 付出过代价：算出的杆高 50 多米而真值约 16 m，俯仰角方向都反了。
+ *
+ * ⚠️ **PSDK 不提供 geoid 高**，所以两个基准无法自动换算 —— 只能现场测
+ * 或查表，通过 `WtTelemetry_SetGeoidOffset()` 注入。
+ */
+typedef enum {
+    WT_ALT_DATUM_UNKNOWN = 0,
+    WT_ALT_DATUM_MSL,        /*!< 海平面（大地水准面）。RTK 的 hfsl、风机台账通常用这个 */
+    WT_ALT_DATUM_ELLIPSOID   /*!< WGS84 椭球面。POSITION_FUSED 的 altitude */
+} E_WtAltDatum;
+
 /** 一帧解算后的飞机状态 */
 typedef struct {
-    uint64_t timestampMs;   /*!< 采样时刻（本地单调时钟） */
+    uint64_t timestampMs;   /*!< 采样时刻（本地单调时钟，已处理 32 位回绕） */
     bool validPosition;     /*!< 位置是否已收到且可信 */
     bool validAttitude;     /*!< 姿态是否已收到 */
     WtGeo position;         /*!< WGS84 位置（若 RTK 已固定则为 RTK 解） */
+    E_WtAltDatum altDatum;  /*!< position.alt 的基准，**不要假定** */
+    /*
+     * enu.u 是否可信。为 false 的典型情形：只有融合定位（椭球高）而
+     * geoid 偏移未注入 —— 此时水平分量仍然可用，只有天向分量有几十米偏差。
+     */
+    bool enuVerticalTrusted;
     WtEnu enu;              /*!< 相对塔基的 ENU 坐标，由上层按当前目标风机填充 */
     double yawDeg;          /*!< 机头方位角，自正北顺时针 */
     double pitchDeg;        /*!< 机体俯仰角 */
@@ -60,8 +95,58 @@ typedef struct {
     WtGimbalState gimbal;
     WtTurbineSpec turbineSpec;   /*!< 当前作业风机，用于把位置转 ENU、解算相位 */
     WtLocalFrame frame;
+
+    /*
+     * 台账 `turbineSpec.base.alt` 的基准。风机台账通常给海拔，故默认 MSL。
+     * 若你的台账用的是椭球高，必须改这里 —— 否则 ENU 天向分量会整体偏。
+     */
+    E_WtAltDatum specAltDatum;
+
+    /*
+     * geoid 偏移 = MSL − 椭球高。中国境内为负（约 −10 ~ −40 m）。
+     * 0 表示未知：此时只有融合定位可用时，enu.u 会被标记为不可信。
+     *
+     * 怎么测：让飞机同时拿到 RTK 与融合定位，两个 alt 相减即为本地 geoid 偏移。
+     */
+    double geoidOffsetM;
+
+    /* 基准不一致的告警只打一次，避免 10Hz 刷屏 */
+    bool datumWarned;
+
+    /*
+     * 转速估计的内部状态。
+     *
+     * 必须保存上次的**测量值**而不是滤波后的值：原先用
+     * `measured − rotor.phaseDeg` 算增量，而 rotor.phaseDeg 是低通输出、
+     * 滞后于真实值，于是滤波滞后被算进了增量里，rpm **偏大** ——
+     * 与那段代码的注释声称的"避免偏小"恰好相反。
+     *
+     * 偏大的倍数不是小数量级，而是 **1/α**：稳态下低通输出的滞后量正好
+     * 使 `measured − filtered = Δ_true / α`。α = 0.25 ⇒ **rpm 偏大 4 倍**
+     * （`wt_test_telemetry` 的变异验证实测 3.9998 vs 真值 1.0）。
+     */
+    double lastMeasuredPhaseDeg;
+    uint64_t lastMeasuredAtMs;
+    bool haveMeasurement;
+
+    /*
+     * 上次检测到有效转动的时刻。
+     *
+     * 原先的静止判据写的是 `else if (dtMs > 2000)`，而那个 dtMs 是**相邻两次
+     * 调用**的间隔 —— 以 10Hz 调用时恒为 100 ms，永远不可能大于 2000，
+     * 于是"长时间静止则把转速归零"这段是**死代码**，残留转速会一直外推。
+     */
+    uint64_t lastMotionAtMs;
+
     bool initialized;
 } WtTelemetry;
+
+/**
+ * @brief 注入本地 geoid 偏移（MSL − 椭球高，中国为负值）。
+ *
+ * 不注入的后果：只有融合定位时 `aircraft.enuVerticalTrusted` 为 false。
+ */
+void WtTelemetry_SetGeoidOffset(WtTelemetry *telemetry, double offsetM);
 
 /**
  * @brief 初始化遥测：订阅 PSDK 话题并注册回调

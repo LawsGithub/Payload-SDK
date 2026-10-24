@@ -100,8 +100,28 @@ typedef struct {
     double radialSpreadM;
     double radialSpreadPct;
 
-    /* 编号解算的间隔偏差（度），理想接近 0 */
+    /*
+     * 编号解算的间隔偏差（度），理想接近 0。
+     *
+     * ⚠️ **编号失败时这里是 360.0，不是 0。**
+     *
+     * 曾经的写法是「成功才赋值，失败保持 memset 的 0」—— 而 0 在 README
+     * 的质量表里恰好是"基本正对盘面、编号可信"这一档。于是"编号彻底失败"
+     * 会被下游读成"质量最好"，而按 README 建议加的 `dev < 15°` 采信阈值
+     * 会直接放行。
+     *
+     * 失败时也**不能**用 NaN：`NaN > 15.0` 求值为 false，阈值判据会静默
+     * 失效（fail-open）。360.0 则必然超过任何合理阈值，是 fail-closed 的。
+     *
+     * 判断编号是否成功请看 `idAssigned`，不要靠这个值反推。
+     */
     double angleGapDevDeg;
+
+    /*
+     * 编号是否真的解出来了。为 false 时 `blades[].bladeNo` 全为 0，
+     * `angleGapDevDeg` 为 360.0。
+     */
+    bool idAssigned;
 
     bool ok;                    /*!< 整体是否可信 */
 } WtAiSolveResult;

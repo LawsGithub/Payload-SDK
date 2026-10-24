@@ -104,6 +104,15 @@ bool WtAiSolve_FromDetection(const WtAiSolveContext *ctx,
             out->blades[i].bladeNo = idOut.bladeNoOf[i];
         }
         out->angleGapDevDeg = idOut.worstGapDeg;
+        out->idAssigned = true;
+    } else {
+        /*
+         * 编号失败：把质量指标置成必然被拒绝的值，而不是留着 memset 的 0。
+         * 0 在 README 的质量表里是"编号可信"那一档，会让下游把失败读成最好。
+         * 详见 wt_ai_solve.h 里 angleGapDevDeg 的说明。
+         */
+        out->angleGapDevDeg = 360.0;
+        out->idAssigned = false;
     }
 
     /* ---- ④ 质量评估：径向距离的一致性 ---- */
@@ -121,14 +130,20 @@ bool WtAiSolve_FromDetection(const WtAiSolveContext *ctx,
     out->radialSpreadPct = (maxR > 1e-9) ? (out->radialSpreadM / maxR * 100.0) : 0.0;
 
     /*
-     * 可信判据：至少解出 2 片，且径向散布在容忍范围内。
+     * 可信判据：至少解出 2 片、径向散布在容忍范围内、轮毂反投影成功，
+     * 且**编号真的解出来了**。
      *
      * 只解出 1 片时 radialSpreadPct 恒为 0，看似完美但毫无意义 ——
      * 所以把 solved >= 2 也作为必要条件。
+     *
+     * idAssigned 这一项是补上的：几何解出但编号失败时，blades[].bladeNo
+     * 全是 0，而调用方拿 ok==true 当通行证、直接按 bladeNo 去规划航线，
+     * 会得到一条绕着"0 号叶片"画的航线。
      */
     out->ok = (solved >= 2) &&
               (out->radialSpreadPct <= WT_AI_RADIAL_SPREAD_LIMIT_PCT) &&
-              out->hubHit;
+              out->hubHit &&
+              out->idAssigned;
 
     return true;
 }

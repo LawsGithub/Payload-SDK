@@ -27,6 +27,13 @@
  */
 #define WT_PHASE_MIN_DELTA_DEG 1.0
 
+/*
+ * 多久没有检测到有效转动就判定为静止。停机巡检时风轮确实不转，
+ * 残留的转速估计会被 WtTurbine_AdvancePhase 一直外推，让云台追一个
+ * 并不存在的转动。
+ */
+#define WT_PHASE_STILL_TIMEOUT_MS 2000u
+
 /** 相位差归一到 (-180, 180] 并转为标量转角 */
 static double WtTelemetry_PhaseDelta(double a, double b)
 {
@@ -43,31 +50,56 @@ void WtTelemetry_UpdatePhaseEstimate(WtTelemetry *telemetry, double measuredPhas
         r->rpm = 0.0;
         r->valid = true;
         r->updatedAtMs = sampleTimeMs;
+
+        telemetry->lastMeasuredPhaseDeg = Wt_Wrap360(measuredPhaseDeg);
+        telemetry->lastMeasuredAtMs = sampleTimeMs;
+        telemetry->haveMeasurement = true;
+        telemetry->lastMotionAtMs = sampleTimeMs;
         return;
     }
 
     {
-        double delta = WtTelemetry_PhaseDelta(measuredPhaseDeg, r->phaseDeg);
-        uint64_t dtMs = (sampleTimeMs > r->updatedAtMs) ? (sampleTimeMs - r->updatedAtMs) : 0;
-
-        /* 一阶低通：用增量而不是直接赋值，避免相位在 0/360 边界跳变 */
-        r->phaseDeg = Wt_Wrap360(r->phaseDeg + WT_PHASE_LPF_ALPHA * delta);
+        /* 滤波用「测量 − 滤波值」：这是低通本身的定义 */
+        const double filterDelta = WtTelemetry_PhaseDelta(measuredPhaseDeg, r->phaseDeg);
 
         /*
-         * 转速由「本次测量的相位增量 / 时间」估计，而不是用滤波后的相位：
-         * 滤波会吃掉真实的转动，用它反推转速会系统性偏小。
+         * 转速用「本次测量 − **上次测量**」，不能用滤波值。
+         *
+         * 滤波输出滞后于真实相位，拿它当基准算出的增量会把滤波滞后也算进去，
+         * rpm 因此系统性偏大。原注释声称这样做是"避免偏小"，方向正好说反了。
          */
-        if (dtMs > 0 && fabs(delta) > WT_PHASE_MIN_DELTA_DEG) {
-            double rpm = delta * 60.0 / (360.0 * ((double)dtMs / 1000.0));
-            double prevRpm = r->rpm;
+        const double measureDelta = telemetry->haveMeasurement
+            ? WtTelemetry_PhaseDelta(measuredPhaseDeg, telemetry->lastMeasuredPhaseDeg)
+            : 0.0;
+        const uint64_t measureDtMs =
+            (telemetry->haveMeasurement && sampleTimeMs > telemetry->lastMeasuredAtMs)
+                ? (sampleTimeMs - telemetry->lastMeasuredAtMs)
+                : 0;
+
+        /* 一阶低通：用增量而不是直接赋值，避免相位在 0/360 边界跳变 */
+        r->phaseDeg = Wt_Wrap360(r->phaseDeg + WT_PHASE_LPF_ALPHA * filterDelta);
+
+        if (measureDtMs > 0 && fabs(measureDelta) > WT_PHASE_MIN_DELTA_DEG) {
+            const double rpm =
+                measureDelta * 60.0 / (360.0 * ((double)measureDtMs / 1000.0));
+            const double prevRpm = r->rpm;
 
             /* 转速再做一次低通，单帧估计的方差很大 */
             r->rpm = (prevRpm == 0.0) ? rpm : (prevRpm * 0.7 + rpm * 0.3);
-        } else if (dtMs > 2000) {
-            /* 长时间没有有效增量，判定为静止，避免残留转速导致外推发散 */
+            telemetry->lastMotionAtMs = sampleTimeMs;
+        } else if (sampleTimeMs > telemetry->lastMotionAtMs &&
+                   (sampleTimeMs - telemetry->lastMotionAtMs) > WT_PHASE_STILL_TIMEOUT_MS) {
+            /*
+             * 判据是「距上次**有效转动**多久」，不是「距上次调用多久」。
+             * 后者以 10Hz 调用时恒为 100 ms，这段分支永远进不来（死代码），
+             * 残留转速会一直被 AdvancePhase 外推下去。
+             */
             r->rpm = 0.0;
         }
 
+        telemetry->lastMeasuredPhaseDeg = Wt_Wrap360(measuredPhaseDeg);
+        telemetry->lastMeasuredAtMs = sampleTimeMs;
+        telemetry->haveMeasurement = true;
         r->updatedAtMs = sampleTimeMs;
     }
 }
@@ -138,13 +170,65 @@ bool WtTelemetry_SolvePhaseFromVision(WtTelemetry *telemetry,
     return true;
 }
 
+void WtTelemetry_SetGeoidOffset(WtTelemetry *telemetry, double offsetM)
+{
+    if (telemetry == NULL) {
+        return;
+    }
+    telemetry->geoidOffsetM = offsetM;
+    telemetry->datumWarned = false;
+}
+
 void WtTelemetry_RefreshEnu(WtTelemetry *telemetry)
 {
-    if (!telemetry->aircraft.validPosition) {
+    WtGeo converted;
+    bool trusted = false;
+
+    if (telemetry == NULL || !telemetry->aircraft.validPosition) {
         return;
     }
 
-    telemetry->aircraft.enu = WtGeo_ToEnu(&telemetry->frame, &telemetry->aircraft.position);
+    converted = telemetry->aircraft.position;
+
+    /*
+     * 把高度换算到**台账的基准**上再转 ENU。
+     *
+     * ENU 的天向分量是 `alt − origin.alt` 这个减法，所以要紧的不是"基准是
+     * 什么"，而是"两边是否同基准"。原先两条定位路径（RTK 给海拔高、融合给
+     * 椭球高）的值都直接写进同一个字段再相减，于是走融合定位那条路时凭空
+     * 多出几十米误差，且完全静默。
+     */
+    if (telemetry->aircraft.altDatum == telemetry->specAltDatum &&
+        telemetry->specAltDatum != WT_ALT_DATUM_UNKNOWN) {
+        trusted = true;
+    } else if (telemetry->aircraft.altDatum == WT_ALT_DATUM_ELLIPSOID &&
+               telemetry->specAltDatum == WT_ALT_DATUM_MSL) {
+        if (telemetry->geoidOffsetM != 0.0) {
+            converted.alt += telemetry->geoidOffsetM;
+            trusted = true;
+        }
+    } else if (telemetry->aircraft.altDatum == WT_ALT_DATUM_MSL &&
+               telemetry->specAltDatum == WT_ALT_DATUM_ELLIPSOID) {
+        if (telemetry->geoidOffsetM != 0.0) {
+            converted.alt -= telemetry->geoidOffsetM;
+            trusted = true;
+        }
+    }
+
+    if (!trusted && !telemetry->datumWarned) {
+        /*
+         * 只打一次 —— 这个函数以 10Hz 被调用，每次都打会把日志刷满，
+         * 反而让真正的问题更难看见。
+         */
+        printf("[tele] ⚠ 高度基准不一致且 geoid 偏移未注入"
+               "（飞机 datum=%d，台账 datum=%d）：ENU 天向分量不可信，"
+               "水平分量仍可用。用 WtTelemetry_SetGeoidOffset() 注入偏移。\n",
+               (int)telemetry->aircraft.altDatum, (int)telemetry->specAltDatum);
+        telemetry->datumWarned = true;
+    }
+
+    telemetry->aircraft.enu = WtGeo_ToEnu(&telemetry->frame, &converted);
+    telemetry->aircraft.enuVerticalTrusted = trusted;
 }
 
 WtRotorFrame WtTelemetry_PredictRotorFrame(const WtTelemetry *telemetry, double dtSec)
