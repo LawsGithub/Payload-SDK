@@ -140,6 +140,41 @@ typedef struct {
      * ⚠️ **不是生产功能**，只打日志。验证完关掉。默认 false。
      */
     bool streamProbe;
+
+    /*
+     * 激光采集盘面几何（`[survey]` 段）。
+     *
+     * 开启后启动取流与推理线程，并允许用控件触发一次采集会话：
+     * 依次对轮毂与三个叶尖对准打激光，拟合出实测的盘面与**停用角**。
+     *
+     * ⚠️ 与 `streamProbe` **互斥** —— 两者都会 `DjiLiveview_Init()` 并启动
+     * 同一个相机源的图像流。同时开会互相抢。
+     *
+     * 默认 false：它要跑推理线程、要动云台、要打激光，不该在没人看着时
+     * 自己起来。而且装包时安装器会试运行应用，默认开启会拖长启动。
+     */
+    bool surveyEnabled;
+    /*
+     * TensorRT engine 路径。**必须是设备上用 trtexec 构建的** ——
+     * engine 与 GPU 架构、TensorRT 版本强绑定，x86 上转的在 Orin 上
+     * 加载直接失败。别放 /tmp（设备重启会清空，重建要 13 分钟）。
+     */
+    char surveyEnginePath[WT_CONFIG_MAX_PATH];
+    /*
+     * 推理间隔 ms。采集不需要 30fps —— 对准闭环每秒几次就够，
+     * 留出 GPU 与内存带宽给别的事。0 表示用默认值。
+     */
+    int surveyInferIntervalMs;
+    /*
+     * 本地 geoid 偏移（MSL − 椭球高），中国境内为负（约 −10 ~ −40 m）。
+     *
+     * 只有融合定位可用时（无 RTK 固定解）才需要它：融合定位给的是椭球高，
+     * 而风机台账通常是海拔，两者差这个量。不填则 ENU 天向分量会被标记为
+     * 不可信（水平仍可用）。怎么测：让飞机同时拿到 RTK 与融合定位，
+     * 两个 alt 相减。
+     */
+    double geoidOffsetM;
+
     char outputDir[WT_CONFIG_MAX_PATH]; /*!< 航线与照片索引的输出目录 */
 } WtAppConfig;
 

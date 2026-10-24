@@ -31,7 +31,20 @@
 #include "wt_runner.h"
 #include "wt_ai_overlay.h"
 #include "wt_ai_stream_probe.h"
+#include "wt_frame_pump.h"
+#include "wt_laser.h"
 #include "wt_widget.h"
+/*
+ * 采集链路（推理 + 编排）只在开了 TensorRT 时才编进来。
+ *
+ * 为什么是条件编译而不是运行时开关：engine 与 TensorRT 库只在妙算3 上有，
+ * 而仓库级 CLAUDE.md 硬约束 3 禁止交叉编译 —— 本机构建必须仍然可用，
+ * 否则连 x86_64 链接自检这条路都断了。
+ */
+#if defined(WT_WITH_TRT)
+#include "wt_survey.h"
+#include "wt_vision.h"
+#endif
 
 /*
  * 默认配置路径：**相对应用目录**，不是绝对路径。
@@ -53,6 +66,97 @@ static FILE *s_logFile = NULL;
  * 活着走完 SDK 身份校验，否则 .dpk 装不上（见 main 里步骤 4 的说明）。
  */
 static bool s_configReady = false;
+#if defined(WT_WITH_TRT)
+/* 采集链路（取流 + 推理 + 激光/云台）是否已成功就绪 */
+static bool s_surveyReady = false;
+/* 本次运行是否已采集过 —— 叶片没动，重复采没有意义 */
+static bool s_surveyDone = false;
+
+/**
+ * @brief 跑一次采集会话，直到结束或被中止。
+ *
+ * ## 为什么要自己一个循环，不挂在待命循环上
+ *
+ * 待命循环是 `sleep(1)` 的节奏，而对准是个闭环：转云台 → 等稳 → 再看一帧 →
+ * 微调。1 Hz 下这个闭环会慢到没法用。
+ *
+ * 这里取 **5 Hz** —— 与 `DjiCameraManager_GetLaserRangingInfo` 的
+ * 「最大更新频率 5Hz」对齐。再快也拿不到新的激光值，只是白转。
+ *
+ * ## 这个循环会阻塞
+ *
+ * `WtSurvey_Tick()` 内部调激光读取，那是同步阻塞调用（实测最多 1.2 s）。
+ * 所以它只能跑在主循环里，**绝不能放进 PSDK 回调线程**。
+ */
+static void WtApp_RunSurvey(void)
+{
+    WtSurvey survey;
+
+    if (!s_surveyReady) {
+        WtWidget_PostMessage("采集链路未就绪（见启动日志）");
+        return;
+    }
+    if (s_runner.config.turbineCount <= 0) {
+        WtWidget_PostMessage("配置里没有风机，无法建立坐标系");
+        return;
+    }
+
+    /*
+     * 台账提供坐标系原点与比对基准 —— 实测只修正盘面姿态与相位，
+     * 不反推塔基（那不可解，见 wt_rotor_fit.h）。
+     */
+    if (!WtSurvey_Begin(&survey, &s_runner.config.turbines[0].spec, NULL)) {
+        WtWidget_PostMessage("采集启动失败：台账非法");
+        return;
+    }
+
+    while (!WtSurvey_IsFinished(&survey) && !s_stopRequested) {
+        char progress[128];
+
+        if (WtWidget_TakeAbortRequest()) {
+            WtSurvey_Abort(&survey);
+            break;
+        }
+
+        /*
+         * 先刷遥测再 Tick：决策层要用这一帧的云台姿态与机头朝向，
+         * 用上一帧的会让云台按过时的姿态去算目标角。
+         */
+        WtTelemetry_Poll(&s_runner.telemetry);
+        WtSurvey_Tick(&survey, &s_runner.telemetry);
+
+        WtSurvey_FormatProgress(&survey, progress, sizeof(progress));
+        WtWidget_PostMessage("%s", progress);
+
+        usleep(200 * 1000); /* 5 Hz，与激光的更新上限一致 */
+    }
+
+    /*
+     * 把实测停用角写回配置，让既有规划流程能用上。
+     *
+     * 这是本次接入唯一与作业流程的交集，也是采集最直接的价值：
+     * `WtRunner_PlanTurbine` 在停用角未知时**无条件拒绝规划**，而台账
+     * 给不出它（叶片每次停的位置都不同）。
+     *
+     * ⚠️ 盘面朝向（rotAxis）的实测结果**暂未注入** —— 那要改
+     * `WtRunner_PlanTurbine` 里 `WtTurbine_BuildRotorFrame()` 那一行，
+     * 属于动核心流程，等整条链路上机验证通过再做。
+     */
+    if (survey.fitAccepted) {
+        s_runner.config.turbines[0].parkPhaseDeg = survey.fit.parkPhaseDeg;
+        WtWidget_SetParkPhaseInitial(survey.fit.parkPhaseDeg);
+        USER_LOG_INFO("采集：实测停用角 %.1f° 已写回配置（半径 %.1f m，"
+                      "散布 %.2f%%，法向与台账差 %.1f°）",
+                      survey.fit.parkPhaseDeg, survey.fit.rotorRadiusM,
+                      survey.fit.radiusSpreadPct, survey.fit.axisAngleErrDeg);
+        WtWidget_PostMessage("采集完成 停用角%.0f°", survey.fit.parkPhaseDeg);
+    } else {
+        USER_LOG_ERROR("采集未成功，停用角保持原值");
+        WtWidget_PostMessage("采集失败 %s",
+                             survey.logic.message ? survey.logic.message : "");
+    }
+}
+#endif /* WT_WITH_TRT */
 
 static T_DjiReturnCode WtApp_PrintConsole(const uint8_t *data, uint16_t dataLen)
 {
@@ -422,6 +526,55 @@ int main(int argc, char **argv)
             if (WtAiStreamProbe_Start(s_runner.config.streamProbe)) {
                 USER_LOG_INFO("取流探针已启动，等待相机帧…");
             }
+
+#if defined(WT_WITH_TRT)
+            /*
+             * 激光采集链路（默认关）。
+             *
+             * ⚠️ 与取流探针**互斥**：两者都 DjiLiveview_Init() 并启动同一个
+             * 相机源的图像流，同时开会互相抢。这里显式拦住，而不是让它们
+             * 在设备上打成一团 —— 那种现象（帧忽有忽无）极难定位。
+             */
+            if (s_runner.config.surveyEnabled && s_runner.config.streamProbe) {
+                USER_LOG_ERROR("survey_enabled 与 stream_probe 互斥（同一相机源），"
+                               "本次不启动采集链路");
+            } else if (s_runner.config.surveyEnabled) {
+                /*
+                 * 失败不阻断启动 —— 与控件、AI 叠加同一原则：装包时安装器
+                 * 要试运行应用，这里 fail-closed 会让包装不上。
+                 */
+                if (!WtFramePump_Start()) {
+                    USER_LOG_ERROR("采集：取流启动失败，本次无法采集盘面");
+                } else if (!WtVision_Start(s_runner.config.surveyEnginePath,
+                                           0.25f, 0.45f,
+                                           s_runner.config.surveyInferIntervalMs > 0
+                                               ? (uint32_t)s_runner.config.surveyInferIntervalMs
+                                               : 200u)) {
+                    USER_LOG_ERROR("采集：推理线程启动失败（engine 路径？架构不匹配？），"
+                                   "本次无法采集盘面");
+                    WtFramePump_Stop();
+                } else if (!WtLaser_Init()) {
+                    USER_LOG_ERROR("采集：相机/云台模块初始化失败，本次无法采集盘面");
+                    WtVision_Stop();
+                    WtFramePump_Stop();
+                } else {
+                    s_surveyReady = true;
+                    USER_LOG_INFO("采集链路已就绪：拨「开始作业」时会先采集盘面"
+                                  "（需飞机在空中、画面里有风机）");
+                }
+            }
+#endif /* WT_WITH_TRT */
+
+            /*
+             * geoid 偏移注入。不填时只有融合定位可用的场景下 ENU 天向分量
+             * 会被标记为不可信（水平仍可用），见 WtTelemetry_RefreshEnu。
+             */
+            if (s_runner.config.geoidOffsetM != 0.0) {
+                WtTelemetry_SetGeoidOffset(&s_runner.telemetry,
+                                           s_runner.config.geoidOffsetM);
+                USER_LOG_INFO("已注入 geoid 偏移 %.1f m（MSL − 椭球高）",
+                              s_runner.config.geoidOffsetM);
+            }
         }
     }
 
@@ -485,6 +638,24 @@ int main(int argc, char **argv)
                     WtWidget_ClearStartRequest();
                 }
                 if (WtWidget_IsStartRequested()) {
+                    /*
+                     * 采集先于规划。
+                     *
+                     * 顺序是刻意的：采集产出的**停用角**正是
+                     * `WtRunner_PlanTurbine` 在未知时无条件拒绝规划的那个
+                     * 前提。先采后规划，那条拒绝路径才走得通；反过来则规划
+                     * 必然被拒，采集也就白做了。
+                     *
+                     * 只在第一次「开始作业」时采。重复采没有意义（叶片没动），
+                     * 而且每次都采会让"改参数重试"变得很慢。
+                     */
+#if defined(WT_WITH_TRT)
+                    if (s_surveyReady && !s_surveyDone) {
+                        USER_LOG_INFO("收到「开始作业」—— 先采集盘面几何");
+                        WtApp_RunSurvey();
+                        s_surveyDone = true;
+                    }
+#endif
                     USER_LOG_INFO("收到控件「开始作业」请求，进入作业流程");
                     break;
                 }
@@ -614,6 +785,20 @@ int main(int argc, char **argv)
     }
 
     WtTelemetry_DeInit(&s_runner.telemetry);
+    /*
+     * 采集链路的收尾顺序：先停推理（它在消费帧），再停取流，最后收云台。
+     * 反过来会让推理线程读到已释放的帧缓冲。
+     *
+     * WtLaser_DeInit() 还负责把云台模式还成 YAW_FOLLOW —— FREE 残留在
+     * 飞机上会让后续绕飞顶 pan 限位（姊妹项目踩过的事故）。
+     */
+#if defined(WT_WITH_TRT)
+    if (s_surveyReady) {
+        WtVision_Stop();
+        WtFramePump_Stop();
+        WtLaser_DeInit();
+    }
+#endif
     WtAiStreamProbe_Stop();
     WtAiOverlay_Stop();
     WtWidget_Stop();

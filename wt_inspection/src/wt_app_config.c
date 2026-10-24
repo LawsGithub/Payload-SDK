@@ -74,7 +74,8 @@ static const char *const WT_KEYS_INSPECTION[] = {
 
 static const char *const WT_KEYS_APP[] = {
     "telemetry_hz", "gimbal_track_gain", "track_deadband", "auto_start", "output_dir",
-    "dry_run", "no_actions", "ai_overlay", "stream_probe", NULL,
+    "dry_run", "no_actions", "ai_overlay", "stream_probe",
+    "survey_enabled", "survey_engine", "survey_infer_interval_ms", "geoid_offset_m", NULL,
 };
 
 static const char *const WT_KEYS_TURBINE[] = {
@@ -634,6 +635,16 @@ bool WtAppConfig_Load(const char *path, WtAppConfig *config)
                     applied = WtConfig_GetBool(value, &config->aiOverlay);
                 } else if (strcmp(key, "stream_probe") == 0) {
                     applied = WtConfig_GetBool(value, &config->streamProbe);
+                } else if (strcmp(key, "survey_enabled") == 0) {
+                    applied = WtConfig_GetBool(value, &config->surveyEnabled);
+                } else if (strcmp(key, "survey_engine") == 0) {
+                    applied = (*value != '\0');
+                    snprintf(config->surveyEnginePath, sizeof(config->surveyEnginePath),
+                             "%.255s", value);
+                } else if (strcmp(key, "survey_infer_interval_ms") == 0) {
+                    applied = WtConfig_GetInt(value, &config->surveyInferIntervalMs);
+                } else if (strcmp(key, "geoid_offset_m") == 0) {
+                    applied = WtConfig_GetDouble(value, &config->geoidOffsetM);
                 }
             }
 
@@ -864,6 +875,18 @@ bool WtAppConfig_WriteTemplate(const char *path)
             "# 诊断用：启动相机图像流并统计收到的帧，判定能否拿到实时画面。\n"
             "# 用于确认「持续跟踪」方案是否可行。验证完关掉。\n"
             "# stream_probe      = false\n"
+            "\n"
+            "# 激光采集盘面几何：依次对轮毂与三个叶尖打激光，拟合出实测的\n"
+            "# 盘面朝向与**停用角** —— 后者正是 park_phase 未知时作业被拒的前提。\n"
+            "# ⚠️ 与 stream_probe 互斥（两者都会启动同一个相机源的图像流）。\n"
+            "# ⚠️ engine 必须是**设备上**用 trtexec 构建的，且别放 /tmp（重启会清空）。\n"
+            "# survey_enabled    = false\n"
+            "# survey_engine     = /home/dji/wt-models/model-s.engine\n"
+            "# survey_infer_interval_ms = 200\n"
+            "# 本地 geoid 偏移（MSL − 椭球高），中国境内为负。只有在没有 RTK\n"
+            "# 固定解、退化到融合定位时才需要 —— 融合定位给椭球高而台账给海拔。\n"
+            "# 不填则 ENU 天向分量被标记为不可信（水平仍可用）。\n"
+            "# geoid_offset_m    = -38.0\n"
             "\n"
             "# 每台风机一个段落，段落名即风机编号\n"
             "[turbine.WT-A01]\n"
