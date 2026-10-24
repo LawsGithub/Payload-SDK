@@ -90,6 +90,42 @@ bool WtAim_IsOnTarget(const WtAimResult *aim, double toleranceDeg)
     return aim->angularErrorDeg <= toleranceDeg;
 }
 
+bool WtAim_IsReachable(const WtAimResult *aim, double bodyYawDeg,
+                       const char **outWhy)
+{
+    const char *why = "ok";
+    bool ok = true;
+
+    if (aim == NULL || !aim->ok) {
+        why = "照准未解出";
+        ok = false;
+    } else if (aim->targetPitchDeg < WT_GIMBAL_PITCH_MIN_DEG) {
+        why = "目标低于云台俯仰下限（-90°）";
+        ok = false;
+    } else if (aim->targetPitchDeg > WT_GIMBAL_PITCH_MAX_DEG) {
+        why = "目标高于云台俯仰上限（+70°）—— 离风机太近、仰角太大，退后再试";
+        ok = false;
+    } else {
+        /*
+         * pan 的限位是**相对机头**的，所以要先折算成相对角。
+         * 用 Wt_AngleDiff 取最短转向（±180 内）—— 直接相减在跨正北时
+         * 会得到 350° 这种巨大偏差，把本来够得到的目标误判成超限。
+         */
+        const double rel = Wt_AngleDiff(aim->targetYawDeg, bodyYawDeg);
+
+        if (rel < -WT_GIMBAL_YAW_REL_MAX_DEG || rel > WT_GIMBAL_YAW_REL_MAX_DEG) {
+            why = "目标超出云台相对机头的 ±60° —— 需要先转机头";
+            ok = false;
+        }
+    }
+
+    if (outWhy != NULL) {
+        *outWhy = why;
+    }
+
+    return ok;
+}
+
 bool WtAim_SortTipsByImageAngle(WtAiDetection *det, double *outAngles)
 {
     double angles[WT_BLADE_ID_MAX];

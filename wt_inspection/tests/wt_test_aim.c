@@ -318,6 +318,72 @@ static void Test_TipSort_IsStable(void)
     }
 }
 
+/**
+ * 云台可达性：pitch 比绝对限位，pan 比**相对机头**的 ±60°。
+ *
+ * 为什么必须先判再下发：绝对角模式下只要 yaw 够不到，**整条命令被拒**
+ * （0x600000004），连 pitch 都不会转到位。不先判就会把"参数超限"
+ * 表现成"云台莫名不动"。
+ */
+static void Test_Reachable(void)
+{
+    WtCameraGeometry g = WtCamera_ComputeGeometry(&WT_CAMERA_M4T_WIDE);
+    WtAimResult aim;
+    const char *why = NULL;
+
+    printf("Test_Reachable\n");
+
+    /* 机头朝北、目标就在正前方中心 → 可达 */
+    {
+        WtCameraPose pose = MakePose(0.0, -20.0);
+
+        CHECK(WtAim_FromPixel(&pose, IMG_W * 0.5, IMG_H * 0.5, IMG_W, IMG_H,
+                              g.fovHorizDeg, g.fovVertDeg, &aim), "解算应成功");
+        CHECK(WtAim_IsReachable(&aim, 0.0, &why), "正前方应可达（%s）", why);
+    }
+
+    /* pitch 超上限 +70° */
+    {
+        WtCameraPose pose = MakePose(0.0, 85.0);
+
+        (void)WtAim_FromPixel(&pose, IMG_W * 0.5, IMG_H * 0.5, IMG_W, IMG_H,
+                              g.fovHorizDeg, g.fovVertDeg, &aim);
+        CHECK(!WtAim_IsReachable(&aim, 0.0, &why), "pitch 85° 应超出 +70° 上限");
+        CHECK(why != NULL && strstr(why, "上限") != NULL,
+              "原因应指向俯仰上限（%s）", why ? why : "(null)");
+    }
+
+    /* yaw 相对机头 80° > 60° → 不可达，需要转机头 */
+    {
+        WtCameraPose pose = MakePose(80.0, 0.0);
+
+        (void)WtAim_FromPixel(&pose, IMG_W * 0.5, IMG_H * 0.5, IMG_W, IMG_H,
+                              g.fovHorizDeg, g.fovVertDeg, &aim);
+        CHECK(!WtAim_IsReachable(&aim, 0.0, &why),
+              "目标方位 80° / 机头 0° 相差 80°，应超出 ±60°");
+        CHECK(why != NULL && strstr(why, "机头") != NULL,
+              "原因应提示转机头（%s）", why ? why : "(null)");
+    }
+
+    /*
+     * 跨正北不能误判。
+     *
+     * 目标方位 10°、机头 350° —— 相对角只有 20°，完全够得到。
+     * 但若直接相减会得到 10 − 350 = −340°，被判成严重超限。
+     * 这正是必须用 AngleDiff 折到 [-180,180] 的理由。
+     */
+    {
+        WtCameraPose pose = MakePose(10.0, 0.0);
+
+        (void)WtAim_FromPixel(&pose, IMG_W * 0.5, IMG_H * 0.5, IMG_W, IMG_H,
+                              g.fovHorizDeg, g.fovVertDeg, &aim);
+        CHECK(WtAim_IsReachable(&aim, 350.0, &why),
+              "目标 10° / 机头 350° 相对角仅 20°，应可达（%s）", why);
+    }
+
+    CHECK(!WtAim_IsReachable(NULL, 0.0, &why), "NULL 应判为不可达");
+}
+
 int main(void)
 {
     printf("=== 照准解算测试 ===\n");
@@ -328,6 +394,7 @@ int main(void)
     Test_BottomEdge_NegativePitch();
     Test_AngularError_RotationInvariant();
     Test_RoundTrip_LandsOnCenter();
+    Test_Reachable();
     Test_TipSort_IsStable();
     Test_RejectInvalid();
 

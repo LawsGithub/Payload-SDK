@@ -59,17 +59,18 @@ typedef struct {
 /**
  * @brief 初始化相机与云台管理模块。
  *
- * @warning 本函数会把云台设为 `DJI_GIMBAL_MODE_FREE`（姿态锁定地面坐标系，
- *          忽略飞机运动）—— 这是"对准一个固定目标"唯一合理的模式。
+ * @warning 本函数会把云台设为 `DJI_GIMBAL_MODE_FREE`（姿态锁定地面坐标系、
+ *          忽略飞机运动）—— 静止观测一个固定目标需要它，否则 `YAW_FOLLOW`
+ *          下云台 yaw 跟着机身转，会和我们下发的绝对方位角互相抢。
  *
- *          但 PSDK **没有** `GetGimbalMode` 接口，所以**无法读回原模式、
- *          也就无法真正归还**。这违反了"设置型调用借了必须还"的原则，
- *          属于已知的、无法规避的副作用：
- *            - 本模块在 DeInit 时调 `DjiGimbalManager_Reset()` 做复位，
- *              这是能做到的最接近"归还"的动作
- *            - 作业结束后操作员在 Pilot 2 里看到的云台模式可能已被改变
- *          把它写在这里，是为了下次有人发现"云台模式莫名变了"时能立刻
- *          找到源头，而不是去翻整个工程。
+ *          **`WtLaser_DeInit()` 必须被调用，它会把模式还成 `YAW_FOLLOW`。**
+ *          这不是礼节问题：`FREE` 残留在飞机上，之后一旦飞机头连续转动
+ *          （比如绕飞航线），pan 关节为"保持地面姿态"要反向补偿，而它只有
+ *          ±60° ⇒ 顶机械限位、电机持续给力 ⇒ 现场报「偏航顶限位 + 云台
+ *          电机异常」。姊妹项目为这个踩过一次实打实的事故。
+ *
+ *          PSDK 没有 `GetGimbalMode`，读不回原值，所以只能还成 YAW_FOLLOW
+ *          （M4T 的自然状态）而不是"原来那个"。
  */
 bool WtLaser_Init(void);
 
@@ -87,16 +88,29 @@ void WtLaser_DeInit(void);
 bool WtLaser_Read(WtLaserSample *out);
 
 /**
- * @brief 下发云台俯仰绝对角。
+ * @brief 下发云台绝对角（pitch + yaw）。
  *
- * **只下发 pitch。** M4T 的云台 Pan 轴标着 `Not controllable`，下发 yaw
- * 不会生效 —— 而现象是"云台动了但画面没对准水平偏差"，极难定位。
- * 水平对准必须靠机头（航点任务的 heading，或操作员手动）。
+ * ## yaw 必须填一个**有意义**的值，不能填 0
  *
- * @param pitchDeg 绝对俯仰角（度，水平 0，向下为负）
- * @param seconds  期望的执行时长。太短会让云台猛冲过冲，太长则采集变慢
+ * 绝对角模式下 `yaw = 0` 的意思是「转到正北」。而 M4T 的 pan 只有相对机头
+ * ±60°，机头不朝北时正北就够不到 ⇒ **整条命令被拒**，报
+ * `0x600000004 YAW_REACH_POSITIVE_LIMIT`，**连 pitch 都不会转到位**
+ * （可能部分执行：先动了 pitch 才在 yaw 上撞限位）。
+ *
+ * 姊妹项目 2026-09-27 实测踩过这个坑。官方样例 `test_gimbal_manager.c`
+ * 的做法是绝对角模式下**先读出当前 yaw 再原样传回** —— 即「不想动 yaw」
+ * 要表达成「yaw 保持当前值」，而不是「yaw = 0」。
+ *
+ * 所以：
+ *   - 要转 yaw → 传目标方位角
+ *   - 不想转 yaw → **传当前云台 yaw**
+ *
+ * @param pitchDeg 绝对俯仰角（度，水平 0，向下为负）。应先用
+ *                 `WtAim_IsReachable()` 确认在 [-90, +70] 内
+ * @param yawDeg   绝对方位角（度，自正北顺时针）。见上面的说明
+ * @return false 表示被拒；日志里会分辨「控制权被占」与「参数超限」两种病因
  */
-bool WtLaser_SetGimbalPitchAbs(double pitchDeg, double seconds);
+bool WtLaser_SetGimbalAbs(double pitchDeg, double yawDeg);
 
 #ifdef __cplusplus
 }

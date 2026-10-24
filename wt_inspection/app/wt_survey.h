@@ -91,12 +91,14 @@ bool WtSurvey_Begin(WtSurvey *s, const WtTurbineSpec *spec,
 /**
  * @brief 推进状态机，每个控制周期调一次。
  *
- * @param gimbal 当前云台指向（来自 `WtTelemetry.gimbal`）
+ * @param tele 遥测上下文。需要两样：`gimbal`（当前云台指向）与
+ *        `aircraft.yawDeg`（**机头朝向**）—— 后者是判 pan 可达性的前提，
+ *        因为云台 pan 的限位是相对机头的 ±60°，不是绝对方位角。
  *
  * @note 内部会调 `WtLaser_Read()`，而那是**阻塞调用**（实测最多 1.2 s）。
  *       所以本函数只能在主循环或采集线程里调，**绝不能在 PSDK 回调线程里调**。
  */
-void WtSurvey_Tick(WtSurvey *s, const WtGimbalState *gimbal);
+void WtSurvey_Tick(WtSurvey *s, const WtTelemetry *tele);
 
 /** @brief 中止会话 */
 void WtSurvey_Abort(WtSurvey *s);

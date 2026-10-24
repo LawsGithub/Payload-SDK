@@ -45,6 +45,8 @@ static WtSurveyObs MakeObsCentered(uint32_t nowMs)
     obs.haveGimbal = true;
     obs.gimbal.yawDeg = 30.0;
     obs.gimbal.pitchDeg = -20.0;
+    obs.haveBodyYaw = true;
+    obs.bodyYawDeg = 30.0;   /* 机头与云台同向 → 目标在可达范围内 */
     obs.haveDetection = true;
     obs.detectionAgeMs = 50;
     obs.targetVisible = true;
@@ -110,7 +112,7 @@ static void Test_OffTarget_Rotates(void)
     CHECK(s.attempts == 1, "应消耗一次重试（得到 %d）", s.attempts);
     CHECK(d.angularErrorDeg > 10.0, "角落目标夹角应很大（得到 %.1f）",
           d.angularErrorDeg);
-    /* 水平误差必须单独报出来 —— M4T 云台 yaw 不可控，只能靠机头 */
+    /* 水平误差要报出来：±60° 内由云台承担，超出则需转机头 */
     CHECK(fabs(d.yawErrorDeg) > 1.0, "应报出机头需要转的角度");
 }
 
@@ -368,6 +370,111 @@ static void Test_AbortAndFinished(void)
           "NULL 观测应安全返回");
 }
 
+/**
+ * 拿不到机头朝向时，下发的 yaw 必须是**当前云台 yaw**，绝不能是 0。
+ *
+ * 这是整条链路最致命的一个点：绝对角模式下 yaw=0 意为"转到正北"，而 M4T
+ * 的 pan 只有相对机头 ±60° —— 机头不朝北时正北够不到，**整条命令被拒**
+ * （0x600000004 YAW_REACH_POSITIVE_LIMIT），连 pitch 都不会转到位。
+ * 姊妹项目 2026-09-27 实测踩过。
+ */
+static void Test_NoBodyYaw_KeepsCurrentYaw(void)
+{
+    WtSurveyLogic s;
+    WtSurveyObs obs = MakeObsOffCenter(1000);
+    WtSurveyDecision d;
+
+    printf("Test_NoBodyYaw_KeepsCurrentYaw\n");
+
+    WtSurveyLogic_Begin(&s, NULL, 1000);
+
+    /* 模拟拿不到机头朝向（姿态话题还没来） */
+    obs.haveBodyYaw = false;
+    obs.gimbal.yawDeg = 137.0;
+
+    d = WtSurveyLogic_Step(&s, &obs);
+
+    CHECK(d.action == WT_SURVEY_ACT_ROTATE_GIMBAL, "仍应下发（只调 pitch）");
+    CHECK(fabs(d.gimbalYawDeg - 137.0) < 1e-9,
+          "yaw 必须保持当前云台值 137°，而不是 0（得到 %.1f）", d.gimbalYawDeg);
+    CHECK(fabs(d.gimbalYawDeg) > 1e-6,
+          "yaw 绝不能是 0 —— 那是'转到正北'，会让整条命令被拒");
+}
+
+/**
+ * 目标超出云台相对机头 ±60° → 要求转机头，且**不消耗重试次数**。
+ *
+ * 人转机头需要时间，按对准重试计数会在几秒内判死。
+ */
+static void Test_OutOfRange_AsksForBodyYaw(void)
+{
+    WtSurveyLogic s;
+    WtSurveyObs obs;
+    WtSurveyDecision d;
+    int i;
+
+    printf("Test_OutOfRange_AsksForBodyYaw\n");
+
+    WtSurveyLogic_Begin(&s, NULL, 1000);
+
+    /* 云台已指向 100°，而机头朝 0° → 相对角 100° > 60° */
+    obs = MakeObsCentered(1000);
+    obs.gimbal.yawDeg = 100.0;
+    obs.bodyYawDeg = 0.0;
+
+    d = WtSurveyLogic_Step(&s, &obs);
+
+    CHECK(d.action == WT_SURVEY_ACT_NEED_BODY_YAW, "应要求转机头");
+    CHECK(s.attempts == 0, "等人转机头不应消耗重试次数（得到 %d）", s.attempts);
+    CHECK(s.state == WT_SURVEY_AIMING, "应留在对准状态");
+
+    /* 持续超范围但未超时 → 一直要求转机头，不判死 */
+    for (i = 0; i < 20; i++) {
+        obs = MakeObsCentered(1000 + (uint32_t)i * 1000);
+        obs.gimbal.yawDeg = 100.0;
+        obs.bodyYawDeg = 0.0;
+        d = WtSurveyLogic_Step(&s, &obs);
+    }
+    CHECK(!WtSurveyLogic_IsFinished(&s), "20 秒内不应判死");
+
+    /* 超过 outOfRangeTimeoutMs → 判死，避免永久挂住 */
+    obs = MakeObsCentered(1000 + s.cfg.outOfRangeTimeoutMs + 1);
+    obs.gimbal.yawDeg = 100.0;
+    obs.bodyYawDeg = 0.0;
+    d = WtSurveyLogic_Step(&s, &obs);
+
+    CHECK(d.action == WT_SURVEY_ACT_FINISH, "超时后应结束");
+    CHECK(s.state == WT_SURVEY_FAILED, "应判为失败");
+}
+
+/** 机头转过来之后，超范围计时要清零，能正常继续 */
+static void Test_OutOfRange_RecoversAfterBodyTurn(void)
+{
+    WtSurveyLogic s;
+    WtSurveyObs obs;
+    WtSurveyDecision d;
+
+    printf("Test_OutOfRange_RecoversAfterBodyTurn\n");
+
+    WtSurveyLogic_Begin(&s, NULL, 1000);
+
+    obs = MakeObsCentered(1000);
+    obs.gimbal.yawDeg = 100.0;
+    obs.bodyYawDeg = 0.0;
+    d = WtSurveyLogic_Step(&s, &obs);
+    CHECK(d.action == WT_SURVEY_ACT_NEED_BODY_YAW, "先应要求转机头");
+    CHECK(s.outOfRangeSinceMs != 0, "应开始计时");
+
+    /* 操作员把机头转到 100° → 相对角归零，可达 */
+    obs = MakeObsCentered(5000);
+    obs.gimbal.yawDeg = 100.0;
+    obs.bodyYawDeg = 100.0;
+    d = WtSurveyLogic_Step(&s, &obs);
+
+    CHECK(s.outOfRangeSinceMs == 0, "可达后计时应清零");
+    CHECK(d.action != WT_SURVEY_ACT_NEED_BODY_YAW, "不应再要求转机头");
+}
+
 int main(void)
 {
     printf("=== 采集决策层测试 ===\n");
@@ -382,6 +489,9 @@ int main(void)
     Test_FullSequence_ReachesFit();
     Test_FitRejected_Fails();
     Test_LaserFail_ReturnsToAiming();
+    Test_NoBodyYaw_KeepsCurrentYaw();
+    Test_OutOfRange_AsksForBodyYaw();
+    Test_OutOfRange_RecoversAfterBodyTurn();
     Test_AbortAndFinished();
 
     if (s_failures == 0) {

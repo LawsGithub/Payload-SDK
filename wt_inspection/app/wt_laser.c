@@ -93,12 +93,34 @@ void WtLaser_DeInit(void)
 {
     if (s_gimbalInited) {
         /*
-         * 只复位 pitch —— 我们只动过这一个轴（M4T 的 yaw 本就不可控）。
-         * 用 PITCH_AND_YAW 会连带复位一个我们没碰过的轴，属于"还多了"，
-         * 同样是在改别人的状态。
+         * **必须把模式还成 YAW_FOLLOW。**
          *
-         * 这是能做到的最接近"归还"的动作：它不恢复之前的**模式**
-         * （PSDK 没有接口可查原模式，见头文件 @warning）。
+         * 姊妹项目为此踩过一次实打实的事故：照准功能借了 `FREE` 模式却
+         * 用完不还，而 `FREE` 的语义是"在地面坐标系固定云台姿态、忽略
+         * 飞行器运动" —— 之后绕飞时机头连续转 360°，pan 关节为了"保持
+         * 地面姿态"必须反向走 −360°，而它只有 ±60° ⇒ 转出去 60° 就顶
+         * 机械限位、电机持续给力 ⇒ 现场报「云台偏航顶限位 + 电机异常」。
+         *
+         * 所以归还不是礼节问题：`FREE` 残留在飞机上，下一个航线动作就可能
+         * 出事。而 PSDK 没有 GetGimbalMode，读不回原值 ⇒ 只能还成
+         * YAW_FOLLOW（M4T 的自然/默认状态），这也是姊妹项目的修法。
+         */
+        {
+            T_DjiReturnCode rc =
+                DjiGimbalManager_SetMode(WT_LASER_MOUNT, DJI_GIMBAL_MODE_YAW_FOLLOW);
+
+            if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+                USER_LOG_ERROR("激光：云台模式未能还成 YAW_FOLLOW rc=0x%08X"
+                               "—— FREE 残留会让后续绕飞顶 pan 限位，请人工复位",
+                               (unsigned)rc);
+            } else {
+                USER_LOG_INFO("激光：云台模式已还成 YAW_FOLLOW");
+            }
+        }
+
+        /*
+         * 只复位 pitch —— 用 PITCH_AND_YAW 会连带复位 yaw，而此刻 yaw 已经
+         * 交回 YAW_FOLLOW 跟随机头，再去复位它属于"还多了"。
          */
         (void)DjiGimbalManager_Reset(WT_LASER_MOUNT, DJI_GIMBAL_RESET_MODE_PITCH_ONLY);
         /* 注意拼写：云台是 Deinit（小写 i），相机是 DeInit（大写 I）——
@@ -193,7 +215,7 @@ bool WtLaser_Read(WtLaserSample *out)
     return out->valid;
 }
 
-bool WtLaser_SetGimbalPitchAbs(double pitchDeg, double seconds)
+bool WtLaser_SetGimbalAbs(double pitchDeg, double yawDeg)
 {
     T_DjiGimbalManagerRotation rot;
     T_DjiReturnCode rc;
@@ -207,18 +229,37 @@ bool WtLaser_SetGimbalPitchAbs(double pitchDeg, double seconds)
     rot.pitch = (dji_f32_t)pitchDeg;
     rot.roll = 0.0f;
     /*
-     * yaw 置 0 并不是"转到正北"，而是 ABSOLUTE_ANGLE 下 M4T 会忽略它
-     * （Pan 轴 Not controllable）。这里显式写 0 并加注释，是为了避免
-     * 后来者"顺手把 yaw 填上目标方位"—— 那样不会报错、也不会生效，
-     * 只会让人以为云台已经对准了水平方向。
+     * yaw 原样下发调用方给的值。**绝不能填 0** —— 那是"转到正北"，
+     * 机头不朝北时够不到，整条命令会被拒（见头文件说明）。
+     * 不想动 yaw 的调用方应该传入当前云台 yaw。
      */
-    rot.yaw = 0.0f;
-    rot.time = seconds;
+    rot.yaw = (dji_f32_t)yawDeg;
+    /*
+     * time = 0：让云台自己决定速度。
+     *
+     * 不自己指定时长，是因为 Payload-SDK issue #563 实测
+     * 「Rotate 的实际速度只有下发的 10–20%，差距非常大」—— 既然下发的
+     * 速度本来就不准，指定时长只会给出一个假的"预计到位时间"，
+     * 让调用方以为可以按它来等。到位与否只能靠**读回角度**判断。
+     */
+    rot.time = 0.0;
 
     rc = DjiGimbalManager_Rotate(WT_LASER_MOUNT, rot);
     if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
-        USER_LOG_WARN("激光：云台 Rotate(pitch=%.1f) 失败 rc=0x%08X",
-                      pitchDeg, (unsigned)rc);
+        /*
+         * 分病因 —— 两者的处置完全不同，混在一起报会把排查引向错误方向：
+         *   NON_CONTROL_AUTHORITY 是**权限**（有别的控制源在抢）
+         *   YAW_REACH_*_LIMIT     是**参数**（yaw 超出相对机头 ±60°）
+         */
+        if (rc == DJI_ERROR_GIMBAL_MODULE_CODE_NON_CONTROL_AUTHORITY) {
+            USER_LOG_ERROR("激光：云台控制权被占（勿同时在 Pilot 里操作云台）"
+                           " rc=0x%08X", (unsigned)rc);
+        } else {
+            USER_LOG_ERROR("激光：云台 Rotate(pitch=%.1f, yaw=%.1f) 被拒 rc=0x%08X"
+                           "（0x600000004 = yaw 超出相对机头 ±60°）",
+                           pitchDeg, yawDeg, (unsigned)rc);
+        }
+
         return false;
     }
 

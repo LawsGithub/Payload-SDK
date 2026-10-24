@@ -33,7 +33,11 @@ WtSurveyConfig WtSurveyLogic_DefaultConfig(void)
     c.maxSnapshotAgeMs = 800;
 
     c.maxAttemptsPerTarget = 12;
-    c.gimbalMoveSeconds = 1.0;
+
+    /*
+     * 60 秒：够操作员把机头转过去，又不至于让"人走了"的情况永久挂住。
+     */
+    c.outOfRangeTimeoutMs = 60000;
 
     return c;
 }
@@ -190,6 +194,49 @@ WtSurveyDecision WtSurveyLogic_Step(WtSurveyLogic *s, const WtSurveyObs *obs)
         d.pitchErrorDeg = aim.pitchErrorDeg;
         d.angularErrorDeg = aim.angularErrorDeg;
         d.gimbalPitchDeg = aim.targetPitchDeg;
+
+        /*
+         * yaw 的目标值。
+         *
+         * 拿不到机头朝向时无法判 pan 可达性（限位是相对机头的），于是退化成
+         * "只调 pitch" —— 而那必须表达成「yaw 保持当前值」，**不能填 0**：
+         * 绝对角模式下 0 是"转到正北"，机头不朝北就够不到，整条命令会被拒，
+         * 连 pitch 都不转。
+         */
+        d.gimbalYawDeg = obs->haveBodyYaw ? aim.targetYawDeg : obs->gimbal.yawDeg;
+
+        /*
+         * 可达性先判、再谈对准。
+         *
+         * 顺序不能反：若目标超出 pan 的 ±60°，下发会被整条拒掉
+         * （0x600000004），而现象是"云台没动"，看起来和"对不准"一样。
+         * 先判就能把它报成"请转机头"，这是操作员真正能处置的信息。
+         */
+        if (obs->haveBodyYaw) {
+            const char *why = NULL;
+
+            if (!WtAim_IsReachable(&aim, obs->bodyYawDeg, &why)) {
+                if (s->outOfRangeSinceMs == 0) {
+                    s->outOfRangeSinceMs = obs->nowMs;
+                }
+                if ((obs->nowMs - s->outOfRangeSinceMs) > s->cfg.outOfRangeTimeoutMs) {
+                    WtSurveyLogic_Enter(s, WT_SURVEY_FAILED, obs->nowMs,
+                                        "目标长时间超出云台可达范围");
+                    d.state = s->state;
+                    d.action = WT_SURVEY_ACT_FINISH;
+                    d.message = s->message;
+
+                    return d;
+                }
+
+                d.action = WT_SURVEY_ACT_NEED_BODY_YAW;
+                d.message = why;
+                /* 不消耗 attempts —— 这不是程序重试，是在等人转机头 */
+
+                return d;
+            }
+            s->outOfRangeSinceMs = 0;
+        }
 
         if (WtAim_IsOnTarget(&aim, s->cfg.aimToleranceDeg)) {
             /*

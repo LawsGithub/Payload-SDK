@@ -75,9 +75,17 @@ typedef enum {
 typedef enum {
     WT_SURVEY_ACT_NONE = 0,
     WT_SURVEY_ACT_WAIT,           /*!< 条件不满足，什么也别做，下个周期再来 */
-    WT_SURVEY_ACT_ROTATE_GIMBAL,  /*!< 下发 decision.gimbalPitchDeg */
+    WT_SURVEY_ACT_ROTATE_GIMBAL,  /*!< 下发 gimbalPitchDeg + gimbalYawDeg */
     WT_SURVEY_ACT_READ_LASER,     /*!< 读激光，成功后调 RecordPoint */
     WT_SURVEY_ACT_FIT,            /*!< 四点齐了，去做拟合，再调 FitDone */
+    /*
+     * 目标超出云台相对机头的 ±60°，云台够不到 —— **需要操作员转机头**。
+     *
+     * 单独成一个动作而不是混进 WAIT：这两件事给操作员的提示完全不同
+     * （"等一下"vs"请把机头转过去"），而且它不该消耗对准重试次数 ——
+     * 人转机头需要时间，按重试计数会很快判死。
+     */
+    WT_SURVEY_ACT_NEED_BODY_YAW,
     WT_SURVEY_ACT_FINISH          /*!< 会话已结束（成功或失败） */
 } E_WtSurveyAction;
 
@@ -87,7 +95,14 @@ typedef struct {
     uint32_t settleMs;          /*!< 云台下发后的停稳等待 */
     uint32_t maxSnapshotAgeMs;  /*!< 超过此年龄的检测快照不采信 */
     int maxAttemptsPerTarget;   /*!< 单目标最大重试次数 */
-    double gimbalMoveSeconds;   /*!< 单次云台转动的期望时长 */
+    /*
+     * 目标持续超出云台可达范围多久就判死。
+     *
+     * 不用重试次数来管这件事：超范围要靠操作员转机头，而人需要时间 ——
+     * 按次数计会在几秒内判死。但也不能无限等，否则"操作员走了"这种情况
+     * 会让会话永久挂住。
+     */
+    uint32_t outOfRangeTimeoutMs;
 } WtSurveyConfig;
 
 /** 一次 Step 的输入观测，由 app 层填好 */
@@ -96,6 +111,13 @@ typedef struct {
 
     bool haveGimbal;            /*!< 云台姿态是否可用 */
     WtCameraPose gimbal;        /*!< 当前云台指向（position 不参与方向解算） */
+
+    /*
+     * 机头朝向。**判 pan 可达性必须有它** —— 云台 pan 的限位是相对机头的
+     * ±60°，不是绝对方位角。拿不到机头朝向时只能退化成"只调 pitch"。
+     */
+    bool haveBodyYaw;
+    double bodyYawDeg;
 
     bool haveDetection;         /*!< 是否有过成功的识别 */
     uint32_t detectionAgeMs;
@@ -116,10 +138,18 @@ typedef struct {
     int targetIndex;
 
     double gimbalPitchDeg;      /*!< ROTATE_GIMBAL 时要下发的绝对俯仰角 */
+    /*
+     * ROTATE_GIMBAL 时要下发的绝对方位角。
+     *
+     * ⚠️ **拿不到机头朝向时，这里是「当前云台 yaw」而不是 0。**
+     * 绝对角模式下 yaw=0 意为"转到正北"，机头不朝北时够不到 ⇒ 整条命令
+     * 被拒，连 pitch 都不转。所以"不动 yaw"必须表达成"yaw 保持当前值"。
+     */
+    double gimbalYawDeg;
 
     /*
-     * 两轴误差分开报。M4T 云台 Pan 不可控 ⇒ yawErrorDeg 只能由机头承担，
-     * 程序动不了，必须呈现给操作员。
+     * 两轴误差。pan 在相对机头 ±60° 内由云台承担，超出则 action 会是
+     * NEED_BODY_YAW，此时 yawErrorDeg 就是要请操作员转的量。
      */
     double yawErrorDeg;
     double pitchErrorDeg;
@@ -134,6 +164,8 @@ typedef struct {
     int targetIndex;
     int attempts;
     uint32_t stateEnteredMs;
+    /* 目标开始超出可达范围的时刻；0 表示当前未超范围 */
+    uint32_t outOfRangeSinceMs;
     WtSurveyConfig cfg;
     const char *message;
 } WtSurveyLogic;

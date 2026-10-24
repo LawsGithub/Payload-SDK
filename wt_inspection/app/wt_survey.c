@@ -115,7 +115,7 @@ static bool WtSurvey_TargetPixel(const WtVisionSnapshot *snap, int targetIndex,
 }
 
 /** 组装决策层需要的观测 */
-static void WtSurvey_BuildObs(const WtSurvey *s, const WtGimbalState *gimbal,
+static void WtSurvey_BuildObs(const WtSurvey *s, const WtTelemetry *tele,
                               WtSurveyObs *obs)
 {
     WtVisionSnapshot snap;
@@ -124,11 +124,20 @@ static void WtSurvey_BuildObs(const WtSurvey *s, const WtGimbalState *gimbal,
     memset(obs, 0, sizeof(*obs));
     obs->nowMs = WtSurvey_NowMs();
 
-    if (gimbal != NULL && gimbal->valid) {
+    if (tele != NULL && tele->gimbal.valid) {
         obs->haveGimbal = true;
-        obs->gimbal.yawDeg = gimbal->yawDeg;
-        obs->gimbal.pitchDeg = gimbal->pitchDeg;
-        obs->gimbal.rollDeg = gimbal->rollDeg;
+        obs->gimbal.yawDeg = tele->gimbal.yawDeg;
+        obs->gimbal.pitchDeg = tele->gimbal.pitchDeg;
+        obs->gimbal.rollDeg = tele->gimbal.rollDeg;
+    }
+
+    /*
+     * 机头朝向：判 pan 可达性必须有它（限位是相对机头的 ±60°）。
+     * 拿不到时决策层会退化成"只调 pitch、yaw 保持当前值"。
+     */
+    if (tele != NULL && tele->aircraft.validAttitude) {
+        obs->haveBodyYaw = true;
+        obs->bodyYawDeg = tele->aircraft.yawDeg;
     }
 
     /*
@@ -224,7 +233,7 @@ static void WtSurvey_DoLaser(WtSurvey *s, uint32_t nowMs)
     WtSurveyLogic_RecordPoint(&s->logic, nowMs);
 }
 
-void WtSurvey_Tick(WtSurvey *s, const WtGimbalState *gimbal)
+void WtSurvey_Tick(WtSurvey *s, const WtTelemetry *tele)
 {
     WtSurveyObs obs;
     WtSurveyDecision d;
@@ -233,7 +242,7 @@ void WtSurvey_Tick(WtSurvey *s, const WtGimbalState *gimbal)
         return;
     }
 
-    WtSurvey_BuildObs(s, gimbal, &obs);
+    WtSurvey_BuildObs(s, tele, &obs);
     d = WtSurveyLogic_Step(&s->logic, &obs);
 
     s->yawErrorDeg = d.yawErrorDeg;
@@ -243,15 +252,24 @@ void WtSurvey_Tick(WtSurvey *s, const WtGimbalState *gimbal)
     switch (d.action) {
     case WT_SURVEY_ACT_ROTATE_GIMBAL:
         /*
-         * 只下发俯仰。水平偏差交给操作员转机头 —— M4T 云台 Pan 不可控，
-         * 这里若把 yaw 一并下发，不会报错也不会生效。
+         * pitch 与 yaw 一起下发。yaw 由决策层给出：可达时是目标方位角，
+         * 拿不到机头朝向时是"当前云台 yaw"（绝不是 0，否则整条命令被拒）。
          */
-        (void)WtLaser_SetGimbalPitchAbs(d.gimbalPitchDeg,
-                                        s->logic.cfg.gimbalMoveSeconds);
-        USER_LOG_INFO("采集：对准 %s —— 云台俯仰 → %.1f°，"
-                      "机头还需转 %+.1f°（夹角 %.1f°）",
-                      WtSurveyLogic_TargetName(d.targetIndex), d.gimbalPitchDeg,
-                      d.yawErrorDeg, d.angularErrorDeg);
+        (void)WtLaser_SetGimbalAbs(d.gimbalPitchDeg, d.gimbalYawDeg);
+        USER_LOG_INFO("采集：对准 %s —— 云台 pitch → %.1f°、yaw → %.1f°"
+                      "（夹角 %.1f°）",
+                      WtSurveyLogic_TargetName(d.targetIndex),
+                      d.gimbalPitchDeg, d.gimbalYawDeg, d.angularErrorDeg);
+        break;
+
+    case WT_SURVEY_ACT_NEED_BODY_YAW:
+        /*
+         * 云台够不到，只能靠机头。这里只提示，**不操纵飞机** ——
+         * 让采集模块去转机身需要飞控控制权，风险与收益不成比例。
+         */
+        USER_LOG_WARN("采集：%s 超出云台范围 —— 请把机头转 %+.0f°（%s）",
+                      WtSurveyLogic_TargetName(d.targetIndex),
+                      d.yawErrorDeg, d.message ? d.message : "");
         break;
 
     case WT_SURVEY_ACT_READ_LASER:
