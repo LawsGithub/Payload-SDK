@@ -75,7 +75,8 @@ static const char *const WT_KEYS_INSPECTION[] = {
 static const char *const WT_KEYS_APP[] = {
     "telemetry_hz", "gimbal_track_gain", "track_deadband", "auto_start", "output_dir",
     "dry_run", "no_actions", "ai_overlay", "stream_probe",
-    "survey_enabled", "survey_engine", "survey_infer_interval_ms", "geoid_offset_m", NULL,
+    "survey_enabled", "survey_engine", "survey_infer_interval_ms", "geoid_offset_m",
+    "survey_selftest", NULL,
 };
 
 static const char *const WT_KEYS_TURBINE[] = {
@@ -645,6 +646,8 @@ bool WtAppConfig_Load(const char *path, WtAppConfig *config)
                     applied = WtConfig_GetInt(value, &config->surveyInferIntervalMs);
                 } else if (strcmp(key, "geoid_offset_m") == 0) {
                     applied = WtConfig_GetDouble(value, &config->geoidOffsetM);
+                } else if (strcmp(key, "survey_selftest") == 0) {
+                    applied = WtConfig_GetBool(value, &config->surveySelfTest);
                 }
             }
 
@@ -887,6 +890,8 @@ bool WtAppConfig_WriteTemplate(const char *path)
             "# 固定解、退化到融合定位时才需要 —— 融合定位给椭球高而台账给海拔。\n"
             "# 不填则 ENU 天向分量被标记为不可信（水平仍可用）。\n"
             "# geoid_offset_m    = -38.0\n"
+            "# 启动后跑一次云台+激光自检（不需要风机在画面里）。验完关掉。\n"
+            "# survey_selftest   = false\n"
             "\n"
             "# 每台风机一个段落，段落名即风机编号\n"
             "[turbine.WT-A01]\n"

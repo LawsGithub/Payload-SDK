@@ -64,23 +64,11 @@ bool WtLaser_Init(void)
             return false;
         }
         s_gimbalInited = true;
-
         /*
-         * FREE 模式：云台姿态锁定在地面坐标系，忽略飞机自身的运动。
-         * 对准一个固定目标（叶尖）必须用这个模式 —— YAW_FOLLOW 会让云台
-         * 跟着机头转，刚对准的目标会被机头的微小偏转带走。
-         *
-         * ⚠️ 这是在改飞机上的全局状态，而 PSDK 没有 GetGimbalMode，
-         * 无法读回原值、也就无法真正归还（见头文件的 @warning）。
+         * **这里不碰云台模式。** 借与还由 BorrowFreeMode/ReturnFollowMode
+         * 成对管理，作用域是一次采集会话 —— 因为 dji_app_ctl stop 直接杀
+         * 进程，放在 DeInit 里归还等于永远不还（见头文件说明）。
          */
-        rc = DjiGimbalManager_SetMode(WT_LASER_MOUNT, DJI_GIMBAL_MODE_FREE);
-        if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
-            USER_LOG_WARN("激光：云台 SetMode(FREE) 失败 rc=0x%08X，"
-                          "对准可能被机头运动带偏", (unsigned)rc);
-        } else {
-            USER_LOG_INFO("激光：云台已设为 FREE 模式（注意：此为全局状态，"
-                          "PSDK 无法读回原值，作业后不会自动还原）");
-        }
     }
 
     s_haveSample = false;
@@ -93,30 +81,13 @@ void WtLaser_DeInit(void)
 {
     if (s_gimbalInited) {
         /*
-         * **必须把模式还成 YAW_FOLLOW。**
+         * 兜底归还。正常路径上会话结束时已经还过了（ReturnFollowMode 可
+         * 重复调用），这里只是防"会话异常退出"。
          *
-         * 姊妹项目为此踩过一次实打实的事故：照准功能借了 `FREE` 模式却
-         * 用完不还，而 `FREE` 的语义是"在地面坐标系固定云台姿态、忽略
-         * 飞行器运动" —— 之后绕飞时机头连续转 360°，pan 关节为了"保持
-         * 地面姿态"必须反向走 −360°，而它只有 ±60° ⇒ 转出去 60° 就顶
-         * 机械限位、电机持续给力 ⇒ 现场报「云台偏航顶限位 + 电机异常」。
-         *
-         * 所以归还不是礼节问题：`FREE` 残留在飞机上，下一个航线动作就可能
-         * 出事。而 PSDK 没有 GetGimbalMode，读不回原值 ⇒ 只能还成
-         * YAW_FOLLOW（M4T 的自然/默认状态），这也是姊妹项目的修法。
+         * ⚠️ 但**不能依赖这里** —— dji_app_ctl stop 直接杀进程，本函数
+         * 根本不会被执行（2026-10-22 实测：收尾日志一行都没有）。
          */
-        {
-            T_DjiReturnCode rc =
-                DjiGimbalManager_SetMode(WT_LASER_MOUNT, DJI_GIMBAL_MODE_YAW_FOLLOW);
-
-            if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
-                USER_LOG_ERROR("激光：云台模式未能还成 YAW_FOLLOW rc=0x%08X"
-                               "—— FREE 残留会让后续绕飞顶 pan 限位，请人工复位",
-                               (unsigned)rc);
-            } else {
-                USER_LOG_INFO("激光：云台模式已还成 YAW_FOLLOW");
-            }
-        }
+        WtLaser_ReturnFollowMode();
 
         /*
          * 只复位 pitch —— 用 PITCH_AND_YAW 会连带复位 yaw，而此刻 yaw 已经
@@ -133,6 +104,58 @@ void WtLaser_DeInit(void)
         (void)DjiCameraManager_DeInit();
         s_cameraInited = false;
     }
+}
+
+/* 当前是否借着 FREE —— 用于让归还可重复调用而不刷日志 */
+static bool s_freeModeBorrowed = false;
+
+bool WtLaser_BorrowFreeMode(void)
+{
+    T_DjiReturnCode rc;
+
+    if (!s_gimbalInited) {
+        return false;
+    }
+    if (s_freeModeBorrowed) {
+        return true;
+    }
+
+    rc = DjiGimbalManager_SetMode(WT_LASER_MOUNT, DJI_GIMBAL_MODE_FREE);
+    if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+        USER_LOG_WARN("激光：云台 SetMode(FREE) 失败 rc=0x%08X，"
+                      "对准可能被机头运动带偏", (unsigned)rc);
+        return false;
+    }
+
+    s_freeModeBorrowed = true;
+    USER_LOG_INFO("激光：已借用云台 FREE 模式（会话结束即归还）");
+
+    return true;
+}
+
+void WtLaser_ReturnFollowMode(void)
+{
+    T_DjiReturnCode rc;
+
+    if (!s_gimbalInited || !s_freeModeBorrowed) {
+        return;
+    }
+
+    rc = DjiGimbalManager_SetMode(WT_LASER_MOUNT, DJI_GIMBAL_MODE_YAW_FOLLOW);
+    if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+        /*
+         * 还不回去是**需要人工介入**的状态，不是普通告警：FREE 残留会让
+         * 后续机头连续转动时 pan 顶限位、电机持续给力。所以报 ERROR 并
+         * 明确告诉操作员怎么办。
+         */
+        USER_LOG_ERROR("激光：云台模式未能还成 YAW_FOLLOW rc=0x%08X —— "
+                       "FREE 残留会让后续绕飞顶 pan 限位，请用遥控器拨一下"
+                       "云台轮拿回控制权，或重启飞机", (unsigned)rc);
+        return;
+    }
+
+    s_freeModeBorrowed = false;
+    USER_LOG_INFO("激光：云台模式已还成 YAW_FOLLOW");
 }
 
 bool WtLaser_Read(WtLaserSample *out)

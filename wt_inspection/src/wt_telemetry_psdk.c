@@ -282,7 +282,18 @@ bool WtTelemetry_Init(WtTelemetry *telemetry, const WtTurbineSpec *spec)
          * （见文件上方的大段说明）。
          *
          * 预算核对（头文件约束：同频率话题种类 ≤ 4 组、数据长度和 ≤ 242 字节）：
-         * 本表 8 个话题全走 10Hz（= 1 种频率），合计约 93 字节，余量充足。
+         * 本表 9 个话题全走 10Hz（= 1 种频率），合计约 105 字节，余量充足。
+         *
+         * ⚠️ **M4T 上 `GIMBAL_ANGLES`(26) 订不上（0xE0 NONSUPPORT）** ——
+         * 2026-10-22 上机实测。对照事实：同一次 Init 里 `QUATERNION` 的
+         * 回调正常推送（机头姿态读得到），所以**不是订阅机制或时序问题**
+         * （把 GimbalManager_Init 提前到订阅之前，重试仍是 0xE0）。
+         * 也排除了"模块未初始化"（那个说法是 liveview 的教训，不适用这里）。
+         *
+         * 对策：改用 `GIMBAL_ANGLES_ON_POS_NO1`(48) —— 语义更精确
+         * （明确指定挂载位 1，而我们的相机就在 NO1），头文件对两者描述的
+         * 数据格式与参考系完全相同（NED、x=pitch/y=roll/z=yaw、deg）。
+         * 两者都订、谁先到用谁，并在日志里报出各自结果，便于一次看清。
          */
         const struct {
             E_DjiFcSubscriptionTopic topic;
@@ -302,6 +313,8 @@ bool WtTelemetry_Init(WtTelemetry *telemetry, const WtTurbineSpec *spec)
             {DJI_FC_SUBSCRIPTION_TOPIC_HEIGHT_RELATIVE, WtCb_Height, "HEIGHT_RELATIVE"},
             {DJI_FC_SUBSCRIPTION_TOPIC_STATUS_FLIGHT, WtCb_FlightStatus, "STATUS_FLIGHT"},
             {DJI_FC_SUBSCRIPTION_TOPIC_GIMBAL_ANGLES, WtCb_Gimbal, "GIMBAL_ANGLES"},
+            {DJI_FC_SUBSCRIPTION_TOPIC_GIMBAL_ANGLES_ON_POS_NO1, WtCb_Gimbal,
+             "GIMBAL_ANGLES_ON_POS_NO1"},
         };
         size_t i;
 
@@ -310,6 +323,8 @@ bool WtTelemetry_Init(WtTelemetry *telemetry, const WtTurbineSpec *spec)
                                                  subs[i].cb);
             if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
                 USER_LOG_WARN("订阅 %s 失败: 0x%08X", subs[i].name, (unsigned)rc);
+            } else {
+                USER_LOG_INFO("订阅 %s 成功", subs[i].name);
             }
         }
     }
@@ -334,6 +349,7 @@ void WtTelemetry_DeInit(WtTelemetry *telemetry)
         DJI_FC_SUBSCRIPTION_TOPIC_HEIGHT_RELATIVE,
         DJI_FC_SUBSCRIPTION_TOPIC_STATUS_FLIGHT,
         DJI_FC_SUBSCRIPTION_TOPIC_GIMBAL_ANGLES,
+        DJI_FC_SUBSCRIPTION_TOPIC_GIMBAL_ANGLES_ON_POS_NO1,
     };
     size_t i;
 

@@ -59,23 +59,43 @@ typedef struct {
 /**
  * @brief 初始化相机与云台管理模块。
  *
- * @warning 本函数会把云台设为 `DJI_GIMBAL_MODE_FREE`（姿态锁定地面坐标系、
- *          忽略飞机运动）—— 静止观测一个固定目标需要它，否则 `YAW_FOLLOW`
- *          下云台 yaw 跟着机身转，会和我们下发的绝对方位角互相抢。
- *
- *          **`WtLaser_DeInit()` 必须被调用，它会把模式还成 `YAW_FOLLOW`。**
- *          这不是礼节问题：`FREE` 残留在飞机上，之后一旦飞机头连续转动
- *          （比如绕飞航线），pan 关节为"保持地面姿态"要反向补偿，而它只有
- *          ±60° ⇒ 顶机械限位、电机持续给力 ⇒ 现场报「偏航顶限位 + 云台
- *          电机异常」。姊妹项目为这个踩过一次实打实的事故。
- *
- *          PSDK 没有 `GetGimbalMode`，读不回原值，所以只能还成 YAW_FOLLOW
- *          （M4T 的自然状态）而不是"原来那个"。
+ * **不改云台模式** —— 模式的借与还由 `WtLaser_BorrowFreeMode()` /
+ * `WtLaser_ReturnFollowMode()` 成对管理，作用域是**一次采集会话**，
+ * 不是进程生命周期。原因见那两个函数的说明。
  */
 bool WtLaser_Init(void);
 
-/** @brief 复位云台并反初始化 */
+/** @brief 反初始化（会先尝试归还云台模式兜底） */
 void WtLaser_DeInit(void);
+
+/**
+ * @brief 借用 `DJI_GIMBAL_MODE_FREE`（姿态锁定地面坐标系、忽略飞机运动）。
+ *
+ * 静止观测一个固定目标需要它：`YAW_FOLLOW` 下云台 yaw 跟着机身转，
+ * 会和我们下发的绝对方位角互相抢。
+ *
+ * ⚠️ **必须与 `WtLaser_ReturnFollowMode()` 成对使用，且要在一次采集会话
+ * 结束时就还**，不能拖到进程退出。
+ *
+ * 2026-10-22 实测教训：`dji_app_ctl stop` 是**直接杀进程**的 ——
+ * 收尾日志一行都没有，`WtLaser_DeInit()` 根本不会被调用。此前把归还放在
+ * DeInit 里，等于"永远不还"，FREE 就留在了飞机上。
+ *
+ * 而 FREE 残留的后果是实打实的事故（姊妹项目踩过）：之后机头一旦连续
+ * 转动（绕飞航线），pan 关节为"保持地面姿态"要反向补偿，而它只有 ±60°
+ * ⇒ 顶机械限位、电机持续给力 ⇒ 现场报「偏航顶限位 + 云台电机异常」。
+ *
+ * ⇒ 所以借用的作用域必须贴着**真正需要它的那段时间**。
+ */
+bool WtLaser_BorrowFreeMode(void);
+
+/**
+ * @brief 归还云台模式（设为 `YAW_FOLLOW`，M4T 的自然状态）。
+ *
+ * PSDK 没有 `GetGimbalMode`，读不回原值，所以只能还成 YAW_FOLLOW
+ * 而不是"原来那个"。重复调用是安全的。
+ */
+void WtLaser_ReturnFollowMode(void);
 
 /**
  * @brief 读一次激光测距。

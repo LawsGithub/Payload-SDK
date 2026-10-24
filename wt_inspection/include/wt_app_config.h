@@ -174,6 +174,16 @@ typedef struct {
      * 两个 alt 相减。
      */
     double geoidOffsetM;
+    /*
+     * 启动后跑一次云台 + 激光自检（默认 false）。
+     *
+     * 验的是整条对准闭环的两块基石，且**不需要风机在画面里**：
+     *   ① 云台 pan 到底能不能被 PSDK 转（官方规格页把它标成
+     *      "Not controllable"，姊妹项目实测能转，但我们这条代码路径没验过）
+     *   ② 激光能不能读到有效回波
+     * 下发的角度都在 M4T 可控范围内，飞机在地面时安全。验完关掉。
+     */
+    bool surveySelfTest;
 
     char outputDir[WT_CONFIG_MAX_PATH]; /*!< 航线与照片索引的输出目录 */
 } WtAppConfig;

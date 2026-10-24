@@ -95,6 +95,21 @@ static void WtPump_ImageCallback(E_DjiLiveViewCameraPosition position,
     s_slotReady = true;
 
     pthread_mutex_unlock(&s_lock);
+
+    /*
+     * 前几帧 + 之后每 150 帧（5 秒 @30fps）打一行。
+     *
+     * 为什么必须打：上一版只在 Stop 里打累计计数，而 `dji_app_ctl stop`
+     * 是**直接杀进程**、不走收尾路径（2026-10-22 实测：收尾日志一行都没有）
+     * ⇒ 那个计数永远看不到，于是"取流到底有没有收到帧"无法判断。
+     * 诊断信息必须在**运行中**就能看到，不能只在退出时打。
+     */
+    if (s_received <= 3u || (s_received % 150u) == 0u) {
+        USER_LOG_INFO("取流：第 %u 帧 %ux%u pixFmt=%d %u 字节（累计丢 %u）",
+                      (unsigned)s_received, (unsigned)imageInfo.width,
+                      (unsigned)imageInfo.height, (int)imageInfo.pixFmt,
+                      (unsigned)len, (unsigned)s_dropped);
+    }
 }
 
 bool WtFramePump_Start(void)

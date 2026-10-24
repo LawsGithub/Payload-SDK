@@ -85,6 +85,29 @@ static void *WtVision_ThreadMain(void *arg)
                 snap.conf = trt.items[0].conf;
             }
 
+            /*
+             * 运行中的推理诊断。
+             *
+             * 和取流那边同一个教训（2026-10-22 实测）：`dji_app_ctl stop`
+             * 直接杀进程，只在 Stop 里打累计计数 = 永远看不到。而"推理在跑
+             * 但检不出目标"和"推理根本没跑"在外部看起来一模一样，必须能分辨。
+             *
+             * 每 25 次推理（约 5 秒 @200ms）打一行，报检出数与最高 conf。
+             */
+            if (s_inferCount <= 3u || (s_inferCount % 25u) == 0u) {
+                if (trt.count > 0) {
+                    USER_LOG_INFO("视觉：第 %u 次推理 —— 检出 %d 个目标，"
+                                  "最高 conf %.2f，轮毂像素 (%.0f, %.0f)",
+                                  (unsigned)s_inferCount, trt.count,
+                                  (double)trt.items[0].conf,
+                                  (double)trt.items[0].kptX[3],
+                                  (double)trt.items[0].kptY[3]);
+                } else {
+                    USER_LOG_INFO("视觉：第 %u 次推理 —— 未检出目标"
+                                  "（画面里没有风机？）", (unsigned)s_inferCount);
+                }
+            }
+
             if (WtAiBridge_FromTrtResult(&trt, &snap.det)) {
                 /*
                  * 排序必须在存快照之前。模型的三个叶尖输出是无序的，

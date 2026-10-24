@@ -8,6 +8,7 @@
  * 完全一致可以把这类问题排除在外，把注意力留给业务逻辑。
  */
 
+#include <math.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -71,6 +72,181 @@ static bool s_configReady = false;
 static bool s_surveyReady = false;
 /* 本次运行是否已采集过 —— 叶片没动，重复采没有意义 */
 static bool s_surveyDone = false;
+
+/**
+ * @brief 云台 + 激光自检。**不需要风机在画面里。**
+ *
+ * 验的是整条对准闭环的两块基石，而它们到现在都还没在本项目的代码路径上
+ * 验证过：
+ *
+ *   ① **云台 pan 能不能被 PSDK 转。** DJI 官方规格页把 M4T 的 Pan 标成
+ *      "Not controllable"，但同一页又写着 yaw 轴 MSDK 可控、且机械范围有
+ *      ±65°。姊妹项目实测 PSDK 能转。整条对准闭环都压在这条上，所以必须
+ *      自己验一次。
+ *   ② **激光能不能读到有效回波。**
+ *
+ * 做法是「下发 → 读回」而不是只看返回码：Payload-SDK issue #555/#563 的
+ * 教训就是「下发了 ≠ 执行了」（#563：实际速度只有下发的 10–20%）。
+ * 只有读回角度才算闭环。
+ *
+ * 安全性：pitch 取 −30/−45 两个温和值，yaw 只相对机头偏 ±20°，都在 M4T
+ * 可控范围（pitch −90~70、pan 相对机头 ±60）内，飞机在地面时安全。结束后
+ * 归还模式。
+ */
+static void WtApp_RunGimbalLaserSelfTest(void)
+{
+    WtTelemetry *tele = &s_runner.telemetry;
+    double baseYaw = 0.0;
+    double baseBodyYaw = 0.0;
+    int i;
+
+    USER_LOG_INFO("==== 云台 + 激光自检开始（不需要风机）====");
+
+    if (!WtLaser_BorrowFreeMode()) {
+        USER_LOG_ERROR("自检：借 FREE 模式失败，后续角度可能被机头运动带偏");
+    }
+
+    /*
+     * 先拿一次基准姿态。
+     *
+     * 每秒报一次进度，而不是等够时间后一次报结果 —— 这样
+     * 「等得不够」与「根本不推」才能分开。姊妹项目的原话：
+     * 「第一轮只等 600 ms 就下了'读不到'的结论，那是错的；
+     *   第二轮改成每秒报累计条数，1 秒就收到 50 条」。
+     * 只有时间能把这两件事分开。
+     */
+    for (i = 0; i < 10; i++) {
+        WtTelemetry_Poll(tele);
+        if (tele->gimbal.valid && tele->aircraft.validAttitude) {
+            break;
+        }
+        USER_LOG_INFO("自检：等姿态… %d/10（云台%s 机头%s）",
+                      i + 1, tele->gimbal.valid ? "✓" : "✗",
+                      tele->aircraft.validAttitude ? "✓" : "✗");
+        usleep(1000 * 1000);
+    }
+    if (!tele->gimbal.valid) {
+        /*
+         * 云台角度话题在 M4T 上订不上（0xE0），这是硬限制：
+         * 2026-10-22 实测，换 GIMBAL_ANGLES_ON_POS_NO1、把
+         * DjiGimbalManager_Init 提前到订阅之前，**都无效**；而同一次
+         * Init 里 QUATERNION 正常推送 ⇒ 不是订阅机制/时序/话题编号问题。
+         *
+         * 但**这不阻断目标**：整条对准闭环只需要"下发目标角"，
+         * 不需要读回。所以降级为「只验下发是否被接受」——
+         * 这同样能回答"pan 到底能不能控"（被拒 vs 接受）。
+         *
+         * 代价：无法闭环校验到位（issue #563 说实速只有下发的 10–20%，
+         * 所以"下发了"不等于"转到了"）。现场需目视确认云台有没有动。
+         */
+        USER_LOG_WARN("自检：云台角度话题不可订（M4T 硬限制），"
+                      "降级为「只验下发」—— 请目视观察云台是否真的转动");
+        /*
+         * 读不到云台角 ⇒ 拿不到"当前 yaw"。此时**绝不能填 0** 下发：
+         * 绝对角模式下 0 是"转到正北"，机头不朝北就够不到，整条命令被拒
+         * （2026-10-22 本项目自检实测：pitch 下发失败正是这个原因）。
+         * 用**机头朝向**兜底 —— pan 相对机头 ±60° 内，机头朝向一定够得到。
+         */
+        tele->gimbal.valid = false;
+        baseYaw = tele->aircraft.validAttitude ? tele->aircraft.yawDeg : 0.0;
+        tele->gimbal.yawDeg = baseYaw;
+        tele->gimbal.pitchDeg = 0.0;
+        baseBodyYaw = baseYaw;
+    } else {
+        baseYaw = tele->gimbal.yawDeg;
+        baseBodyYaw = tele->aircraft.validAttitude ? tele->aircraft.yawDeg : baseYaw;
+        USER_LOG_INFO("自检：基准 —— 云台 pitch %.1f° yaw %.1f°，机头 %.1f°",
+                      tele->gimbal.pitchDeg, baseYaw, baseBodyYaw);
+    }
+
+    /* ---- ① pitch：下发 → 读回 ---- */
+    {
+        const double targets[] = {-30.0, -45.0};
+        size_t k;
+
+        for (k = 0; k < sizeof(targets) / sizeof(targets[0]); k++) {
+            /* yaw 原样回填当前值 —— 填 0 会被当成"转到正北"而整条被拒 */
+            if (!WtLaser_SetGimbalAbs(targets[k], tele->gimbal.yawDeg)) {
+                USER_LOG_ERROR("自检：pitch → %.1f° 下发失败", targets[k]);
+                continue;
+            }
+            for (i = 0; i < 15; i++) {
+                usleep(200 * 1000);
+                WtTelemetry_Poll(tele);
+            }
+            if (tele->gimbal.valid) {
+                USER_LOG_INFO("自检：pitch 目标 %.1f° → 读回 %.1f°（偏差 %+.1f°）%s",
+                              targets[k], tele->gimbal.pitchDeg,
+                              tele->gimbal.pitchDeg - targets[k],
+                              (fabs(tele->gimbal.pitchDeg - targets[k]) < 3.0)
+                                  ? "  ✓ 到位" : "  ⚠ 未到位");
+            } else {
+                USER_LOG_INFO("自检：pitch → %.1f° 已被接受（无读回，请目视）",
+                              targets[k]);
+            }
+        }
+    }
+
+    /* ---- ② pan：这是关键的一条 ---- */
+    {
+        const double relTargets[] = {20.0, -20.0, 0.0};
+        size_t k;
+
+        for (k = 0; k < sizeof(relTargets) / sizeof(relTargets[0]); k++) {
+            const double targetYaw = Wt_Wrap360(baseBodyYaw + relTargets[k]);
+
+            if (!WtLaser_SetGimbalAbs(tele->gimbal.pitchDeg, targetYaw)) {
+                USER_LOG_ERROR("自检：yaw → %.1f°（相对机头 %+.0f°）下发失败"
+                               " —— 若是 0x600000004 则为超限，0x600000006 为权限",
+                               targetYaw, relTargets[k]);
+                continue;
+            }
+            for (i = 0; i < 15; i++) {
+                usleep(200 * 1000);
+                WtTelemetry_Poll(tele);
+            }
+            if (tele->gimbal.valid) {
+                const double err = Wt_AngleDiff(tele->gimbal.yawDeg, targetYaw);
+
+                USER_LOG_INFO("自检：yaw 目标 %.1f°（相对机头 %+.0f°）→ 读回 %.1f°"
+                              "（偏差 %+.1f°）%s",
+                              targetYaw, relTargets[k], tele->gimbal.yawDeg, err,
+                              (fabs(err) < 5.0) ? "  ✓ pan 确实能转"
+                                                : "  ⚠ 没转到（pan 不可控？）");
+            } else {
+                USER_LOG_INFO("自检：yaw → %.1f°（相对机头 %+.0f°）已被接受 "
+                              "⇒ PSDK 能下发 pan（无读回，请目视确认云台水平转动）",
+                              targetYaw, relTargets[k]);
+            }
+        }
+    }
+
+    /* ---- ③ 激光 ---- */
+    {
+        WtLaserSample sample;
+        int ok = 0;
+
+        for (i = 0; i < 5; i++) {
+            if (WtLaser_Read(&sample) && sample.valid) {
+                ok++;
+                USER_LOG_INFO("自检：激光第 %d 次 —— 距离 %.1f m，"
+                              "打中点 (%.7f, %.7f, %.1f m)，落点屏幕 (%.1f%%, %.1f%%)",
+                              i + 1, sample.distanceM, sample.point.lat,
+                              sample.point.lon, sample.point.alt,
+                              sample.screenXPct, sample.screenYPct);
+            } else {
+                USER_LOG_WARN("自检：激光第 %d 次无有效回波（exception=%u，"
+                              "对着天空或超量程时正常）", i + 1,
+                              (unsigned)sample.exception);
+            }
+            usleep(400 * 1000); /* > 250ms，避开 5Hz 限频拿到旧值 */
+        }
+        USER_LOG_INFO("自检：激光 %d/5 次有效", ok);
+    }
+
+    WtLaser_ReturnFollowMode();
+    USER_LOG_INFO("==== 自检结束（云台模式已归还）====");
+}
 
 /**
  * @brief 跑一次采集会话，直到结束或被中止。
@@ -142,6 +318,17 @@ static void WtApp_RunSurvey(void)
      * `WtRunner_PlanTurbine` 里 `WtTurbine_BuildRotorFrame()` 那一行，
      * 属于动核心流程，等整条链路上机验证通过再做。
      */
+    /*
+     * 归还云台模式 —— **必须在这里还，不能等进程退出**。
+     *
+     * 2026-10-22 实测：`dji_app_ctl stop` 直接杀进程，收尾路径一行都不执行，
+     * 所以放在 DeInit 里归还等于永远不还，FREE 就留在飞机上了（之后机头
+     * 连续转动会顶 pan 限位、报云台电机异常）。
+     *
+     * 放在成败判断**之前**，因为失败路径同样借过模式。
+     */
+    WtLaser_ReturnFollowMode();
+
     if (survey.fitAccepted) {
         s_runner.config.turbines[0].parkPhaseDeg = survey.fit.parkPhaseDeg;
         WtWidget_SetParkPhaseInitial(survey.fit.parkPhaseDeg);
@@ -483,28 +670,52 @@ int main(int argc, char **argv)
             if (WtRunner_Init(&s_runner, configPath) != WT_RUN_OK) {
                 USER_LOG_ERROR("运行器初始化失败，本次不执行飞行（配置问题，非启动失败）");
                 s_configReady = false;
-            } else if (!WtTelemetry_Init(&s_runner.telemetry,
-                                         s_runner.config.turbineCount > 0
-                                             ? &s_runner.config.turbines[0].spec
-                                             : NULL)) {
-                USER_LOG_ERROR("遥测初始化失败，本次不执行飞行");
-                WtRunner_DeInit(&s_runner);
-                s_configReady = false;
             } else {
-                s_configReady = true;
-
                 /*
-                 * 把配置文件里的值灌进控件作初值。
+                 * 相机/云台模块必须**先于遥测订阅**初始化。
                  *
-                 * 不做这一步的话，操作员打开 Payload Settings 看到停用角是 0，
-                 * 而程序实际用配置里的 45 —— 两边对不上，且他一旦点一下输入框
-                 * 就会把 45 覆盖成 0。控件初值必须与配置一致。
+                 * 2026-10-22 上机实测的时序：
+                 *   00:16:37.4  WtTelemetry_Init  订阅 GIMBAL_ANGLES → 0xE0
+                 *   00:16:42.5  WtLaser_Init      DjiGimbalManager_Init()
+                 * 订阅比模块初始化早了 5 秒，于是拿到 `0xE0 NONSUPPORT`。
+                 *
+                 * **0xE0 在这里是"模块未初始化"的伪装**，不是"机型不支持" ——
+                 * 这与 wt_ai_stream_probe.c 里记的 liveview 教训**同一形状**：
+                 * 漏掉 DjiLiveview_Init() 时 RegUserAiTargetLableList 也返回
+                 * 0xE0，日志还打"only support on manifold3"，看起来像硬件不支持。
+                 *
+                 * 这也可能解释 HANDOFF 里「TOPIC_GIMBAL_STATUS 在 M4T 上订不上」
+                 * 那条 —— 很可能是同一个时序问题，而非机型限制。
+                 *
+                 * 失败不阻断：遥测订阅那边会再次告警，只是云台角/俯仰闭环不可用。
                  */
-                if (s_runner.config.turbineCount > 0) {
-                    WtWidget_SetParkPhaseInitial(
-                        s_runner.config.turbines[0].parkPhaseDeg);
+                if (s_runner.config.surveyEnabled) {
+                    (void)WtLaser_Init();
                 }
-                WtWidget_SetDryRunInitial(s_runner.config.dryRun);
+
+                if (!WtTelemetry_Init(&s_runner.telemetry,
+                                      s_runner.config.turbineCount > 0
+                                          ? &s_runner.config.turbines[0].spec
+                                          : NULL)) {
+                    USER_LOG_ERROR("遥测初始化失败，本次不执行飞行");
+                    WtRunner_DeInit(&s_runner);
+                    s_configReady = false;
+                } else {
+                    s_configReady = true;
+
+                    /*
+                     * 把配置文件里的值灌进控件作初值。
+                     *
+                     * 不做这一步的话，操作员打开 Payload Settings 看到停用角是 0，
+                     * 而程序实际用配置里的 45 —— 两边对不上，且他一旦点一下输入框
+                     * 就会把 45 覆盖成 0。控件初值必须与配置一致。
+                     */
+                    if (s_runner.config.turbineCount > 0) {
+                        WtWidget_SetParkPhaseInitial(
+                            s_runner.config.turbines[0].parkPhaseDeg);
+                    }
+                    WtWidget_SetDryRunInitial(s_runner.config.dryRun);
+                }
             }
 
             /*
@@ -561,6 +772,15 @@ int main(int argc, char **argv)
                     s_surveyReady = true;
                     USER_LOG_INFO("采集链路已就绪：拨「开始作业」时会先采集盘面"
                                   "（需飞机在空中、画面里有风机）");
+
+                    /*
+                     * 自检放在这里（链路就绪之后、待命之前）：它要用云台与
+                     * 激光，而那两个模块刚初始化完。放到待命循环里反而会和
+                     * 「开始作业」的触发抢时序。
+                     */
+                    if (s_runner.config.surveySelfTest) {
+                        WtApp_RunGimbalLaserSelfTest();
+                    }
                 }
             }
 #endif /* WT_WITH_TRT */

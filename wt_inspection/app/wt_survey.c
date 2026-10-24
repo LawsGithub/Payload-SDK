@@ -55,6 +55,12 @@ bool WtSurvey_Begin(WtSurvey *s, const WtTurbineSpec *spec,
 
     WtSurveyLogic_Begin(&s->logic, cfg, WtSurvey_NowMs());
 
+    /*
+     * 借云台 FREE 模式 —— 作用域是**这次会话**，不是进程生命周期。
+     * 失败不阻断：对准会被机头运动带偏，但仍可能对上（而且失败本身已告警）。
+     */
+    (void)WtLaser_BorrowFreeMode();
+
     USER_LOG_INFO("采集：会话开始，目标顺序 轮毂 → NO.1 → NO.2 → NO.3");
 
     return true;
