@@ -56,6 +56,85 @@ static uint64_t WtTelemetryPsdk_NowMs(void)
     return s_wrapBase + (uint64_t)raw;
 }
 
+/* ==========================================================================
+ * 话题取值：**回调缓存**，不用 GetLatestValueOfTopic
+ *
+ * `DjiFcSubscription_GetLatestValueOfTopic` 在 PSDK 3.16.0-beta + M4T + 妙算3
+ * 上**必崩**（SIGSEGV，栈在 `DjiDataSubscriptionDds_v3_GetLastValueOfTopic`
+ * 内部）。姊妹项目 liangzhourenwu 实测并已排除「读太快 / 传 NULL 回调 /
+ * 无数据 / 初始化时机」四个嫌疑，结论是这条路不可用。
+ *
+ * ⚠️ **官方样例用的正是这个接口 —— 照抄样例会崩。**
+ *
+ * 这也极可能就是本项目 HANDOFF 里记着的那条：「待命循环里每秒调一次
+ * `WtTelemetry_Poll`，进程进入循环后 3 秒内稳定 SEGV/ABRT」。`main.c` 当时
+ * 把它归因成"待命阶段飞机在地面、部分话题订阅本就失败"，那个归因是错的 ——
+ * 真因是这个 getter 本身。
+ *
+ * ## 改用的办法
+ *
+ * 订阅时给每个话题注册一个回调，回调把值拷进我们自己的静态缓存；
+ * `Poll` 只读缓存，完全不碰 SDK 的 getter。
+ *
+ * ## 数据竞争怎么处理
+ *
+ * 缓存由 SDK 的回调线程写、由控制循环读。用 `volatile` + 每个话题一个
+ * "已收到过"标志：读到的可能跨越了某两帧，但**每个字段单独看都是飞机真实
+ * 报过的一个值**。对巡检控制这个用途够用 —— 而相比之下，上一版会把主程序
+ * 带崩，那比快照不严格一致糟得多。
+ * ========================================================================== */
+
+static volatile bool s_gotRtk = false;
+static volatile T_DjiFcSubscriptionRtkPosition s_rtk = {0};
+static volatile bool s_gotRtkInfo = false;
+static volatile T_DjiFcSubscriptionRtkPositionInfo s_rtkInfo = 0;
+static volatile bool s_gotFused = false;
+static volatile T_DjiFcSubscriptionPositionFused s_fused = {0};
+static volatile bool s_gotQuat = false;
+static volatile T_DjiFcSubscriptionQuaternion s_quat = {0};
+static volatile bool s_gotVel = false;
+static volatile T_DjiFcSubscriptionVelocity s_vel = {0};
+static volatile bool s_gotHeight = false;
+static volatile T_DjiFcSubscriptionHeightRelative s_height = 0.0f;
+static volatile bool s_gotFlightStatus = false;
+static volatile T_DjiFcSubscriptionFlightStatus s_flightStatus = 0;
+static volatile bool s_gotGimbal = false;
+static volatile T_DjiFcSubscriptionGimbalAngles s_gimbal = {0};
+
+/*
+ * 每个话题一个专用回调：长度校验 + 拷贝 + 置标志。
+ *
+ * 分开写而不是用一个带 topic 参数的函数 —— 回调签名里**没有 topic**
+ * （`DjiReceiveDataOfTopicCallback` 只给 data/size/timestamp），
+ * 所以无法在一个函数里分辨这是哪条话题的数据。
+ *
+ * 长度校验是必要的：话题与类型的对应关系编译器不检查（见
+ * LEARNING-PROTOCOL §4.1），写错了只会 memcpy 出一堆垃圾。
+ */
+#define WT_DEFINE_TOPIC_CB(name, dst, flag, type)                              \
+    static T_DjiReturnCode name(const uint8_t *data, uint16_t dataSize,        \
+                                const T_DjiDataTimestamp *timestamp)           \
+    {                                                                          \
+        (void)timestamp;                                                       \
+        if (data == NULL || dataSize < sizeof(type)) {                         \
+            return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;             \
+        }                                                                      \
+        memcpy((void *)&(dst), data, sizeof(type));                            \
+        (flag) = true;                                                         \
+        return DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS;                           \
+    }
+
+WT_DEFINE_TOPIC_CB(WtCb_Rtk, s_rtk, s_gotRtk, T_DjiFcSubscriptionRtkPosition)
+WT_DEFINE_TOPIC_CB(WtCb_RtkInfo, s_rtkInfo, s_gotRtkInfo,
+                   T_DjiFcSubscriptionRtkPositionInfo)
+WT_DEFINE_TOPIC_CB(WtCb_Fused, s_fused, s_gotFused, T_DjiFcSubscriptionPositionFused)
+WT_DEFINE_TOPIC_CB(WtCb_Quat, s_quat, s_gotQuat, T_DjiFcSubscriptionQuaternion)
+WT_DEFINE_TOPIC_CB(WtCb_Vel, s_vel, s_gotVel, T_DjiFcSubscriptionVelocity)
+WT_DEFINE_TOPIC_CB(WtCb_Height, s_height, s_gotHeight, T_DjiFcSubscriptionHeightRelative)
+WT_DEFINE_TOPIC_CB(WtCb_FlightStatus, s_flightStatus, s_gotFlightStatus,
+                   T_DjiFcSubscriptionFlightStatus)
+WT_DEFINE_TOPIC_CB(WtCb_Gimbal, s_gimbal, s_gotGimbal, T_DjiFcSubscriptionGimbalAngles)
+
 static bool WtTelemetryPsdk_ReadPosition(const T_DjiFcSubscriptionPositionFused *pos,
                                          WtAircraftState *state)
 {
@@ -197,30 +276,40 @@ bool WtTelemetry_Init(WtTelemetry *telemetry, const WtTurbineSpec *spec)
      * 一律不订。
      */
     {
-        const E_DjiFcSubscriptionTopic topics[] = {
-            DJI_FC_SUBSCRIPTION_TOPIC_RTK_POSITION,
+        /*
+         * 话题与**回调**配对注册。回调不能传 NULL —— 那样就只能靠
+         * `GetLatestValueOfTopic` 取值，而那个接口在本 SDK 版本上必崩
+         * （见文件上方的大段说明）。
+         *
+         * 预算核对（头文件约束：同频率话题种类 ≤ 4 组、数据长度和 ≤ 242 字节）：
+         * 本表 8 个话题全走 10Hz（= 1 种频率），合计约 93 字节，余量充足。
+         */
+        const struct {
+            E_DjiFcSubscriptionTopic topic;
+            DjiReceiveDataOfTopicCallback cb;
+            const char *name;
+        } subs[] = {
+            {DJI_FC_SUBSCRIPTION_TOPIC_RTK_POSITION, WtCb_Rtk, "RTK_POSITION"},
             /*
              * RTK_POSITION_INFO 原先**没被订阅却被读取** —— 于是读取必然
              * 失败、走 fallback 置 NOT_AVAILABLE，`rtkFixed` 永远是 false，
              * RTK 固定解检测完全失效。
-             *
-             * 预算核对（头文件约束：同频率话题数据长度之和 ≤ 242 字节）：
-             * 本表 8 个话题全走 10Hz，合计约 93 字节，余量充足。
              */
-            DJI_FC_SUBSCRIPTION_TOPIC_RTK_POSITION_INFO,
-            DJI_FC_SUBSCRIPTION_TOPIC_POSITION_FUSED,
-            DJI_FC_SUBSCRIPTION_TOPIC_QUATERNION,
-            DJI_FC_SUBSCRIPTION_TOPIC_VELOCITY,
-            DJI_FC_SUBSCRIPTION_TOPIC_HEIGHT_RELATIVE,
-            DJI_FC_SUBSCRIPTION_TOPIC_STATUS_FLIGHT,
-            DJI_FC_SUBSCRIPTION_TOPIC_GIMBAL_ANGLES,
+            {DJI_FC_SUBSCRIPTION_TOPIC_RTK_POSITION_INFO, WtCb_RtkInfo, "RTK_POSITION_INFO"},
+            {DJI_FC_SUBSCRIPTION_TOPIC_POSITION_FUSED, WtCb_Fused, "POSITION_FUSED"},
+            {DJI_FC_SUBSCRIPTION_TOPIC_QUATERNION, WtCb_Quat, "QUATERNION"},
+            {DJI_FC_SUBSCRIPTION_TOPIC_VELOCITY, WtCb_Vel, "VELOCITY"},
+            {DJI_FC_SUBSCRIPTION_TOPIC_HEIGHT_RELATIVE, WtCb_Height, "HEIGHT_RELATIVE"},
+            {DJI_FC_SUBSCRIPTION_TOPIC_STATUS_FLIGHT, WtCb_FlightStatus, "STATUS_FLIGHT"},
+            {DJI_FC_SUBSCRIPTION_TOPIC_GIMBAL_ANGLES, WtCb_Gimbal, "GIMBAL_ANGLES"},
         };
         size_t i;
 
-        for (i = 0; i < sizeof(topics) / sizeof(topics[0]); i++) {
-            rc = DjiFcSubscription_SubscribeTopic(topics[i], WT_TELE_TOPIC_FREQ, NULL);
+        for (i = 0; i < sizeof(subs) / sizeof(subs[0]); i++) {
+            rc = DjiFcSubscription_SubscribeTopic(subs[i].topic, WT_TELE_TOPIC_FREQ,
+                                                 subs[i].cb);
             if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
-                USER_LOG_WARN("subscribe topic %d failed: 0x%08X", (int)topics[i], rc);
+                USER_LOG_WARN("订阅 %s 失败: 0x%08X", subs[i].name, (unsigned)rc);
             }
         }
     }
@@ -258,41 +347,37 @@ void WtTelemetry_DeInit(WtTelemetry *telemetry)
 
 void WtTelemetry_Poll(WtTelemetry *telemetry)
 {
-    T_DjiFcSubscriptionRtkPosition rtk;
-    T_DjiFcSubscriptionRtkPositionInfo rtkInfo;
-    T_DjiFcSubscriptionPositionFused pos;
-    T_DjiFcSubscriptionQuaternion quat;
-    T_DjiFcSubscriptionVelocity vel;
-    T_DjiFcSubscriptionHeightRelative height;
-    T_DjiFcSubscriptionFlightStatus flightStatus;
-    T_DjiFcSubscriptionGimbalAngles gimbal;
     WtAircraftState *a = &telemetry->aircraft;
+
+    /*
+     * 全部从**回调缓存**读，不碰 `GetLatestValueOfTopic`（它在本 SDK 版本上
+     * 必崩，见文件上方的说明）。每个话题先看"已收到过"标志。
+     */
 
     /*
      * 位置：优先 RTK，**无效时真的退化**到融合定位。
      *
-     * 原先写成 if/else-if：只要 RTK 话题**读取**成功就走 RTK 分支，
-     * 哪怕里面的数据是全零的无效解 —— 融合定位那条路根本不会被尝试。
-     * 加了哨兵检查后这个缺陷会更明显（validPosition 直接变 false，
-     * 而融合定位其实是可用的），所以这里一并改成顺序尝试。
+     * 原先写成 if/else-if：只要 RTK 话题取值成功就走 RTK 分支，哪怕里面是
+     * 全零的无效解 —— 融合定位那条路根本不会被尝试。
      */
     a->validPosition = false;
 
-    if (DjiFcSubscription_GetLatestValueOfTopic(DJI_FC_SUBSCRIPTION_TOPIC_RTK_POSITION,
-                                                (uint8_t *)&rtk, sizeof(rtk),
-                                                NULL) == DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
-        if (DjiFcSubscription_GetLatestValueOfTopic(DJI_FC_SUBSCRIPTION_TOPIC_RTK_POSITION_INFO,
-                                                    (uint8_t *)&rtkInfo, sizeof(rtkInfo),
-                                                    NULL) != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
-            rtkInfo = DJI_FC_SUBSCRIPTION_POSITION_SOLUTION_PROPERTY_NOT_AVAILABLE;
-        }
-        a->validPosition = WtTelemetryPsdk_ReadRtk(&rtk, rtkInfo, a);
+    if (s_gotRtk) {
+        T_DjiFcSubscriptionRtkPosition rtk;
+        T_DjiFcSubscriptionRtkPositionInfo info;
+
+        /* 从 volatile 缓存拷到局部，之后的处理都基于这份快照 */
+        memcpy(&rtk, (const void *)&s_rtk, sizeof(rtk));
+        info = s_gotRtkInfo ? s_rtkInfo
+                            : DJI_FC_SUBSCRIPTION_POSITION_SOLUTION_PROPERTY_NOT_AVAILABLE;
+
+        a->validPosition = WtTelemetryPsdk_ReadRtk(&rtk, info, a);
     }
 
-    if (!a->validPosition &&
-        DjiFcSubscription_GetLatestValueOfTopic(DJI_FC_SUBSCRIPTION_TOPIC_POSITION_FUSED,
-                                                (uint8_t *)&pos, sizeof(pos),
-                                                NULL) == DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+    if (!a->validPosition && s_gotFused) {
+        T_DjiFcSubscriptionPositionFused pos;
+
+        memcpy(&pos, (const void *)&s_fused, sizeof(pos));
         a->validPosition = WtTelemetryPsdk_ReadPosition(&pos, a);
         a->rtkFixed = false;
     }
@@ -301,35 +386,34 @@ void WtTelemetry_Poll(WtTelemetry *telemetry)
         WtTelemetry_RefreshEnu(telemetry);
     }
 
-    if (DjiFcSubscription_GetLatestValueOfTopic(DJI_FC_SUBSCRIPTION_TOPIC_QUATERNION,
-                                                (uint8_t *)&quat, sizeof(quat),
-                                                NULL) == DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+    if (s_gotQuat) {
+        T_DjiFcSubscriptionQuaternion quat;
+
+        memcpy(&quat, (const void *)&s_quat, sizeof(quat));
         WtTelemetryPsdk_ReadAttitude(&quat, a);
     }
 
-    if (DjiFcSubscription_GetLatestValueOfTopic(DJI_FC_SUBSCRIPTION_TOPIC_VELOCITY,
-                                                (uint8_t *)&vel, sizeof(vel),
-                                                NULL) == DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
-        a->velocityMs = sqrt(vel.data.x * vel.data.x +
-                             vel.data.y * vel.data.y +
-                             vel.data.z * vel.data.z);
+    if (s_gotVel) {
+        T_DjiFcSubscriptionVelocity vel;
+
+        memcpy(&vel, (const void *)&s_vel, sizeof(vel));
+        a->velocityMs = sqrt((double)vel.data.x * vel.data.x +
+                             (double)vel.data.y * vel.data.y +
+                             (double)vel.data.z * vel.data.z);
     }
 
-    if (DjiFcSubscription_GetLatestValueOfTopic(DJI_FC_SUBSCRIPTION_TOPIC_HEIGHT_RELATIVE,
-                                                (uint8_t *)&height, sizeof(height),
-                                                NULL) == DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
-        a->heightAboveGroundM = height;
+    if (s_gotHeight) {
+        a->heightAboveGroundM = s_height;
     }
 
-    if (DjiFcSubscription_GetLatestValueOfTopic(DJI_FC_SUBSCRIPTION_TOPIC_STATUS_FLIGHT,
-                                                (uint8_t *)&flightStatus, sizeof(flightStatus),
-                                                NULL) == DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
-        a->flightStatus = flightStatus;
+    if (s_gotFlightStatus) {
+        a->flightStatus = s_flightStatus;
     }
 
-    if (DjiFcSubscription_GetLatestValueOfTopic(DJI_FC_SUBSCRIPTION_TOPIC_GIMBAL_ANGLES,
-                                                (uint8_t *)&gimbal, sizeof(gimbal),
-                                                NULL) == DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+    if (s_gotGimbal) {
+        T_DjiFcSubscriptionGimbalAngles gimbal;
+
+        memcpy(&gimbal, (const void *)&s_gimbal, sizeof(gimbal));
         /*
          * 该话题用通用 Vector3f 承载三个角度，字段与语义的对应关系是
          * x=pitch, y=roll, z=yaw —— 按 x/y/z 的直觉顺序去读会得到完全
