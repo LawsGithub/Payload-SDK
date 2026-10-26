@@ -133,10 +133,16 @@ bash ../tools/build_dpk/build_dpk.sh -i app_json/app.json -o ~/dpk
 
 | 界面 | 控件 | 作用 |
 |---|---|---|
-| PSDK 菜单（飞行中） | 开始作业（开关） | ON = 开始，OFF = 清除请求 |
-| PSDK 菜单（飞行中） | 中止作业（按钮） | 暂停任务并返航 |
-| PSDK 菜单（飞行中） | 干跑（开关） | ON = 只上传不启动 |
-| PSDK 菜单（飞行中） | 停用角（滑块） | 0–100% 映射到 0–359° |
+| index | 控件 | 作用 |
+|---|---|---|
+| 0 | 开始作业（开关） | ON = 开始，OFF = 清除请求 |
+| 1 | 中止作业（按钮） | 风机作业：暂停任务并返航；行人瞄准：结束会话；绕点飞行：STOP、原地悬停 |
+| 2 | 干跑（开关） | ON = 只上传不启动（风机作业与绕点飞行都认） |
+| 3 | 停用角（滑块） | 0–100% 映射到 0–359° |
+| 4 | 行人瞄准（开关） | ON = 开始一次瞄准打点会话，OFF = 中止 |
+| 5 | 绕点飞行（按钮） | 以最近一次行人打点为基点飞正方形，见「绕点飞行」一节 |
+
+全部在 PSDK 菜单（`main_interface`，飞行中操作）。
 
 **停用角有两个来源，控件优先**：控件设过就用控件的，没设过回落到配置文件
 `[turbine.xxx] park_phase`。取值在 `WtRunner_RunTurbine` 内部、**规划前一刻**
@@ -161,9 +167,11 @@ bash ../tools/build_dpk/build_dpk.sh -i app_json/app.json -o ~/dpk
 把 SDK 链路线程卡死（liangzhourenwu 项目 2026-09-22 因此闪退过）。动作一律由
 主循环或执行循环取走执行。
 
-⚠️ **待命循环不要调 `WtTelemetry_Poll()`**。该函数在执行循环里安全，但在
-待命阶段（飞机在地面、部分话题订阅本就失败）会稳定 SEGV/ABRT，
-进程进入循环后 3 秒内崩溃。
+⚠️ **空转的待命循环不调 `WtTelemetry_Poll()`**（2026-10-20 实测每秒调一次会在
+3 秒内 SEGV/ABRT）。根因后来查清是当时 Poll 里用的 `GetLatestValueOfTopic`
+在本 SDK 版本上必崩，2026-10-24 已改成读回调缓存（323787e）；从待命循环发起的
+会话（采集、行人瞄准、绕点飞行）都会调 Poll，采集会话改完后上机跑通过。
+空转的待命循环本身没有要用遥测的地方，所以仍然不调。
 
 控件注册必须在 `DjiCore_ApplicationStart()` **之前**，否则 Pilot 拉不到列表。
 注册失败**不阻断启动** —— 控件是操作便利性，不是作业前提；在这里 fail-closed
@@ -185,16 +193,27 @@ include/  src/
 ├── wt_bridge        航线 → KMZ(wpml)、动作表、飞行参数表
 ├── wt_app_config    作业配置解析与模板生成
 ├── wt_telemetry     相位反解/滤波/外推     (+ _psdk.c: 话题订阅)
+├── wt_ped_logic     行人瞄准打点的决策层（选人、关联、停稳、逐帧确认、激光取中位）
+├── wt_ped_square    绕点飞行：以行人坐标为中心的正方形航线（KMZ 导出在 wt_bridge）
+├── wt_mission_watch 航点任务进度判定（开始了没有、结束了没有）
 └── wt_runner        作业流水线编排          (+ _psdk.c: 下发与监控)
 
 app/main.c           机载应用入口（平台注册 + 作业调度）
 app/wt_widget.c      Pilot 2 自定义控件（操作员界面，+ widget_file/ 配置）
 app/wt_ai_stream_probe.c 诊断：相机取流探针（统计帧数与分辨率）
 app/wt_ai_overlay.c      诊断：向 Pilot 2 发识别框（见下方"已知限制"）
-app/wt_trt_pose.{h,cpp}  TensorRT YOLOv8-pose 推理封装（C 接口 / C++ 实现）
+app/wt_trt_pose.{h,cpp}  TensorRT YOLO 推理封装（风机关键点 / 行人检测共用）
+app/wt_yolo_decode.c     YOLO 预处理与解码（纯 C，桌面可测）
+app/wt_vision.c          推理线程（风机 / 行人两种模型）
+app/wt_ped.c             行人瞄准打点的接线层（云台、激光、结果文件）
+app/wt_square_mission.c  绕点飞行的上传、启动、监控与中止（Waypoint V3）
 tools/wt_plan_demo.c PC 侧自检程序
+tools/wt_ped_square_demo.c 绕点飞行航线的 PC 侧演示（规划 + 导出 KMZ + 航点表）
+tools/ped_square_view/  把绕点飞行 KMZ 做成核对网页（Python + 本地 HTML）
+tools/ped_model/     行人模型导出 ONNX + 解码交叉核对（Python）
 tests/                PC 侧回归测试（wt_test_plan / _config / _bridge
-                      / _blade_id / _projection / _ai_solve）
+                      / _blade_id / _projection / _ai_solve / _ped_logic
+                      / _ped_square / _mission_watch / _yolo_decode 等，`ctest` 全跑）
 ```
 
 **分层准则**：`wt_core` 里任何一行都不包含 PSDK 头文件。
@@ -206,7 +225,8 @@ tests/                PC 侧回归测试（wt_test_plan / _config / _bridge
 ```bash
 grep -rn "dji_" include/ src/wt_geometry.c src/wt_turbine.c \
      src/wt_camera.c src/wt_plan.c src/wt_bridge.c \
-     src/wt_app_config.c src/wt_telemetry.c src/wt_runner.c    # 应无输出
+     src/wt_app_config.c src/wt_telemetry.c src/wt_runner.c \
+     src/wt_ped_logic.c src/wt_ped_square.c src/wt_mission_watch.c   # 应无输出
 ```
 
 ---
@@ -589,3 +609,234 @@ DJI 规格页在「Controllable Rotation Range」里把 M4T 的 Pan 标成
 
 模型代码含 YOLOv11（**AGPL-3.0**）与 BlenderProc（GPLv3）。内部使用不受影响；
 对外分发需评估 AGPL 传染性，或向 Ultralytics 购买商业许可。
+
+---
+
+## 高空行人瞄准打点
+
+> 编译时 `-DWT_BUILD_TRT=ON`，配置 `ped_enabled = true`，在 Pilot 2 拨「行人瞄准」开关触发。
+> 与激光采集（`survey_enabled`）、取流探针（`stream_probe`）**互斥** —— 都要独占
+> 同一个相机源的图像流，推理线程也只能装一个模型。
+
+识别画面里的行人，云台对准画面中心附近的那个人，**锁定后连续 3 帧确认就自动激光
+打点**（连读 3 次取中位），得到这个人所在位置的 WGS84 坐标。这个坐标同时是
+「绕点飞行」的基点。
+
+```
+取流 1440×1080 → 行人检测（VisDrone YOLO11s，1280 输入）→ 行人框
+     ↓
+决策（wt_ped_logic）：捕获离光轴最近的人 → 转云台 → 读回停稳 → 看停稳后的新一帧
+                      → 还差就再转
+     ↓
+锁定：停稳后连续 3 帧在容差内（约 0.3 s）；可再加停顿 ped_dwell_ms（默认 0）
+     ↓
+激光连读 3 次（间隔 300 ms）取距离居中那次 → WGS84 落点
+     → 日志 + data/ped_points.csv + Pilot 浮窗 + 绕点飞行的基点
+```
+
+### 模型
+
+要的是**高空俯视下的行人检测**，不是 COCO 那类平视近景的人体模型 —— 后者在
+俯视、十几像素的小人上基本检不出。
+
+| 项 | 值 |
+|---|---|
+| 来源 | HF `dronefreak/visdrone-yolo11s`（DetectionBench），**AGPL-3.0** |
+| 训练 | VisDrone2019-DET，YOLO11s，imgsz 1280，100 轮 |
+| 指标 | 测试集 mAP50 43.6%（全部类别，模型卡数字，**未自测**） |
+| 类别 | **11 类**（VisDrone 10 类 + `others`）；只收 0 `pedestrian`、1 `people`（坐着、骑车的人） |
+| 张量 | 输入 1×3×1280×1280，输出 1×15×33600 |
+
+⚠️ 类别数是导出时实测的（标准 VisDrone.yaml 是 10 类），所以推理封装从 engine
+的输出形状反推类别数，不写死。换模型时**类别 0/1 必须仍是行人**（导出脚本会核对类别名）。
+
+**为什么 1280 输入**：M4T 广角水平视场 71.6°，60 m 外的行人在 1440×1080 画面里
+约 23×10 px，缩到 640 只剩约 10×4 px；这份权重本身也是 1280 下训练的。
+推理开销约为 640 的 4 倍（87 GFLOPs），设备上的耗时**尚未实测**。
+
+部署（engine 必须在设备上建，见「AI 识别 / 部署链路」）：
+
+```bash
+# 本机：导出并核对类别名与形状
+python3 -I tools/ped_model/export_onnx.py <best.pt> --imgsz 1280
+
+# 设备：别加 --verbose，engine 别放 /tmp
+/usr/src/tensorrt/bin/trtexec --onnx=best.onnx \
+  --saveEngine=visdrone-yolo11s-1280.engine --fp16 --workspace=2048
+```
+
+### 预处理与解码：桌面上已对齐 ultralytics（2026-10-24）
+
+解码从 `wt_trt_pose.cpp` 拆进了纯 C 的 `app/wt_yolo_decode.c`，桌面可测。
+`tools/ped_model/crosscheck_decode.py` 把它编成动态库，拿 ultralytics 自己的结果对照
+（两张 VisDrone 原图）：
+
+| 对照 | 结果 |
+|---|---|
+| 同一份输出张量：C 解码 vs ultralytics NMS | 20/20、46/46 人逐一对上，坐标差 0.0000 px，conf 差 0 |
+| C 双线性 letterbox vs `cv2.resize(INTER_LINEAR)` | 最大差 0.625/255（OpenCV 定点误差） |
+| C 全流程 vs ultralytics 完整预测 | 重合 20/22、44/46 |
+
+**缩放方式对小目标有影响**：同一个 ONNX、1440×1080 的人群图上，最近邻检出 39 人、
+双线性 45 人。所以行人模型用双线性；风机模型保持最近邻（已上机验证，没必要动）。
+
+拆分时顺手补了一个缺口：原先把输出形状写死成 `19×8400`、从不和 engine 核对，
+装错 engine 照样读出一片错位的数字。现在 Init 时读 engine 的输入输出形状并与
+声明的布局核对，对不上就拒绝加载。
+
+### 决策层（`wt_ped_logic`，桌面可测）
+
+和激光采集的决策层有三处不同，都因为目标是人、会动：
+
+1. **按绝对方向关联目标**，不按像素。云台一转，同一个人的像素位置全变了，
+   他在世界里的方向不变。按像素关联会在转动后认错人。
+2. **停稳靠云台读回判断，且只用停稳之后拍到的帧**。取流有延迟，转动中拍到的帧
+   配上"现在"的云台角，算出的目标方向会偏向转动方向 —— 被当成"还差一点"
+   继续转，形成过冲。
+3. **锁定容差随目标大小**：框半尺寸（角度）× 0.5，夹在 [0.2°, 1.0°]。
+   从高处斜看，打到行人脚边的地面与打在人身上，落点只差一两米 —— "行人位置"
+   这个用途对它不敏感，下限不必压得极小。
+
+**锁定后不再固定等 3 s**（2026-10-25 用户同意）。3 s 来自最初的需求描述，但只要求
+打一次、拿到位置时，固定等待本身不提供证据；真正说明「对准了」的是停稳之后拍到的
+几帧都落在容差内。老师若确实要停顿，配 `ped_dwell_ms = 3000`，确认帧与停顿两个
+条件都满足才打。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| 锁定确认 | 连续 3 帧 | 停稳后拍到、在容差内的新帧；中途一帧偏出容差（未脱锁）就从头数 |
+| 额外停顿 | 0 ms | 配置 `ped_dwell_ms`；要「瞄准后 3 s 再打」就写 3000 |
+| 激光读数 | 3 次取中位 | 间隔 300 ms（避开 5 Hz 限频）；离散度 > max(0.5 m, 1% × 距离) 判不可用 |
+| 捕获置信度 | 0.40 | 配置 `ped_conf`；跟上之后不再要求（推理阈值 0.25） |
+| 停稳 | 下发后 ≥ 400 ms 且读回静止 300 ms | 静止 = 角速度 < 1.5°/s |
+| 关联门限 | 5° | 取方向最近的那个，门限外的人不顶替 |
+| 跟丢 | 停稳后 2.5 s 没看到 | 回到搜索 |
+| 脱锁 | 偏差 > 1.6 × 锁定容差 | 回到对准，确认帧与停顿都重新算 |
+| 激光重试 | 没打成后 1 s、且重新攒满 3 帧再打，共 3 轮 | 超次数判失败 |
+| 修正上限 | 12 次 | 追不上（人在快速移动）判失败 |
+| 会话上限 | 120 s | 不会因为人走了永久挂住 |
+
+超出云台 pan 范围（相对机头 ±60°）时报「请把机头转 N°」，不下发、不耗修正次数；
+拿不到机头朝向时 yaw 回填当前云台值（**绝不填 0**，原因见「激光采集」一节）。
+`wt_test_ped_logic` 用一个带取流延迟与云台响应延迟的小仿真把以上行为逐条钉住，
+并逐条做过变异测试（改错实现，确认用例会变红）。
+
+### 配置（`[app]` 段）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `ped_enabled` | false | 启动取流与行人推理线程 |
+| `ped_engine` | — | 设备上构建的 engine 路径 |
+| `ped_dwell_ms` | 0 | 锁定确认后再停多久才打激光，范围 0~30000，越界拒绝启动 |
+| `ped_conf` | 0.40 | 新捕获所需置信度，范围 (0, 1)，越界拒绝启动 |
+
+### 结果
+
+每次打点追加一行到 `<output_dir>/ped_points.csv`：时间、经纬度、激光海拔读数、
+距离、激光落在画面的位置、云台与机头角度、目标置信度与框大小、偏差、变焦倍率、
+激光有效读数次数与离散度（`laser_n`、`laser_spread_m`）。
+⚠️ `wall_time` 取设备时钟，可能落后几十小时（RTC 无电池），按行序认先后；
+激光海拔的基准没有文档承诺（见「激光采集」），只看相对量。
+
+### 尚未上机验证 `[?]`
+
+- engine 构建、1280 输入在 Orin NX 上的推理耗时
+- `GetOpticalZoomParam` 的倍率语义（1× 是否就是广角 24 mm），以及 `M4T_VIS` 取流
+  画面是否随变焦裁切。程序按读到的倍率换算视场 —— 若取流其实不随变焦，只会少转、
+  多迭代几次，仍然收敛；反过来才会发散，所以拿不准时这样算是安全的一侧
+- 取流延迟是否在 300 ms 停稳窗口之内
+- 激光打在行人身上时的回波情况
+- Pilot 2 上新开关的显示
+
+### 已知限制
+
+- **走动中的人仍然难锁**：确认只要约 0.3 s，但每次修正要等停稳与新帧（一两秒），
+  人持续走动会在 12 次修正后判失败。要跟踪移动目标，需要先标定取流延迟、再做带
+  预测的连续跟踪。
+- 只做了可见光。夜间要换红外模型（如 HIT-UAV 高空红外数据集）与红外取流源。
+- 推理线程只装一个模型，所以行人瞄准与激光采集不能同时开。
+
+---
+
+## 绕点飞行（以行人坐标为基点的正方形航线）
+
+> 在 Pilot 2 按「绕点飞行」按钮触发。基点 = 本次运行里最近一次「行人瞄准」打到的点。
+
+### 飞法（2026-10-25 用户需求）
+
+以基点为几何中心建边长 20 m 的正方形。从第一个顶点开始：
+
+```
+V1 10 m → 垂直升到 20 m → 顺时针沿边平飞到 V2 → 垂直降到 10 m → 升回 20 m
+       → 平飞到 V3 → 降 → 升 → 平飞到 V4 → 降 → 升 → 平飞回 V1 → 降到 10 m（结束，悬停）
+```
+
+共 13 个航点，高度都**相对起飞点**。平飞时机头始终朝向基点。
+
+| 项 | 取值 | 依据 |
+|---|---|---|
+| 机头 | 每个航点 `towardPOI`，兴趣点 = 基点 | 规范：「从该航点飞向下一航点途中机头都将朝向兴趣点」。`smoothTransition` 在两点间线性插值角度，沿直线边飞时会偏离基点 |
+| 航点类型 | `toPointAndStopWithDiscontinuityCurvature`（直线、到点停） | 升降才真的垂直；过点不停的模式会把拐角抹圆 |
+| 高度模式 | `relativeToStartPoint` | 用户要「距起飞点」10 / 20 m |
+| 结束动作 | `noAction` | 停在 V1 的 10 m 处悬停，由操作员接管 |
+| 速度 | 航线 3 m/s，飞往首航点 5 m/s | 离人近，慢一点留反应时间；整圈 160 m、至少 53 s |
+| 失控 | 返航，`globalRTHHeight` = max(30 m, 高点) | 返航高度比航线低的话，第一步就是在人旁边下降 |
+| 云台 | 不下发动作（`gimbalPitchMode = manual`） | 俯仰由操作员用遥控器拨 |
+
+**用户没指定、这里定下的两条**（核对页上明示，可改）：正方形的边沿正东西、
+正南北；「第一个顶点」取**离飞机当前位置最近**的那个 —— 从飞机过去不必横穿
+正方形，不会从行人头顶飞过。
+
+### 起飞前的闸门（`app/main.c` 的 `WtApp_RunSquare`）
+
+- 本次运行打到过点。**不读 `ped_points.csv`**：那里可能是昨天、别处的点。
+- 飞机位置有效、**飞机在空中**：在地面按下会直接起飞到离人十来米的地方，拒绝。
+- 云台没有残留在 FREE 模式：机头要连续转一整圈，FREE 会让 pan 顶到 ±60° 限位。
+- 基点离飞机不超过 150 m：远到这个程度，多半是激光打到了别处。
+- 按钮按下超过 5 s 才轮到处理（当时程序正忙）的请求作废：旧的按键不能事后把飞机飞起来。
+- 任务状态回调注册失败就不 START：没有它就判断不了「进入航线了没有」。
+- 「干跑」开着时只上传不启动 —— 可用来验证飞控是否接受这份 KMZ。
+
+中止用 1 号「中止作业」按钮：下发 STOP，飞机退出航线、**原地悬停**。不像风机作业
+那样返航：这条航线贴着人、高度只有 10–20 m，返航要先爬高再飞走，路线不受控。
+任务状态判定在 `wt_mission_watch`（wt_core）：刚 START 时推来的 IDLE 不算结束，
+要先见到执行状态再回到 IDLE 才算；30 s 见不到执行状态判为没启动起来；整趟 10 分钟上限。
+
+### KMZ 结构：与风机航线不同（有意为之）
+
+`WtBridge_ExportPedSquareKmz` 复用了 `wt_bridge` 的打包代码，但正文**分两份写**：
+waylines.wpml 带 `executeHeightMode` / `waylineId` / `executeHeight`，template.kml 带
+`templateType` / `waylineCoordinateSysParam` / `height`；补了必需元素 `globalRTHHeight`；
+机型声明用 M4T 的 99 / 1、相机 89（与 `dji_typedef.h` 的 `DJI_AIRCRAFT_TYPE_M4T`、
+`DJI_CAMERA_TYPE_M4T` 一致）。依据是真机证据：姊妹项目 liangzhourenwu 用这套结构
+在同一台 M4T 上 START 成功并飞完 towardPOI 绕飞（2026-09-28）。风机航线仍是把同一份
+混合正文写进两个文件、机型写 1100 —— 那份从没 START 成功过（模拟器报 `error_code: 4`
+= 航线文件加载错误），风机侧暂缓，留待统一。
+
+### 核对：先看网页再上机
+
+```bash
+cd wt_inspection
+cmake --build build
+# 导出一份 KMZ（参数：基点纬度 经度 飞机纬度 经度 输出）
+./build/wt_ped_square_demo 41.5236 111.7461 41.52338 111.7458 build/sq.kmz
+# 做成核对网页（@标签@飞机纬度,经度[,高度] 可省）
+python3 -I tools/ped_square_view/build_view.py build/ped_square_view.html \
+    "build/sq.kmz@飞机在西南@41.52338,111.7458,30"
+```
+
+网页解析的是 KMZ 里的 `waylines.wpml` 本身（飞机执行的那份），把用户的每一句要求
+逐条对文件做测量（中心、边长、顺时针、垂直升降、首尾、朝向、到点停），并画出
+俯视图、立体图和按 `towardPOI` 语义模拟的飞行动画。设备上生成的
+`data/ped_square.kmz` 拉回来同样能看 —— 核对的就是飞机实际收到的文件。
+
+`wt_test_ped_square`（几何 + KMZ 文本）与 `wt_test_mission_watch`（任务状态判定）
+钉住以上行为，并逐条做过变异测试。
+
+### 尚未上机验证 `[?]`
+
+- 这份 KMZ 在 M4T 上能否 START（结构照搬飞通的写法，本文件本身没飞过）。可先开
+  「干跑」只上传：拿到 `KMZ 已上传` 说明飞控收下了；START 才做内容校验
+- 到首个航点时机头怎么对齐基点（`followBadArc` 应走最短方向）
+- `currentWaypointIndex` 是从 0 还是从 1 数（浮窗里的「航点 k / 13」以此为准）
+- 高度相对起飞点：行人脚下若比起飞点高，实际离地会低于 10 m，现场要目视确认
