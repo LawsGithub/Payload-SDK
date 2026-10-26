@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>行人检测效果</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f7f9; --card: #ffffff; --ink: #1d2433; --muted: #5d6779; --line: #dde2ea;
+  --accent: #2563eb; --tp: #16a34a; --fp: #dc2626; --miss: #f59e0b; --ign: #94a3b8;
+  --aim: #a21caf; --bar: #2563eb; --bar-bg: #e7ebf2; --hl: #fff7e6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #12151c; --card: #1a1f29; --ink: #e6e9ef; --muted: #9aa3b5; --line: #2c3442;
+    --accent: #60a5fa; --tp: #4ade80; --fp: #f87171; --miss: #fbbf24; --ign: #94a3b8;
+    --aim: #e879f9; --bar: #60a5fa; --bar-bg: #232a37; --hl: #2a2412;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #12151c; --card: #1a1f29; --ink: #e6e9ef; --muted: #9aa3b5; --line: #2c3442;
+  --accent: #60a5fa; --tp: #4ade80; --fp: #f87171; --miss: #fbbf24; --ign: #94a3b8;
+  --aim: #e879f9; --bar: #60a5fa; --bar-bg: #232a37; --hl: #2a2412;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.6 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
+.wrap { max-width: 1200px; margin: 0 auto; padding-block: 28px 64px; padding-inline: 20px; }
+h1 { font-size: 26px; margin: 0 0 6px; }
+h2 { font-size: 18px; margin: 0 0 12px; }
+.lead { color: var(--muted); margin: 0 0 18px; max-width: 75ch; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; margin-bottom: 18px; }
+.meta { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.meta b { color: var(--ink); }
+.controls { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; }
+.controls label { color: var(--muted); }
+input[type="range"] { width: 220px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { font: inherit; border: 0; padding: 6px 12px; background: var(--card); color: var(--ink); cursor: pointer; }
+.seg button.on { background: var(--accent); color: #fff; }
+.seg button + button { border-left: 1px solid var(--line); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 14px; }
+.stat { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.stat .k { font-size: 12px; color: var(--muted); }
+.stat .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.bins { display: grid; gap: 6px; margin-top: 6px; }
+.bin { display: grid; grid-template-columns: 190px 1fr 120px; gap: 10px; align-items: center; font-size: 13px; }
+.bin.hl { background: var(--hl); border-radius: 8px; }
+.bin .lab { color: var(--muted); padding-left: 6px; }
+.bin .lab b { color: var(--ink); }
+.bin .track { height: 16px; background: var(--bar-bg); border-radius: 4px; overflow: hidden; }
+.bin .fill { height: 100%; background: var(--bar); }
+.bin .num { font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) { .bin { grid-template-columns: 1fr; } }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted); margin-top: 10px; }
+.sw { display: inline-block; width: 14px; height: 10px; border: 2px solid; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.imgcard h3 { font-size: 15px; margin: 0 0 6px; word-break: break-all; }
+.imgstats { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 8px; }
+.imgstats b { color: var(--ink); }
+.view { overflow: auto; max-height: 80vh; border: 1px solid var(--line); border-radius: 8px; background: #000; }
+canvas { display: block; }
+.zoom { margin-left: auto; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.note { font-size: 14px; }
+.note li { margin: 4px 0; }
+.warn { color: var(--fp); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>行人检测效果</h1>
+  <p class="lead" id="lead"></p>
+
+  <div class="card">
+    <div class="controls">
+      <span><label for="thr">置信度阈值</label>
+        <input type="range" id="thr" min="0.25" max="0.90" step="0.05" value="0.25">
+        <b id="thrv"></b></span>
+      <span><label>检测结果</label>
+        <span class="seg" id="mode">
+          <button data-m="device" class="on">设备端（每帧最多 64 个框）</button>
+          <button data-m="model">模型本身（不截断）</button>
+        </span></span>
+    </div>
+    <div class="stats" id="stats"></div>
+    <div class="meta" id="meta" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <h2>按人在画面里的大小分档（≈ M4T 拍摄距离）</h2>
+    <p class="meta" style="display:block;margin:0 0 8px">纵轴是标注里的人在网络输入（1280）上的高度；右边的距离按「60 m 外行人约 20 px」反比粗估（M4T 广角、斜向俯视），只作量级参考。高亮的是 60 m 左右那一档。</p>
+    <div class="bins" id="bins"></div>
+  </div>
+
+  <div class="card note">
+    <h2>怎么看</h2>
+    <div class="legend">
+      <span><i class="sw" style="border-color:var(--tp)"></i>检中（与标注 IoU ≥ 0.5）</span>
+      <span><i class="sw" style="border-color:var(--fp)"></i>误检</span>
+      <span><i class="sw" style="border-color:var(--miss);border-style:dashed"></i>漏检（标注有、没检出）</span>
+      <span><i class="sw" style="border-color:var(--ign);border-style:dotted"></i>落在标注「忽略区」，不计误检</span>
+      <span><i class="sw" style="border-color:var(--aim)"></i>按下「行人瞄准」会打的那个</span>
+    </div>
+    <ul id="notes"></ul>
+  </div>
+
+  <div id="images"></div>
+</div>
+
+<script>
+const DATA = /*__DATA__*/null;
+const META = DATA.meta;
+const state = { thr: META.conf, mode: 'device' };
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const pct = (a, b) => (b > 0 ? (100 * a / b).toFixed(0) + '%' : '-');
+
+document.getElementById('lead').textContent =
+  `下面的框是按设备端同一套预处理（C 双线性 letterbox）与解码（C，阈值 ${META.conf}、NMS ${META.iou}、只收行人两类）` +
+  `跑出来的；推理在这台电脑上用 ONNX Runtime 代替设备上的 TensorRT（同一份权重）。` +
+  `有标注的图会和人工标注逐框对照。`;
+
+function countFor(item, mode, thr) {
+  const m = item.modes[mode];
+  const out = { gt: 0, tp: 0, fp: 0, ign: 0, det: 0 };
+  m.dets.forEach((d, i) => {
+    if (d[4] < thr) return;
+    out.det++;
+    if (m.tags) { if (m.tags[i] === 'fp') out.fp++; else if (m.tags[i] === 'ign') out.ign++; }
+  });
+  if (item.gt) {
+    out.gt = item.gt.length;
+    m.hit.forEach(di => { if (di >= 0 && m.dets[di][4] >= thr) out.tp++; });
+  }
+  return out;
+}
+
+function binOf(h) {
+  return META.bins.findIndex(b => h >= b[0] && (b[1] === null || h < b[1]));
+}
+function distLabel(b) {
+  const far = b[0] > 0 ? 60 * META.pxAt60 / b[0] : null;
+  const near = b[1] ? 60 * META.pxAt60 / b[1] : null;
+  if (far === null) return `> ${near.toFixed(0)} m`;
+  if (near === null) return `< ${far.toFixed(0)} m`;
+  return `${near.toFixed(0)}–${far.toFixed(0)} m`;
+}
+
+function renderSummary() {
+  let gt = 0, tp = 0, fp = 0, ign = 0, det = 0, sat = 0;
+  const bins = META.bins.map(() => ({ n: 0, hit: 0 }));
+  DATA.items.forEach(it => {
+    const c = countFor(it, state.mode, state.thr);
+    gt += c.gt; tp += c.tp; fp += c.fp; ign += c.ign; det += c.det;
+    if (it.saturated && state.mode === 'device') sat++;
+    if (!it.gt) return;
+    const m = it.modes[state.mode];
+    it.gt.forEach((g, j) => {
+      const k = binOf((g[3] - g[1]) * it.scale);
+      if (k < 0) return;
+      bins[k].n++;
+      if (m.hit[j] >= 0 && m.dets[m.hit[j]][4] >= state.thr) bins[k].hit++;
+    });
+  });
+  const withGt = DATA.items.filter(i => i.gt).length;
+  document.getElementById('stats').innerHTML = [
+    ['标注里的人', gt], ['检中', tp], ['漏检', gt - tp], ['误检', fp],
+    ['召回率', pct(tp, gt)], ['准确率', pct(tp, tp + fp)],
+  ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+  document.getElementById('meta').innerHTML =
+    `<span>图片 <b>${DATA.items.length}</b> 张（${withGt} 张有标注）</span>` +
+    `<span>模型 <b>${META.model}</b>，输入 <b>${META.input}</b></span>` +
+    `<span>配对口径 <b>IoU ≥ ${META.matchIou}</b></span>` +
+    `<span>落在忽略区的框 <b>${ign}</b> 个（不计误检）</span>` +
+    (sat ? `<span class="warn">有 ${sat} 张图检出数顶到 64 的上限</span>` : '') +
+    `<span>生成 <b>${META.generated}</b></span>`;
+  document.getElementById('bins').innerHTML = META.bins.map((b, k) => {
+    const r = bins[k];
+    const lab = b[1] === null ? `≥ ${b[0]} px` : `${b[0]}–${b[1]} px`;
+    const hl = b[0] === 16 ? ' hl' : '';
+    const w = r.n ? (100 * r.hit / r.n) : 0;
+    return `<div class="bin${hl}"><div class="lab"><b>${lab}</b>（≈ ${distLabel(b)}）</div>` +
+      `<div class="track"><div class="fill" style="width:${w}%"></div></div>` +
+      `<div class="num">${r.n ? pct(r.hit, r.n) : '-'}（${r.hit}/${r.n}）</div></div>`;
+  }).join('');
+}
+
+function draw(card) {
+  const it = DATA.items[card.dataset.idx];
+  const cv = card.querySelector('canvas');
+  const img = card._img;
+  const view = card.querySelector('.view');
+  const zoom = card._zoom;
+  const z = zoom === 'fit' ? Math.min(1, (view.clientWidth - 2) / it.w) : Number(zoom);
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(it.w * z * dpr); cv.height = Math.round(it.h * z * dpr);
+  cv.style.width = `${Math.round(it.w * z)}px`; cv.style.height = `${Math.round(it.h * z)}px`;
+  const g = cv.getContext('2d');
+  g.setTransform(z * dpr, 0, 0, z * dpr, 0, 0);
+  g.drawImage(img, 0, 0);
+  const lw = 1.8 / z;
+  const rect = (b, color, dash) => {
+    g.setLineDash(dash ? dash.map(v => v / z) : []);
+    g.strokeStyle = color; g.lineWidth = lw;
+    g.strokeRect(b[0], b[1], b[2] - b[0], b[3] - b[1]);
+  };
+  const m = it.modes[state.mode];
+  if (it.gt) {
+    it.gt.forEach((gb, j) => {
+      const di = m.hit[j];
+      if (!(di >= 0 && m.dets[di][4] >= state.thr)) rect(gb, css('--miss'), [4, 3]);
+    });
+  }
+  m.dets.forEach((d, i) => {
+    if (d[4] < state.thr) return;
+    const tag = m.tags ? m.tags[i] : 'tp';
+    const color = !m.tags ? css('--accent') : tag === 'tp' ? css('--tp') : tag === 'fp' ? css('--fp') : css('--ign');
+    rect(d, color, tag === 'ign' ? [2, 2] : null);
+  });
+  // 光轴（画面中心）
+  g.setLineDash([]); g.strokeStyle = 'rgba(255,255,255,0.85)'; g.lineWidth = 1.2 / z;
+  const cx = it.w / 2, cy = it.h / 2, s = 10 / z;
+  g.beginPath(); g.moveTo(cx - s, cy); g.lineTo(cx + s, cy); g.moveTo(cx, cy - s); g.lineTo(cx, cy + s); g.stroke();
+  // 会被瞄准的那个
+  if (m.aim >= 0) {
+    const d = m.dets[m.aim];
+    const ax = (d[0] + d[2]) / 2, ay = (d[1] + d[3]) / 2;
+    const r = Math.max((d[2] - d[0]), (d[3] - d[1])) * 0.9 + 8 / z;
+    g.strokeStyle = css('--aim'); g.lineWidth = 2.6 / z;
+    g.beginPath(); g.arc(ax, ay, r, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.moveTo(cx, cy); g.lineTo(ax, ay); g.setLineDash([5 / z, 4 / z]); g.lineWidth = 1.4 / z; g.stroke();
+    g.setLineDash([]);
+  }
+}
+
+function renderImages() {
+  const host = document.getElementById('images');
+  if (!host.children.length) {
+    DATA.items.forEach((it, k) => {
+      const card = document.createElement('div');
+      card.className = 'card imgcard'; card.dataset.idx = k; card._zoom = 'fit';
+      card.innerHTML = `<div class="row"><h3>${it.name}</h3>` +
+        `<span class="seg zoom"><button data-z="fit" class="on">适应宽度</button><button data-z="1">原图 1×</button><button data-z="2">2×</button></span></div>` +
+        `<div class="imgstats"></div><div class="view"><canvas></canvas></div>`;
+      host.appendChild(card);
+      card.querySelectorAll('[data-z]').forEach(b => b.addEventListener('click', () => {
+        card._zoom = b.dataset.z;
+        card.querySelectorAll('[data-z]').forEach(x => x.classList.toggle('on', x === b));
+        draw(card);
+      }));
+      const img = new Image();
+      img.onload = () => { card._img = img; draw(card); };
+      img.src = 'data:image/jpeg;base64,' + it.jpg;
+    });
+  }
+  host.querySelectorAll('.imgcard').forEach(card => {
+    const it = DATA.items[card.dataset.idx];
+    const c = countFor(it, state.mode, state.thr);
+    const m = it.modes[state.mode];
+    const hs = it.gt ? it.gt.map(g => (g[3] - g[1]) * it.scale).sort((a, b) => a - b) : [];
+    const med = hs.length ? hs[Math.floor(hs.length / 2)] : null;
+    let aimTxt = '画面里没有置信度 ≥ 0.40 的人，按下「行人瞄准」会一直搜索';
+    if (m.aim >= 0) {
+      const d = m.dets[m.aim];
+      const off = Math.hypot((d[0] + d[2]) / 2 - it.w / 2, (d[1] + d[3]) / 2 - it.h / 2);
+      aimTxt = `会瞄准离中心 ${off.toFixed(0)} px 的那个（置信度 ${d[4].toFixed(2)}，框 ${(d[2] - d[0]).toFixed(0)}×${(d[3] - d[1]).toFixed(0)} px）`;
+    }
+    card.querySelector('.imgstats').innerHTML =
+      `<b>${it.w}×${it.h}</b>（进网络缩放 ×${it.scale.toFixed(3)}），本机 CPU 推理 ${it.inferMs} ms` +
+      (it.gt ? ` · 标注 <b>${c.gt}</b> 人（身高中位 ${med.toFixed(0)} px@网络输入）· 检中 <b>${c.tp}</b> · 漏检 <b>${c.gt - c.tp}</b> · 误检 <b>${c.fp}</b> · 召回 <b>${pct(c.tp, c.gt)}</b>`
+             : ` · 检出 <b>${c.det}</b> 人（无标注）`) +
+      (it.saturated && state.mode === 'device' ? ` · <span class="warn">检出数顶到 64 上限</span>` : '') +
+      `<br>${aimTxt}`;
+    if (card._img) draw(card);
+  });
+}
+
+document.getElementById('notes').innerHTML = [
+  '标注把人分成两类：<b>pedestrian</b>（站着或走着）和 <b>people</b>（坐着、骑车等其他姿态）。设备端两类都当目标，这里也合在一起算。',
+  '<b>设备端每帧最多保留 64 个框</b>（<code>WT_TRT_MAX_DETECTIONS</code>，按置信度从高到低留）。对「打画面中间那个人」没有影响，但人群图里的召回率会被截掉；切到「模型本身」看不截断的结果。',
+  '紫色圈 = 按下「行人瞄准」时决策层会捕获的目标：置信度 ≥ 0.40（<code>ped_conf</code> 默认值）的框里离画面中心最近的那个；之后云台把它转到中心、连续 3 帧确认、打激光。',
+  '这些图是 VisDrone2019 <b>验证集</b>（模型训练时没见过），场景以城市道路、广场为主，拍摄高度不明；与 M4T 实际作业的画面仍有差异，真实效果要用 M4T 拍的画面再看一次（本脚本对没有标注的图同样能用）。',
+  '推理耗时是这台电脑 CPU 跑 ONNX 的数字，<b>不代表</b>妙算3 上 TensorRT FP16 的速度（那个还没测）。',
+].map(s => `<li>${s}</li>`).join('');
+
+function refresh() {
+  document.getElementById('thrv').textContent = state.thr.toFixed(2) + (Math.abs(state.thr - META.acquire) < 1e-6 ? '（= 捕获门限）' : '');
+  renderSummary();
+  renderImages();
+}
+document.getElementById('thr').addEventListener('input', e => { state.thr = Number(e.target.value); refresh(); });
+document.querySelectorAll('#mode button').forEach(b => b.addEventListener('click', () => {
+  state.mode = b.dataset.m;
+  document.querySelectorAll('#mode button').forEach(x => x.classList.toggle('on', x === b));
+  refresh();
+}));
+window.addEventListener('resize', () => document.querySelectorAll('.imgcard').forEach(c => { if (c._img && c._zoom === 'fit') draw(c); }));
+const hash = new URLSearchParams(location.hash.slice(1));
+if (hash.has('thr')) { state.thr = Number(hash.get('thr')); document.getElementById('thr').value = state.thr; }
+if (hash.get('mode') === 'model') { state.mode = 'model'; document.querySelectorAll('#mode button').forEach(x => x.classList.toggle('on', x.dataset.m === 'model')); }
+refresh();
+</script>
+</body>
+</html>
