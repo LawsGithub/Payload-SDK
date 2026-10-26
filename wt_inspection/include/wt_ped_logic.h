@@ -299,6 +299,31 @@ double WtPedLogic_LockToleranceDeg(const WtPedConfig *cfg, double widthPx, doubl
 /** @brief 两个方向（方位/俯仰，度）之间的夹角（度），用方向矢量点积算 */
 double WtPedLogic_AngleBetweenDeg(double az1Deg, double el1Deg, double az2Deg, double el2Deg);
 
+/**
+ * @brief 捕获判据：此刻会捕获哪个候选（不改任何状态）。
+ *
+ * 置信度 ≥ cfg->acquireConf 的候选里，离光轴夹角最小的那个 —— 操作员把谁放在
+ * 画面中间就打谁；夹角相同取靠前的。决策层没有目标时用它捕获，AI 叠加用它标出
+ * 「此刻拨开关会锁谁」：两处同一个判据，不另写一份。
+ *
+ * 夹角只取决于像素、画面尺寸与视场，与云台姿态无关（WtAim_FromPixel 做的是
+ * 旋转变换，旋转不改变夹角），所以 obs->gimbal 留零位也得到同一个结果。
+ *
+ * @param outAim 可为 NULL；非 NULL 时写入选中者的瞄准解
+ * @return 候选下标；没有够格的返回 -1
+ */
+int WtPedLogic_PickCapture(const WtPedConfig *cfg, const WtPedObs *obs, WtAimResult *outAim);
+
+/**
+ * @brief 候选里离像素 (u, v) 最近、且距离不超过 maxDistPx 的那个。
+ *
+ * AI 叠加用：把决策层正在跟踪的目标（最近一次关联上时的框中心）对到最新一帧的
+ * 框上。云台正在转时人在画面里移得快，对不上就返回 -1（宁可不标，不标错人）。
+ *
+ * @return 候选下标；没有返回 -1
+ */
+int WtPedLogic_NearestCandidate(const WtPedObs *obs, double u, double v, double maxDistPx);
+
 #ifdef __cplusplus
 }
 #endif

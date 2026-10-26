@@ -260,22 +260,91 @@ static void WtPed_UpdateStability(WtPedLogic *s, const WtPedObs *obs)
     }
 }
 
-/**
- * 处理一帧：已有目标则按绝对方向关联，没有则捕获离光轴最近的。
- *
- * 只在「已停稳、且这帧是停稳之后拍的」时调用（见头文件「三处不同」第 2 条）。
- *
- * @return 这一帧里是否找到了（或捕获了）目标
- */
-static bool WtPed_ProcessFrame(WtPedLogic *s, const WtPedObs *obs)
+int WtPedLogic_PickCapture(const WtPedConfig *cfg, const WtPedObs *obs, WtAimResult *outAim)
 {
-    int n = obs->candidateCount;
+    int n;
     int best = -1;
     double bestScore = 1e18;
     WtAimResult bestAim;
     int i;
 
+    if (cfg == NULL || obs == NULL) {
+        return -1;
+    }
+
     memset(&bestAim, 0, sizeof(bestAim));
+    n = obs->candidateCount;
+    if (n > WT_PED_MAX_CANDIDATES) {
+        n = WT_PED_MAX_CANDIDATES;
+    }
+
+    for (i = 0; i < n; i++) {
+        const WtPedCandidate *c = &obs->cand[i];
+        WtAimResult aim;
+
+        if (c->conf < cfg->acquireConf) {
+            continue;
+        }
+        if (!WtAim_FromPixel(&obs->gimbal, c->u, c->v, obs->imageWidthPx, obs->imageHeightPx,
+                             obs->fovHorizDeg, obs->fovVertDeg, &aim)) {
+            continue;
+        }
+        if (aim.angularErrorDeg < bestScore) {
+            bestScore = aim.angularErrorDeg;
+            best = i;
+            bestAim = aim;
+        }
+    }
+
+    if (best >= 0 && outAim != NULL) {
+        *outAim = bestAim;
+    }
+
+    return best;
+}
+
+int WtPedLogic_NearestCandidate(const WtPedObs *obs, double u, double v, double maxDistPx)
+{
+    int n;
+    int best = -1;
+    double bestD2 = 0.0;
+    double gate2;
+    int i;
+
+    if (obs == NULL || !isfinite(u) || !isfinite(v) || !(maxDistPx >= 0.0)) {
+        return -1;
+    }
+
+    gate2 = maxDistPx * maxDistPx;
+    n = obs->candidateCount;
+    if (n > WT_PED_MAX_CANDIDATES) {
+        n = WT_PED_MAX_CANDIDATES;
+    }
+
+    for (i = 0; i < n; i++) {
+        const double du = obs->cand[i].u - u;
+        const double dv = obs->cand[i].v - v;
+        const double d2 = du * du + dv * dv;
+
+        if (!(d2 <= gate2)) {
+            continue;   /* 也挡掉 NaN */
+        }
+        if (best < 0 || d2 < bestD2) {
+            best = i;
+            bestD2 = d2;
+        }
+    }
+
+    return best;
+}
+
+/** 跟踪：同一个人 = 世界里方向最接近上一次的那个（不是像素最近），门限外的不算 */
+static int WtPed_PickTracked(const WtPedLogic *s, const WtPedObs *obs, WtAimResult *outAim)
+{
+    int n = obs->candidateCount;
+    int best = -1;
+    double bestScore = 1e18;
+    int i;
 
     if (n > WT_PED_MAX_CANDIDATES) {
         n = WT_PED_MAX_CANDIDATES;
@@ -290,27 +359,40 @@ static bool WtPed_ProcessFrame(WtPedLogic *s, const WtPedObs *obs)
                              obs->fovHorizDeg, obs->fovVertDeg, &aim)) {
             continue;
         }
-
-        if (s->track.active) {
-            /* 同一个人 = 世界里方向最接近上一次的那个（不是像素最近） */
-            score = WtPedLogic_AngleBetweenDeg(s->track.azDeg, s->track.elDeg,
-                                               aim.targetYawDeg, aim.targetPitchDeg);
-            if (score > s->cfg.gateDeg) {
-                continue;
-            }
-        } else {
-            if (c->conf < s->cfg.acquireConf) {
-                continue;
-            }
-            /* 捕获：离光轴最近的 —— 操作员把谁放在画面中间就打谁 */
-            score = aim.angularErrorDeg;
+        score = WtPedLogic_AngleBetweenDeg(s->track.azDeg, s->track.elDeg,
+                                           aim.targetYawDeg, aim.targetPitchDeg);
+        if (score > s->cfg.gateDeg) {
+            continue;
         }
-
         if (score < bestScore) {
             bestScore = score;
             best = i;
-            bestAim = aim;
+            *outAim = aim;
         }
+    }
+
+    return best;
+}
+
+/**
+ * 处理一帧：已有目标则按绝对方向关联，没有则捕获离光轴最近的。
+ *
+ * 只在「已停稳、且这帧是停稳之后拍的」时调用（见头文件「三处不同」第 2 条）。
+ *
+ * @return 这一帧里是否找到了（或捕获了）目标
+ */
+static bool WtPed_ProcessFrame(WtPedLogic *s, const WtPedObs *obs)
+{
+    int best;
+    WtAimResult bestAim;
+
+    memset(&bestAim, 0, sizeof(bestAim));
+
+    if (s->track.active) {
+        best = WtPed_PickTracked(s, obs, &bestAim);
+    } else {
+        /* 捕获：离光轴最近的 —— 操作员把谁放在画面中间就打谁（判据见 PickCapture） */
+        best = WtPedLogic_PickCapture(&s->cfg, obs, &bestAim);
     }
 
     if (best < 0) {

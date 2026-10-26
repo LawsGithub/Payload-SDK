@@ -1220,6 +1220,151 @@ static void TestNoFireOnStaleObservation(void)
     WT_CHECK(s.state == WT_PED_SEARCHING);
 }
 
+/** 一个静止候选（像素直接给，不走仿真） */
+static WtPedCandidate Cand(double u, double v, double conf)
+{
+    WtPedCandidate c;
+
+    c.u = u;
+    c.v = v;
+    c.widthPx = 20.0;
+    c.heightPx = 40.0;
+    c.conf = conf;
+
+    return c;
+}
+
+/*
+ * 捕获判据单独暴露给 AI 叠加（标出「拨开关会锁谁」）。钉住：置信度门槛（含等于）、
+ * 取离光轴最近、夹角相同取靠前、与云台姿态无关。
+ */
+static void TestPickCapture(void)
+{
+    const WtPedConfig c = WtPedLogic_DefaultConfig();
+    const WtCameraGeometry g = WtCamera_ComputeZoomedGeometry(&WT_CAMERA_M4T_WIDE, 1.0);
+    const WtCameraPose poses[3] = {
+        {.yawDeg = 0.0, .pitchDeg = 0.0},
+        {.yawDeg = 123.0, .pitchDeg = -45.0},
+        {.yawDeg = -170.0, .pitchDeg = -80.0, .rollDeg = 2.0},
+    };
+    WtPedObs o;
+    WtAimResult aim;
+    int i;
+
+    WT_CASE("捕获判据：够格的里离光轴最近；门槛含等于；同夹角取靠前；与云台姿态无关");
+
+    memset(&o, 0, sizeof(o));
+    o.imageWidthPx = IMG_W;
+    o.imageHeightPx = IMG_H;
+    o.fovHorizDeg = g.fovHorizDeg;
+    o.fovVertDeg = g.fovVertDeg;
+    o.candidateCount = 3;
+    o.cand[0] = Cand(1300.0, 900.0, 0.90);     /* 离中心远 */
+    o.cand[1] = Cand(735.0, 548.0, 0.30);      /* 最近，但置信度不够 */
+    o.cand[2] = Cand(800.0, 600.0, 0.50);      /* 次近，够格 */
+
+    WT_CHECK_EQ_INT(WtPedLogic_PickCapture(&c, &o, &aim), 2);
+    WT_CHECK(aim.angularErrorDeg > 0.0);
+
+    o.cand[1].conf = c.acquireConf;            /* 恰好等于门槛：够格 */
+    WT_CHECK_EQ_INT(WtPedLogic_PickCapture(&c, &o, NULL), 1);
+
+    for (i = 0; i < 3; i++) {
+        o.gimbal = poses[i];
+        WT_CHECK_EQ_INT(WtPedLogic_PickCapture(&c, &o, NULL), 1);
+    }
+
+    /*
+     * 夹角完全相同时取下标小的。用同一位置的两个框造平局 —— 左右对称的两点在
+     * 旋转后会差一个浮点舍入，那不是平局。
+     */
+    memset(&o.gimbal, 0, sizeof(o.gimbal));
+    o.candidateCount = 2;
+    o.cand[0] = Cand(900.0, 400.0, 0.9);
+    o.cand[1] = Cand(900.0, 400.0, 0.9);
+    WT_CHECK_EQ_INT(WtPedLogic_PickCapture(&c, &o, NULL), 0);
+
+    o.cand[0].conf = 0.1;
+    o.cand[1].conf = 0.1;
+    WT_CHECK_EQ_INT(WtPedLogic_PickCapture(&c, &o, NULL), -1);
+    WT_CHECK_EQ_INT(WtPedLogic_PickCapture(NULL, &o, NULL), -1);
+}
+
+static void TestNearestCandidate(void)
+{
+    WtPedObs o;
+
+    WT_CASE("就近匹配：门限内最近的；门限含等于；门限外、NaN、负门限不算");
+
+    memset(&o, 0, sizeof(o));
+    o.candidateCount = 3;
+    o.cand[0] = Cand(100.0, 100.0, 0.9);
+    o.cand[1] = Cand(130.0, 100.0, 0.9);
+    o.cand[2] = Cand(500.0, 500.0, 0.9);
+
+    WT_CHECK_EQ_INT(WtPedLogic_NearestCandidate(&o, 125.0, 100.0, 40.0), 1);
+    WT_CHECK_EQ_INT(WtPedLogic_NearestCandidate(&o, 110.0, 100.0, 40.0), 0);
+    WT_CHECK_EQ_INT(WtPedLogic_NearestCandidate(&o, 300.0, 300.0, 40.0), -1);
+    WT_CHECK_EQ_INT(WtPedLogic_NearestCandidate(&o, 500.0, 540.0, 40.0), 2);
+    WT_CHECK_EQ_INT(WtPedLogic_NearestCandidate(&o, NAN, 100.0, 40.0), -1);
+    WT_CHECK_EQ_INT(WtPedLogic_NearestCandidate(&o, 100.0, 100.0, -1.0), -1);
+
+    o.cand[1].u = NAN;                         /* 坏候选跳过，不影响别人 */
+    WT_CHECK_EQ_INT(WtPedLogic_NearestCandidate(&o, 125.0, 100.0, 40.0), 0);
+}
+
+/*
+ * 会话里真正捕获的人 = 那一帧 PickCapture 选的人 —— AI 叠加标的 target 就不会和
+ * 拨开关后实际锁的人对不上。三个人：最远的（够格）排第一、居中的（够格）、
+ * 最近的（置信度不够）。「取第一个够格的」或「不看置信度」都会选错。
+ */
+static void TestSessionCapturesPickCapture(void)
+{
+    WtPedLogic s;
+    Sim sim;
+    const WtPedConfig c = NoFireConfig();
+    Person ps[3];
+    uint32_t now = 5000;
+    int captured = -1;
+    int i;
+
+    WT_CASE("会话捕获的就是 PickCapture 在那一帧选的人");
+
+    WtPedLogic_Begin(&s, &c, now);
+    SimInit(&sim, now, 100.0, -30.0);
+    ps[0] = MakePerson(104.0, -32.0);
+    ps[1] = MakePerson(101.5, -30.8);
+    ps[2] = MakePerson(100.3, -30.2);
+    ps[2].conf = 0.30;
+
+    for (i = 0; i < 100 && !s.track.active; i++) {
+        WtPedObs o;
+        WtPedDecision d;
+        int pick;
+
+        now += STEP_MS;
+        SimAdvance(&sim, now);
+        MakeObs(&o, &sim, now, ps, 3, true);
+        pick = WtPedLogic_PickCapture(&s.cfg, &o, NULL);
+        d = WtPedLogic_Step(&s, &o);
+        if (d.action == WT_PED_ACT_ROTATE_GIMBAL) {
+            SimCommand(&sim, now, d.gimbalPitchDeg, d.gimbalYawDeg);
+        }
+        if (s.track.active) {
+            WT_CHECK_EQ_INT(o.candidateCount, 3);
+            WT_CHECK(pick >= 0);
+            if (pick >= 0) {
+                WT_CHECK_NEAR(s.track.u, o.cand[pick].u, 1e-9);
+                WT_CHECK_NEAR(s.track.v, o.cand[pick].v, 1e-9);
+            }
+            captured = pick;
+        }
+    }
+
+    WT_CHECK(s.track.active);
+    WT_CHECK_EQ_INT(captured, 1);
+}
+
 int main(void)
 {
     TestDefaults();
@@ -1246,6 +1391,9 @@ int main(void)
     TestSessionTimeout();
     TestGimbalDisturbedDuringLock();
     TestMinSettleAfterCommand();
+    TestPickCapture();
+    TestNearestCandidate();
+    TestSessionCapturesPickCapture();
 
     return WT_TEST_SUMMARY();
 }
