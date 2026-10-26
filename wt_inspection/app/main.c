@@ -43,6 +43,7 @@
  * 否则连 x86_64 链接自检这条路都断了。
  */
 #if defined(WT_WITH_TRT)
+#include "wt_ped.h"
 #include "wt_survey.h"
 #include "wt_vision.h"
 #endif
@@ -67,11 +68,14 @@ static FILE *s_logFile = NULL;
  * 活着走完 SDK 身份校验，否则 .dpk 装不上（见 main 里步骤 4 的说明）。
  */
 static bool s_configReady = false;
+
 #if defined(WT_WITH_TRT)
 /* 采集链路（取流 + 推理 + 激光/云台）是否已成功就绪 */
 static bool s_surveyReady = false;
 /* 本次运行是否已采集过 —— 叶片没动，重复采没有意义 */
 static bool s_surveyDone = false;
+/* 行人瞄准链路（取流 + 行人检测推理 + 激光/云台）是否已就绪 */
+static bool s_pedReady = false;
 
 /**
  * @brief 云台 + 激光自检。**不需要风机在画面里。**
@@ -368,7 +372,128 @@ static void WtApp_RunSurvey(void)
                              survey.logic.message ? survey.logic.message : "");
     }
 }
+
+/**
+ * @brief 跑一次行人瞄准打点会话，直到完成、失败、被中止或开关拨回。
+ *
+ * ## 为什么 10 Hz
+ *
+ * 对准是闭环：转云台 → 读回停稳 → 看停稳后的新一帧 → 还差就再转。节奏越快，
+ * 「停稳」被发现得越早、锁得越快。激光只在锁定确认之后连读 3 次（间隔 300 ms，
+ * 避开 5 Hz 限频），平时不读。
+ *
+ * ## 这个循环会阻塞
+ *
+ * 打点那一拍要连读 3 次激光（每次同步、实测最多 1.2 s）。所以只能跑在主循环里，
+ * **绝不能放进 PSDK 回调线程**。
+ */
+static void WtApp_RunPed(void)
+{
+    WtPedSession ped;
+    WtPedConfig cfg;
+    char progress[128];
+    char lastPosted[128] = "";
+    uint32_t lastPostMs = 0;
+    T_DjiOsalHandler *osal = DjiPlatform_GetOsalHandler();
+
+    if (!s_pedReady) {
+        WtWidget_PostMessage("行人瞄准链路未就绪（见启动日志）");
+        WtWidget_ClearPedRequest();
+        return;
+    }
+
+    /* 配置是这两个量的唯一来源，经 ConfigFrom 构造，不另传 */
+    cfg = WtPedLogic_ConfigFrom(s_runner.config.pedDwellMs, s_runner.config.pedConf);
+    if (!WtPed_Begin(&ped, &cfg, s_runner.config.outputDir)) {
+        WtWidget_PostMessage("行人瞄准启动失败");
+        WtWidget_ClearPedRequest();
+        return;
+    }
+
+    while (!WtPed_IsFinished(&ped) && !s_stopRequested) {
+        uint32_t now = 0;
+
+        if (WtWidget_TakeAbortRequest()) {
+            WtPed_Abort(&ped, "操作员按了中止");
+            break;
+        }
+        if (!WtWidget_IsPedRequested()) {
+            WtPed_Abort(&ped, "开关已拨回");
+            break;
+        }
+
+        /* 先刷遥测再 Tick：决策层要用这一拍的云台读回判停稳 */
+        WtTelemetry_Poll(&s_runner.telemetry);
+        WtPed_Tick(&ped, &s_runner.telemetry);
+
+        /*
+         * 浮窗只在文字变了、且距上次 ≥ 500 ms 时推：PostMessage 每次都直接发
+         * 并写一行日志，10 Hz 全推既刷屏又挤占 2 KB/s 的浮窗带宽。
+         */
+        WtPed_FormatProgress(&ped, progress, sizeof(progress));
+        if (osal != NULL && osal->GetTimeMs != NULL) {
+            osal->GetTimeMs(&now);
+        }
+        if (strcmp(progress, lastPosted) != 0 && (now - lastPostMs) >= 500u) {
+            WtWidget_PostMessage("%s", progress);
+            snprintf(lastPosted, sizeof(lastPosted), "%s", progress);
+            lastPostMs = now;
+        }
+
+        usleep(100 * 1000);
+    }
+
+    if (!WtPed_IsFinished(&ped)) {
+        WtPed_Abort(&ped, "进程退出");
+    }
+
+    /*
+     * 归还云台模式 —— **必须在这里还，不能等进程退出**（`dji_app_ctl stop`
+     * 直接杀进程，DeInit 不会被执行；FREE 残留会让之后绕飞顶 pan 限位）。
+     * 放在成败判断之前：失败与中止路径同样借过模式。
+     */
+    WtLaser_ReturnFollowMode();
+
+    WtPed_FormatProgress(&ped, progress, sizeof(progress));
+    WtWidget_PostMessage("%s；要再来一次请把「行人瞄准」拨回再拨上", progress);
+    WtWidget_ClearPedRequest();
+}
 #endif /* WT_WITH_TRT */
+
+/**
+ * @brief 待命循环里查一下「行人瞄准」开关，拨上了就跑一次会话。
+ *
+ * 两个待命循环（开机待命、作业被拒后的待命）都要调它 —— 只在一处响应，
+ * 另一处拨开关就会"没有任何反应"，从外面看和卡死一样。
+ */
+static void WtApp_ServicePedRequest(void)
+{
+    if (!WtWidget_IsPedRequested()) {
+        return;
+    }
+#if defined(WT_WITH_TRT)
+    USER_LOG_INFO("收到「行人瞄准」—— 开始瞄准打点会话");
+    WtApp_RunPed();
+#else
+    WtWidget_PostMessage("行人瞄准不可用：本程序编译时未开 TensorRT 链路（-DWT_BUILD_TRT=ON）");
+    WtWidget_ClearPedRequest();
+#endif
+}
+
+/** 停掉推理链路（先停推理再停取流 —— 反过来推理线程会读到已释放的帧缓冲） */
+static void WtApp_StopVisionChain(void)
+{
+#if defined(WT_WITH_TRT)
+    if (s_surveyReady || s_pedReady) {
+        WtVision_Stop();
+        WtFramePump_Stop();
+        /* 兜底归还云台模式；正常路径上会话结束时已经还过 */
+        WtLaser_DeInit();
+        s_surveyReady = false;
+        s_pedReady = false;
+    }
+#endif
+}
 
 static T_DjiReturnCode WtApp_PrintConsole(const uint8_t *data, uint16_t dataLen)
 {
@@ -714,7 +839,7 @@ int main(int argc, char **argv)
                  *
                  * 失败不阻断：遥测订阅那边会再次告警，只是云台角/俯仰闭环不可用。
                  */
-                if (s_runner.config.surveyEnabled) {
+                if (s_runner.config.surveyEnabled || s_runner.config.pedEnabled) {
                     (void)WtLaser_Init();
                 }
 
@@ -782,7 +907,7 @@ int main(int argc, char **argv)
                 if (!WtFramePump_Start()) {
                     USER_LOG_ERROR("采集：取流启动失败，本次无法采集盘面");
                 } else if (!WtVision_Start(s_runner.config.surveyEnginePath,
-                                           0.25f, 0.45f,
+                                           WT_VISION_MODEL_TURBINE, 0.25f, 0.45f,
                                            s_runner.config.surveyInferIntervalMs > 0
                                                ? (uint32_t)s_runner.config.surveyInferIntervalMs
                                                : 200u)) {
@@ -807,6 +932,44 @@ int main(int argc, char **argv)
                         WtApp_RunGimbalLaserSelfTest();
                     }
                 }
+            }
+
+            /*
+             * 高空行人瞄准打点（默认关）。
+             *
+             * ⚠️ 与激光采集、取流探针**互斥**：三者都要独占同一个相机源的图像流，
+             * 推理线程也只能装一个模型。显式拦住，而不是让它们在设备上抢成一团。
+             *
+             * 推理间隔 100 ms：瞄准闭环要等「停稳之后的新一帧」，帧来得越勤
+             * 锁得越快；1280 输入单帧推理约几十毫秒，10 Hz 留有余量。
+             * 失败不阻断启动（装包时安装器要试运行应用）。
+             */
+            if (s_runner.config.pedEnabled) {
+                if (s_runner.config.surveyEnabled || s_runner.config.streamProbe) {
+                    USER_LOG_ERROR("ped_enabled 与 survey_enabled / stream_probe 互斥"
+                                   "（同一相机源、同一推理线程），本次不启动行人瞄准");
+                } else if (!WtFramePump_Start()) {
+                    USER_LOG_ERROR("行人瞄准：取流启动失败");
+                } else if (!WtVision_Start(s_runner.config.pedEnginePath,
+                                           WT_VISION_MODEL_PEDESTRIAN, 0.25f, 0.45f, 100u)) {
+                    USER_LOG_ERROR("行人瞄准：推理线程启动失败（ped_engine 路径？"
+                                   "装错 engine？架构不匹配？）");
+                    WtFramePump_Stop();
+                } else if (!WtLaser_Init()) {
+                    USER_LOG_ERROR("行人瞄准：相机/云台模块初始化失败");
+                    WtVision_Stop();
+                    WtFramePump_Stop();
+                } else {
+                    s_pedReady = true;
+                    USER_LOG_INFO("行人瞄准链路已就绪：在 Pilot 2 拨「行人瞄准」开关即可开始"
+                                  "（锁定后连续 3 帧确认、再停 %.1f s 自动打点）",
+                                  (double)s_runner.config.pedDwellMs / 1000.0);
+                }
+            }
+#else
+            if (s_runner.config.pedEnabled) {
+                USER_LOG_ERROR("ped_enabled = true，但本程序编译时未开 TensorRT 链路"
+                               "（-DWT_BUILD_TRT=ON），行人瞄准不可用");
             }
 #endif /* WT_WITH_TRT */
 
@@ -882,6 +1045,7 @@ int main(int argc, char **argv)
                     USER_LOG_WARN("待命状态下收到中止请求，已清除开始请求");
                     WtWidget_ClearStartRequest();
                 }
+                WtApp_ServicePedRequest();
                 if (WtWidget_IsStartRequested()) {
                     /*
                      * 采集先于规划。
@@ -911,6 +1075,7 @@ int main(int argc, char **argv)
         /* 若不是因为"开始作业"而退出循环，走收尾路径。 */
         if (s_stopRequested || !WtWidget_IsStartRequested()) {
             WtTelemetry_DeInit(&s_runner.telemetry);
+            WtApp_StopVisionChain();
             WtWidget_Stop();
             WtRunner_DeInit(&s_runner);
             DjiCore_DeInit();
@@ -993,6 +1158,7 @@ int main(int argc, char **argv)
                 USER_LOG_WARN("待命状态下收到中止请求");
                 WtWidget_ClearStartRequest();
             }
+            WtApp_ServicePedRequest();
             if (WtWidget_IsStartRequested()) {
                 break;
             }
@@ -1031,19 +1197,11 @@ int main(int argc, char **argv)
 
     WtTelemetry_DeInit(&s_runner.telemetry);
     /*
-     * 采集链路的收尾顺序：先停推理（它在消费帧），再停取流，最后收云台。
-     * 反过来会让推理线程读到已释放的帧缓冲。
-     *
-     * WtLaser_DeInit() 还负责把云台模式还成 YAW_FOLLOW —— FREE 残留在
+     * 采集 / 行人瞄准链路的收尾：先停推理（它在消费帧），再停取流，最后收云台。
+     * WtLaser_DeInit() 还会兜底把云台模式还成 YAW_FOLLOW —— FREE 残留在
      * 飞机上会让后续绕飞顶 pan 限位（姊妹项目踩过的事故）。
      */
-#if defined(WT_WITH_TRT)
-    if (s_surveyReady) {
-        WtVision_Stop();
-        WtFramePump_Stop();
-        WtLaser_DeInit();
-    }
-#endif
+    WtApp_StopVisionChain();
     WtAiStreamProbe_Stop();
     WtAiOverlay_Stop();
     WtWidget_Stop();

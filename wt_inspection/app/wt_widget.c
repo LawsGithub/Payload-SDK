@@ -3,7 +3,7 @@
  * @brief 控件模块实现。
  *
  * 骨架取自 liangzhourenwu 项目的 `lz/app/lz_widget.c`（那边已经在 M4T + 妙算3
- * 上跑通），砍到只剩本项目需要的四个控件。
+ * 上跑通），砍到只剩本项目需要的五个控件。
  * **初始化四步的顺序不能变**：
  *
  *   1. DjiWidget_Init()
@@ -28,7 +28,7 @@
 /* ------------------------------------------------------------------ */
 /* 控件索引（必须与 app/widget_file 下的 widget_config.json 一致）        */
 /*                                                                     */
-/* 这 4 个索引必须与两份 json 的 widget_index 一一对应（含 config 界面）—— */
+/* 这 5 个索引必须与两份 json 的 widget_index 一一对应 ——                */
 /* 把界面控件分派给 handler，对不上的后果是"按了 A 按钮却执行了 B 的       */
 /* 动作"，而两边都不会报错。                                             */
 /* ------------------------------------------------------------------ */
@@ -53,7 +53,11 @@
  */
 #define WT_WIDGET_IDX_PARK_PHASE   3
 
-#define WT_WIDGET_COUNT            4
+/* 高空行人瞄准打点：1 = 开始一次会话，0 = 中止 */
+#define WT_WIDGET_IDX_PED_SWITCH   4
+
+#define WT_WIDGET_COUNT            5
+
 
 /* 滑块 0–100 → 角度 0–359 的映射上限 */
 #define WT_PARK_PHASE_MAX_DEG      359
@@ -90,6 +94,10 @@ static volatile int32_t s_parkPhasePercent = -1;
 
 /* 干跑开关。初值来自配置的 `dry_run`。 */
 static volatile bool s_dryRun = false;
+
+/* 行人瞄准请求。同样只置标志，会话由主循环跑（要转云台、要读阻塞的激光）。 */
+static volatile bool s_pedRequested = false;
+
 
 static T_DjiTaskHandle s_msgTask = NULL;
 static volatile bool s_msgTaskRun = false;
@@ -201,6 +209,20 @@ static T_DjiReturnCode WtWidget_SetWidgetValue(E_DjiWidgetType widgetType, uint3
         break;
     }
 
+    /* ---- 行人瞄准开关 ----
+     *
+     * 拨到 ON = 请求一次会话；拨回 OFF = 请求中止（主循环每拍都看它）。
+     * 会话结束后主循环会清掉请求，但**界面上的开关仍停在 ON** —— PSDK 没有
+     * 反向推控件状态的接口，所以结束时浮窗会提示操作员拨回再拨上。 */
+    case WT_WIDGET_IDX_PED_SWITCH:
+        if (widgetType != DJI_WIDGET_TYPE_SWITCH) {
+            return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
+        }
+        s_pedRequested = (value == DJI_WIDGET_SWITCH_STATE_ON);
+        WtWidget_PostMessage(s_pedRequested ? "收到行人瞄准请求：把目标放到画面中间附近"
+                                            : "行人瞄准：已请求停止");
+        break;
+
     default:
         return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
     }
@@ -230,6 +252,9 @@ static T_DjiReturnCode WtWidget_GetWidgetValue(E_DjiWidgetType widgetType, uint3
         break;
     case WT_WIDGET_IDX_DRY_RUN:
         *value = s_dryRun ? DJI_WIDGET_SWITCH_STATE_ON : DJI_WIDGET_SWITCH_STATE_OFF;
+        break;
+    case WT_WIDGET_IDX_PED_SWITCH:
+        *value = s_pedRequested ? DJI_WIDGET_SWITCH_STATE_ON : DJI_WIDGET_SWITCH_STATE_OFF;
         break;
     /* 按钮没有"当前值"可读 —— 它是瞬时动作，不是状态。
      * 回 `RELEASE_UP` 让界面显示为未按下，与"按一下就弹回"的物理直觉一致。 */
@@ -266,6 +291,9 @@ static const T_DjiWidgetHandlerListItem s_widgetHandlerList[WT_WIDGET_COUNT] = {
     /* 停用角滑块。类型必须与 json 里的 "widget_type": "scale" 一致，
      * 否则 PSDK 分派时会因类型不匹配拒绝（回调里我们对 widgetType 做了校验）。 */
     {WT_WIDGET_IDX_PARK_PHASE,   DJI_WIDGET_TYPE_SCALE, WtWidget_SetWidgetValue,
+     WtWidget_GetWidgetValue, NULL},
+
+    {WT_WIDGET_IDX_PED_SWITCH,   DJI_WIDGET_TYPE_SWITCH, WtWidget_SetWidgetValue,
      WtWidget_GetWidgetValue, NULL},
 };
 
@@ -508,4 +536,14 @@ void WtWidget_SetDryRunInitial(bool dryRun)
 void WtWidget_ClearStartRequest(void)
 {
     s_startRequested = false;
+}
+
+bool WtWidget_IsPedRequested(void)
+{
+    return s_pedRequested;
+}
+
+void WtWidget_ClearPedRequest(void)
+{
+    s_pedRequested = false;
 }

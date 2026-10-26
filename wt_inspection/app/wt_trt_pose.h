@@ -1,30 +1,30 @@
 /**
  * @file wt_trt_pose.h
- * @brief TensorRT YOLOv8-pose 推理封装（妙算3 / Orin NX）。
+ * @brief TensorRT YOLO 推理封装（妙算3 / Orin NX）：关键点模型与检测模型共用。
  *
- * ## 模型约定（2026-10-22 实测，`trtexec` 输出确认）
+ * ## 支持的两种模型（输出布局见 `wt_yolo_decode.h`）
  *
- * ```
- * 输入  images   1 × 3 × 640 × 640   float32 NCHW
- * 输出  output0  1 × 19 × 8400       float32
- * ```
+ * | 用途 | 模型 | 输入 | 输出 |
+ * |---|---|---|---|
+ * | 风机整机 | YOLO11-pose，7 关键点 | 1×3×640×640 | 1×19×8400 |
+ * | 高空行人 | YOLO11 检测，VisDrone 11 类 | 1×3×1280×1280 | 1×15×33600 |
  *
- * `19 = 4 (cx,cy,w,h) + 1 (conf) + 14 (7 关键点 × 2)`。
- * **关键点没有逐点置信度** —— 这是 `kpt_shape: [7,2]` 决定的，不是封装漏了。
- * 下游要置信度门槛时用框的 conf 代替。
+ * 风机那行是 2026-10-22 `trtexec` 实测确认的。**关键点没有逐点置信度** ——
+ * `kpt_shape: [7,2]` 决定的，不是封装漏了；下游要门槛时用框的 conf 代替。
  *
- * 7 个关键点的语义见 `wt_ai_solve.h`：索引 3 是轮毂，4/5/6 是三个叶尖
- * （无序，编号由 `wt_blade_id.c` 按几何决定）。
+ * ## 形状从 engine 读，并在 Init 时核对
  *
- * ## 性能实测（Orin NX，FP16，TensorRT 8.5.2）
+ * 拆分前这里把 `19 × 8400` 写死，engine 换了也照读 —— 装错 engine 时读到的
+ * 是一片错位的数字，而**不报任何错**。现在输入边长、候选数、通道数都从
+ * engine 读出，通道数与调用方声明的布局对不上就拒绝初始化。
+ *
+ * ## 性能实测（Orin NX，FP16，TensorRT 8.5.2，风机模型 640 输入）
  *
  * ```
  * GPU 计算   8.60 ms（中位）
  * 端到端     9.18 ms
  * 吞吐       110~114 QPS
  * ```
- *
- * 30fps 每帧预算 33.3 ms，推理只占约 9 ms。
  *
  * ## 线程模型
  *
@@ -43,36 +43,11 @@
 
 #include <stdbool.h>
 
+#include "wt_yolo_decode.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/** 模型输入边长（固定 640，导出时 dynamic=False） */
-#define WT_TRT_INPUT_SIZE 640
-
-/** 关键点数量 */
-#define WT_TRT_KPT_COUNT 7
-
-/** 单帧最多返回的目标数 */
-#define WT_TRT_MAX_DETECTIONS 32
-
-/** 一个检测结果（像素坐标，已还原到原图） */
-typedef struct {
-    float bboxX1;
-    float bboxY1;
-    float bboxX2;
-    float bboxY2;
-    float conf;
-    /* 关键点像素坐标，顺序与 wt_ai_solve.h 的 KPT 语义一致 */
-    float kptX[WT_TRT_KPT_COUNT];
-    float kptY[WT_TRT_KPT_COUNT];
-} WtTrtDetection;
-
-/** 一次推理的结果集 */
-typedef struct {
-    int count;
-    WtTrtDetection items[WT_TRT_MAX_DETECTIONS];
-} WtTrtResult;
 
 /** 推理上下文（不透明） */
 typedef struct WtTrtPose WtTrtPose;
@@ -81,18 +56,29 @@ typedef struct WtTrtPose WtTrtPose;
  * @brief 加载 engine 并初始化推理上下文。
  *
  * @param enginePath  .engine 文件路径
- * @param confThresh  框置信度阈值（典型 0.25）
- * @param iouThresh   NMS 的 IoU 阈值（典型 0.45）
- * @return 上下文指针；失败返回 NULL
+ * @param layout      输出布局。`numClasses = 0` 表示**由 engine 的输出通道数
+ *                    反推**（检测模型换数据集时类别数会变）；关键点约定
+ *                    （kptCount / kptDims）必须由调用方给出
+ * @param filter      置信度 / NMS / 类别筛选
+ * @param resize      letterbox 缩放方式（风机最近邻、行人双线性，见 E_WtYoloResize）
+ * @return 上下文指针；失败返回 NULL（原因打到 stderr）
  */
-WtTrtPose *WtTrtPose_Init(const char *enginePath,
-                          float confThresh, float iouThresh);
+WtTrtPose *WtTrtPose_Init(const char *enginePath, const WtYoloLayout *layout,
+                          const WtYoloFilter *filter, E_WtYoloResize resize);
+
+/**
+ * @brief 取 engine 的实际布局与形状（Init 成功后才有意义）。
+ *
+ * 任一输出指针可为 NULL。
+ */
+void WtTrtPose_GetShape(const WtTrtPose *ctx, WtYoloLayout *layout,
+                        int *inputW, int *inputH, int *numCand);
 
 /**
  * @brief 对一帧 RGB 图像做推理。
  *
- * 输入可以是任意分辨率；内部做 letterbox 到 640×640，输出坐标已还原到
- * **输入图像的像素坐标系**。
+ * 输入可以是任意分辨率；内部做 letterbox 到 engine 的输入尺寸，输出坐标
+ * 已还原到**输入图像的像素坐标系**。
  *
  * @param ctx   上下文
  * @param rgb    输入图像，RGB 三通道交错（与 `PIXFMT_RGB_PACKED` 一致）

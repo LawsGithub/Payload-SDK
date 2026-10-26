@@ -238,6 +238,28 @@ bool WtLaser_Read(WtLaserSample *out)
     return out->valid;
 }
 
+bool WtLaser_GetOpticalZoom(double *outFactor)
+{
+    T_DjiCameraManagerOpticalZoomParam param;
+    T_DjiReturnCode rc;
+
+    if (outFactor == NULL || !s_cameraInited) {
+        return false;
+    }
+
+    memset(&param, 0, sizeof(param));
+    rc = DjiCameraManager_GetOpticalZoomParam(WT_LASER_MOUNT, &param);
+    if (rc != DJI_ERROR_SYSTEM_MODULE_CODE_SUCCESS) {
+        USER_LOG_WARN("激光：GetOpticalZoomParam 失败 rc=0x%08X，视场按 1× 计",
+                      (unsigned)rc);
+        return false;
+    }
+
+    *outFactor = (double)param.currentOpticalZoomFactor;
+
+    return true;
+}
+
 bool WtLaser_RotateRel(double dPitchDeg, double dYawDeg)
 {
     T_DjiGimbalManagerRotation rot;

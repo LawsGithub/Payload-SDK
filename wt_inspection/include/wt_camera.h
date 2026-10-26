@@ -55,6 +55,19 @@ extern const WtCameraModel WT_CAMERA_M4T_TELE;   /* 长焦 168mm 48MP */
 WtCameraGeometry WtCamera_ComputeGeometry(const WtCameraModel *cam);
 
 /**
+ * @brief 变焦后的视场几何：等效焦距 × 倍率，像幅比例不变。
+ *
+ * 实时画面跟着 Pilot 2 的变焦走时，像素 → 角度的换算必须跟着变：按广角
+ * 视场去算 3× 下的画面，每像素角度被高估 3 倍，云台每次都转过头、越转越远。
+ * 反过来（倍率给大了）只会少转、多迭代几次，仍然收敛 —— 所以拿不准时宁可
+ * 按读到的倍率算。
+ *
+ * @param zoomFactor 相对 base 这颗镜头的倍率。< 1 或非有限值按 1 处理
+ *        （读变焦失败时传进来的 0 不该得到一个 180° 的视场）
+ */
+WtCameraGeometry WtCamera_ComputeZoomedGeometry(const WtCameraModel *base, double zoomFactor);
+
+/**
  * @brief 指定拍摄距离处的地面采样距离
  * @param distanceM 相机光心到目标的斜距 m
  * @return GSD，单位 mm/pixel

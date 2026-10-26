@@ -1,18 +1,19 @@
 /**
  * @file wt_trt_pose.cpp
- * @brief TensorRT YOLOv8-pose 推理实现。
+ * @brief TensorRT YOLO 推理实现。
  *
  * 用 C++ 是因为 TensorRT 的 API 是 C++ 的。对外仍导出 C 接口
  * （见 `wt_trt_pose.h`），这样调用方（PSDK 应用，C）不受影响。
  *
  * ## 实现要点
  *
- * 1. **预处理在 CPU 上做**：1440×1080 RGB → letterbox 640×640 → float32。
- *    实测这部分约 2 ms，相比 8.7 ms 的推理不算瓶颈。上 GPU 做能再省 1 ms，
+ * 1. **预处理在 CPU 上做**：1440×1080 RGB → letterbox 到 engine 输入尺寸 →
+ *    float32。640 输入实测约 2 ms，相比 8.7 ms 的推理不算瓶颈。行人模型是
+ *    1280 输入 + 双线性，开销约为其数倍（未在设备上实测）。上 GPU 做能再省，
  *    但引入 CUDA kernel 后复杂度陡增，当前不值得。
  *
- * 2. **letterbox 必须记录缩放比和填充量**，输出坐标要按它还原。
- *    漏掉这步关键点会系统性偏移，且偏移量随长宽比变化。
+ * 2. **letterbox 与解码在 `wt_yolo_decode.c`**（纯 C，桌面可测）。本文件只剩
+ *    「读 engine、搬显存、执行」这些只有设备上才有的事。
  *
  * 3. **NMS 自己实现**，不依赖 OpenCV 的 `dnn::NMSBoxes` —— 后者要链接
  *    opencv_dnn，而设备上的 OpenCV 版本不统一（系统 4.2 / 本地 4.5 并存）。
@@ -22,8 +23,6 @@
 
 #include <NvInfer.h>
 
-#include <algorithm>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -47,75 +46,13 @@ struct TrtDeleter {
     void operator()(T *p) const { delete p; }
 };
 
-/** letterbox 参数：缩放比与填充量，用于把结果还原到原图 */
-struct Letterbox {
-    float scale;
-    float padX;
-    float padY;
-};
-
-/**
- * 把 RGB 图等比缩放并居中填充到 640×640，同时转成 NCHW float32 /255。
- *
- * 最近邻插值：对关键点定位足够，且比双线性快。
- */
-void LetterboxToTensor(const unsigned char *rgb, int w, int h,
-                       float *dst, Letterbox *lb)
+void PrintDims(const char *what, const nvinfer1::Dims &d)
 {
-    const float scale = std::min((float)WT_TRT_INPUT_SIZE / (float)w,
-                                 (float)WT_TRT_INPUT_SIZE / (float)h);
-    const int newW = (int)std::lround((float)w * scale);
-    const int newH = (int)std::lround((float)h * scale);
-    const int padX = (WT_TRT_INPUT_SIZE - newW) / 2;
-    const int padY = (WT_TRT_INPUT_SIZE - newH) / 2;
-    const int plane = WT_TRT_INPUT_SIZE * WT_TRT_INPUT_SIZE;
-
-    lb->scale = scale;
-    lb->padX = (float)padX;
-    lb->padY = (float)padY;
-
-    /* 先填灰边（YOLO 训练时用 114/255） */
-    for (int i = 0; i < plane; i++) {
-        dst[i] = 114.0f / 255.0f;
-        dst[plane + i] = 114.0f / 255.0f;
-        dst[2 * plane + i] = 114.0f / 255.0f;
+    std::fprintf(stderr, "[trt] %s 形状 (", what);
+    for (int i = 0; i < d.nbDims; i++) {
+        std::fprintf(stderr, "%s%d", i ? "," : "", (int)d.d[i]);
     }
-
-    for (int dy = 0; dy < newH; dy++) {
-        const int sy = std::min(h - 1, (int)((float)dy / scale));
-        const int rowOut = (dy + padY) * WT_TRT_INPUT_SIZE + padX;
-
-        for (int dx = 0; dx < newW; dx++) {
-            const int sx = std::min(w - 1, (int)((float)dx / scale));
-            const int src = (sy * w + sx) * 3;
-            const int outIdx = rowOut + dx;
-
-            dst[outIdx] = (float)rgb[src + 0] / 255.0f;
-            dst[plane + outIdx] = (float)rgb[src + 1] / 255.0f;
-            dst[2 * plane + outIdx] = (float)rgb[src + 2] / 255.0f;
-        }
-    }
-}
-
-float Iou(const WtTrtDetection &a, const WtTrtDetection &b)
-{
-    const float x1 = std::max(a.bboxX1, b.bboxX1);
-    const float y1 = std::max(a.bboxY1, b.bboxY1);
-    const float x2 = std::min(a.bboxX2, b.bboxX2);
-    const float y2 = std::min(a.bboxY2, b.bboxY2);
-    const float w = x2 - x1;
-    const float h = y2 - y1;
-
-    if (w <= 0.0f || h <= 0.0f) {
-        return 0.0f;
-    }
-
-    const float inter = w * h;
-    const float areaA = (a.bboxX2 - a.bboxX1) * (a.bboxY2 - a.bboxY1);
-    const float areaB = (b.bboxX2 - b.bboxX1) * (b.bboxY2 - b.bboxY1);
-    const float uni = areaA + areaB - inter;
-
-    return (uni > 0.0f) ? (inter / uni) : 0.0f;
+    std::fprintf(stderr, ")\n");
 }
 
 }  // namespace
@@ -128,22 +65,114 @@ struct WtTrtPose {
     cudaStream_t stream = nullptr;
     void *dInput = nullptr;
     void *dOutput = nullptr;
+    std::vector<float> hostInput;
     std::vector<float> hostOutput;
-    float confThresh = 0.25f;
-    float iouThresh = 0.45f;
+    std::vector<WtYoloCand> work;
+    WtYoloLayout layout{};
+    WtYoloFilter filter{};
+    E_WtYoloResize resize = WT_YOLO_RESIZE_NEAREST;
+    int inputW = 0;
+    int inputH = 0;
+    int channels = 0;
+    int numCand = 0;
 };
+
+namespace {
+
+/**
+ * 读出 engine 的输入/输出形状并与调用方声明的布局核对。
+ *
+ * 用的是 TensorRT 8.5 起的按名字查询接口（getNbIOTensors / getTensorShape），
+ * 不用已标记弃用的 binding 系列。执行仍走 enqueueV2，绑定顺序沿用拆分前已
+ * 上机验证的「0 = 输入、1 = 输出」—— 这里先核对 IO 模式确认这个前提成立。
+ */
+bool ReadShapes(WtTrtPose *ctx, const WtYoloLayout *want)
+{
+    const nvinfer1::ICudaEngine *e = ctx->engine.get();
+
+    if (e->getNbIOTensors() != 2) {
+        std::fprintf(stderr, "[trt] engine 有 %d 个输入输出张量，期望 2 个"
+                             "（一个 images、一个 output0）\n",
+                     (int)e->getNbIOTensors());
+        return false;
+    }
+
+    const char *inName = e->getIOTensorName(0);
+    const char *outName = e->getIOTensorName(1);
+
+    if (e->getTensorIOMode(inName) != nvinfer1::TensorIOMode::kINPUT ||
+        e->getTensorIOMode(outName) != nvinfer1::TensorIOMode::kOUTPUT) {
+        std::fprintf(stderr, "[trt] 张量顺序不是「0 = 输入、1 = 输出」，"
+                             "与 enqueueV2 的绑定约定不符\n");
+        return false;
+    }
+    if (e->getTensorDataType(inName) != nvinfer1::DataType::kFLOAT ||
+        e->getTensorDataType(outName) != nvinfer1::DataType::kFLOAT) {
+        std::fprintf(stderr, "[trt] 输入/输出不是 float32（构建时别加 "
+                             "--inputIOFormats/--outputIOFormats=fp16）\n");
+        return false;
+    }
+
+    const nvinfer1::Dims in = e->getTensorShape(inName);
+    const nvinfer1::Dims out = e->getTensorShape(outName);
+
+    PrintDims(inName, in);
+    PrintDims(outName, out);
+
+    if (in.nbDims != 4 || in.d[0] != 1 || in.d[1] != 3 || in.d[2] <= 0 || in.d[3] <= 0) {
+        std::fprintf(stderr, "[trt] 输入应为固定形状 1×3×H×W（导出时 dynamic=False）\n");
+        return false;
+    }
+    if (in.d[2] > WT_YOLO_MAX_INPUT || in.d[3] > WT_YOLO_MAX_INPUT) {
+        std::fprintf(stderr, "[trt] 输入边长超过 %d\n", WT_YOLO_MAX_INPUT);
+        return false;
+    }
+    if (out.nbDims != 3 || out.d[0] != 1 || out.d[1] <= 4 || out.d[2] <= 0) {
+        std::fprintf(stderr, "[trt] 输出应为 1×C×N（C > 4）\n");
+        return false;
+    }
+
+    ctx->inputH = (int)in.d[2];
+    ctx->inputW = (int)in.d[3];
+    ctx->channels = (int)out.d[1];
+    ctx->numCand = (int)out.d[2];
+
+    if (want->numClasses == 0) {
+        if (!WtYolo_LayoutFromChannels(ctx->channels, want->kptCount, want->kptDims,
+                                       &ctx->layout)) {
+            std::fprintf(stderr, "[trt] 输出 %d 通道与「%d 个关键点 × %d 维」的约定对不上"
+                                 "（装错 engine 了？）\n",
+                         ctx->channels, want->kptCount, want->kptDims);
+            return false;
+        }
+    } else {
+        if (WtYolo_Channels(want) != ctx->channels) {
+            std::fprintf(stderr, "[trt] 输出 %d 通道，而声明的布局（%d 类、%d 个关键点 × %d 维）"
+                                 "应为 %d 通道 —— 装错 engine 了？\n",
+                         ctx->channels, want->numClasses, want->kptCount, want->kptDims,
+                         WtYolo_Channels(want));
+            return false;
+        }
+        ctx->layout = *want;
+    }
+
+    return true;
+}
+
+}  // namespace
 
 extern "C" {
 
-WtTrtPose *WtTrtPose_Init(const char *enginePath, float confThresh, float iouThresh)
+WtTrtPose *WtTrtPose_Init(const char *enginePath, const WtYoloLayout *layout,
+                          const WtYoloFilter *filter, E_WtYoloResize resize)
 {
-    if (enginePath == nullptr) {
+    if (enginePath == nullptr || layout == nullptr || filter == nullptr) {
         return nullptr;
     }
 
     auto *ctx = new WtTrtPose();
-    ctx->confThresh = confThresh;
-    ctx->iouThresh = iouThresh;
+    ctx->filter = *filter;
+    ctx->resize = resize;
 
     /* 读 engine 文件 */
     FILE *f = std::fopen(enginePath, "rb");
@@ -156,6 +185,12 @@ WtTrtPose *WtTrtPose_Init(const char *enginePath, float confThresh, float iouThr
     std::fseek(f, 0, SEEK_END);
     const long size = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
+
+    if (size <= 0) {
+        std::fclose(f);
+        delete ctx;
+        return nullptr;
+    }
 
     std::vector<char> blob((size_t)size);
 
@@ -179,28 +214,59 @@ WtTrtPose *WtTrtPose_Init(const char *enginePath, float confThresh, float iouThr
         return nullptr;
     }
 
+    if (!ReadShapes(ctx, layout)) {
+        delete ctx;
+        return nullptr;
+    }
+
     ctx->context.reset(ctx->engine->createExecutionContext());
     if (!ctx->context) {
         delete ctx;
         return nullptr;
     }
 
-    /* 分配显存：输入 1*3*640*640*4，输出 1*19*8400*4 */
-    const size_t inBytes = (size_t)3 * WT_TRT_INPUT_SIZE * WT_TRT_INPUT_SIZE * sizeof(float);
-    const size_t outCount = (size_t)19 * 8400;
-    const size_t outBytes = outCount * sizeof(float);
+    const size_t inCount = (size_t)3 * (size_t)ctx->inputW * (size_t)ctx->inputH;
+    const size_t outCount = (size_t)ctx->channels * (size_t)ctx->numCand;
 
-    if (cudaMalloc(&ctx->dInput, inBytes) != cudaSuccess ||
-        cudaMalloc(&ctx->dOutput, outBytes) != cudaSuccess) {
+    if (cudaMalloc(&ctx->dInput, inCount * sizeof(float)) != cudaSuccess ||
+        cudaMalloc(&ctx->dOutput, outCount * sizeof(float)) != cudaSuccess) {
         std::fprintf(stderr, "[trt] cudaMalloc 失败\n");
         WtTrtPose_Deinit(ctx);
         return nullptr;
     }
 
-    cudaStreamCreate(&ctx->stream);
+    if (cudaStreamCreate(&ctx->stream) != cudaSuccess) {
+        std::fprintf(stderr, "[trt] cudaStreamCreate 失败\n");
+        ctx->stream = nullptr;
+        WtTrtPose_Deinit(ctx);
+        return nullptr;
+    }
+
+    ctx->hostInput.resize(inCount);
     ctx->hostOutput.resize(outCount);
+    ctx->work.resize((size_t)ctx->numCand);
 
     return ctx;
+}
+
+void WtTrtPose_GetShape(const WtTrtPose *ctx, WtYoloLayout *layout,
+                        int *inputW, int *inputH, int *numCand)
+{
+    if (ctx == nullptr) {
+        return;
+    }
+    if (layout != nullptr) {
+        *layout = ctx->layout;
+    }
+    if (inputW != nullptr) {
+        *inputW = ctx->inputW;
+    }
+    if (inputH != nullptr) {
+        *inputH = ctx->inputH;
+    }
+    if (numCand != nullptr) {
+        *numCand = ctx->numCand;
+    }
 }
 
 bool WtTrtPose_Infer(WtTrtPose *ctx, const unsigned char *rgb,
@@ -216,17 +282,17 @@ bool WtTrtPose_Infer(WtTrtPose *ctx, const unsigned char *rgb,
     out->count = 0;
 
     /* ---- 预处理 ---- */
-    Letterbox lb;
-    static thread_local std::vector<float> inputBuf;
+    WtYoloLetterbox lb;
 
-    inputBuf.resize((size_t)3 * WT_TRT_INPUT_SIZE * WT_TRT_INPUT_SIZE);
-    LetterboxToTensor(rgb, width, height, inputBuf.data(), &lb);
+    if (!WtYolo_Letterbox(rgb, width, height, ctx->inputW, ctx->inputH, ctx->resize,
+                          ctx->hostInput.data(), &lb)) {
+        return false;
+    }
 
-    const size_t inBytes = inputBuf.size() * sizeof(float);
-    const size_t outCount = (size_t)19 * 8400;
-    const size_t outBytes = outCount * sizeof(float);
+    const size_t inBytes = ctx->hostInput.size() * sizeof(float);
+    const size_t outBytes = ctx->hostOutput.size() * sizeof(float);
 
-    if (cudaMemcpyAsync(ctx->dInput, inputBuf.data(), inBytes,
+    if (cudaMemcpyAsync(ctx->dInput, ctx->hostInput.data(), inBytes,
                         cudaMemcpyHostToDevice, ctx->stream) != cudaSuccess) {
         return false;
     }
@@ -243,75 +309,14 @@ bool WtTrtPose_Infer(WtTrtPose *ctx, const unsigned char *rgb,
                         cudaMemcpyDeviceToHost, ctx->stream) != cudaSuccess) {
         return false;
     }
-    cudaStreamSynchronize(ctx->stream);
-
-    /* ---- 解码 ---- */
-    /*
-     * 输出布局：1×19×8400，19 = 4(bbox) + 1(conf) + 14(7 kpt × 2)。
-     * 转置访问：第 c 个通道的第 i 个候选 = data[c * 8400 + i]。
-     */
-    const float *data = ctx->hostOutput.data();
-    const int numCand = 8400;
-    std::vector<WtTrtDetection> cands;
-
-    cands.reserve(64);
-
-    for (int i = 0; i < numCand; i++) {
-        const float conf = data[4 * numCand + i];
-
-        if (conf < ctx->confThresh) {
-            continue;
-        }
-
-        WtTrtDetection d;
-        const float cx = data[0 * numCand + i];
-        const float cy = data[1 * numCand + i];
-        const float bw = data[2 * numCand + i];
-        const float bh = data[3 * numCand + i];
-
-        /* 从 letterbox 坐标还原到原图 */
-        d.bboxX1 = (cx - bw * 0.5f - lb.padX) / lb.scale;
-        d.bboxY1 = (cy - bh * 0.5f - lb.padY) / lb.scale;
-        d.bboxX2 = (cx + bw * 0.5f - lb.padX) / lb.scale;
-        d.bboxY2 = (cy + bh * 0.5f - lb.padY) / lb.scale;
-        d.conf = conf;
-
-        for (int k = 0; k < WT_TRT_KPT_COUNT; k++) {
-            const float kx = data[(5 + 2 * k) * numCand + i];
-            const float ky = data[(5 + 2 * k + 1) * numCand + i];
-
-            d.kptX[k] = (kx - lb.padX) / lb.scale;
-            d.kptY[k] = (ky - lb.padY) / lb.scale;
-        }
-
-        cands.push_back(d);
+    if (cudaStreamSynchronize(ctx->stream) != cudaSuccess) {
+        return false;
     }
 
-    /* ---- NMS（按 conf 降序贪心） ---- */
-    std::sort(cands.begin(), cands.end(),
-              [](const WtTrtDetection &a, const WtTrtDetection &b) {
-                  return a.conf > b.conf;
-              });
-
-    for (const auto &c : cands) {
-        if (out->count >= WT_TRT_MAX_DETECTIONS) {
-            break;
-        }
-
-        bool suppressed = false;
-
-        for (int j = 0; j < out->count; j++) {
-            if (Iou(c, out->items[j]) > ctx->iouThresh) {
-                suppressed = true;
-                break;
-            }
-        }
-        if (!suppressed) {
-            out->items[out->count++] = c;
-        }
-    }
-
-    return true;
+    /* ---- 解码 + NMS（wt_yolo_decode.c，桌面可测） ---- */
+    return WtYolo_Decode(ctx->hostOutput.data(), ctx->channels, ctx->numCand,
+                         &ctx->layout, &lb, &ctx->filter,
+                         ctx->work.data(), (int)ctx->work.size(), out);
 }
 
 void WtTrtPose_Deinit(WtTrtPose *ctx)

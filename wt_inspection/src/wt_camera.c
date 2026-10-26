@@ -41,6 +41,23 @@ WtCameraGeometry WtCamera_ComputeGeometry(const WtCameraModel *cam)
     return g;
 }
 
+WtCameraGeometry WtCamera_ComputeZoomedGeometry(const WtCameraModel *base, double zoomFactor)
+{
+    WtCameraModel zoomed;
+
+    if (base == NULL) {
+        return WtCamera_ComputeGeometry(NULL);
+    }
+    if (!isfinite(zoomFactor) || zoomFactor < 1.0) {
+        zoomFactor = 1.0;
+    }
+
+    zoomed = *base;
+    zoomed.eflMm = base->eflMm * zoomFactor;
+
+    return WtCamera_ComputeGeometry(&zoomed);
+}
+
 double WtCamera_GsdAtDistance(const WtCameraModel *cam, double distanceM)
 {
     WtCameraGeometry g;

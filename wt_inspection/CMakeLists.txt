@@ -27,6 +27,7 @@ add_library(wt_core STATIC
     src/wt_rotor_fit.c
     src/wt_aim.c
     src/wt_survey_logic.c
+    src/wt_ped_logic.c
     src/wt_plan.c
     src/wt_bridge.c
     src/wt_app_config.c
@@ -58,7 +59,7 @@ option(WT_BUILD_TESTS "编译并注册 PC 侧回归测试" ON)
 if(WT_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     enable_testing()
 
-    foreach(wt_test wt_test_plan wt_test_config wt_test_bridge wt_test_blade_id wt_test_projection wt_test_ai_solve wt_test_rotor_fit wt_test_aim wt_test_telemetry wt_test_survey_logic)
+    foreach(wt_test wt_test_plan wt_test_config wt_test_bridge wt_test_blade_id wt_test_projection wt_test_ai_solve wt_test_rotor_fit wt_test_aim wt_test_telemetry wt_test_survey_logic wt_test_ped_logic)
         add_executable(${wt_test} tests/${wt_test}.c)
         target_include_directories(${wt_test} PRIVATE tests)
         target_link_libraries(${wt_test} PRIVATE wt_core)
@@ -77,6 +78,13 @@ if(WT_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     add_test(NAME wt_test_ai_bridge COMMAND wt_test_ai_bridge)
     set_tests_properties(wt_test_ai_bridge PROPERTIES
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    # wt_test_yolo_decode 同理：解码器放在 app/（它是推理链的一环），但它是
+    # 纯 C、不碰 TensorRT —— 正是为了能在桌面测才从 wt_trt_pose.cpp 里拆出来。
+    add_executable(wt_test_yolo_decode tests/wt_test_yolo_decode.c app/wt_yolo_decode.c)
+    target_include_directories(wt_test_yolo_decode PRIVATE tests app)
+    target_link_libraries(wt_test_yolo_decode PRIVATE m)
+    add_test(NAME wt_test_yolo_decode COMMAND wt_test_yolo_decode)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -201,8 +209,10 @@ if(WT_BUILD_PSDK_APP)
 
         target_sources(wt_inspection_app PRIVATE
             app/wt_trt_pose.cpp
+            app/wt_yolo_decode.c
             app/wt_vision.c
             app/wt_survey.c
+            app/wt_ped.c
         )
 
         target_include_directories(wt_inspection_app PRIVATE

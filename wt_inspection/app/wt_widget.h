@@ -8,35 +8,22 @@
  * 飞机在天上时这条路根本不存在。控件让操作员在 Pilot 2 界面上直接改，
  * 并且能在起飞前就设好，不必下机改文件重启。
  *
- * ## 四个控件，分两个界面
+ * ## 五个控件，都在 main_interface
  *
- * ⚠️ **控件属于哪个界面由它的语义决定**（2026-10-13 在 liangzhourenwu
- * 项目实测确认，本模块沿用同一结论）：
- *
- * - **`main_interface`** → Pilot 相机视图左侧「PSDK」菜单，**飞行中操作**
- * - **`config_interface`** → Pilot 的 **`Payload Settings`（负载设置）**，
- *   **起飞前配置**
- *
- * 两者共用一个索引序列、不重叠（SDK 的 handler 表是扁平的）。
- *
- * ### main_interface（3 个）
+ * `main_interface` → Pilot 相机视图左侧「PSDK」菜单，**飞行中操作**。
  *
  * | index | 类型   | 名称     | 作用 |
  * |---|---|---|---|
  * | 0 | switch | 开始作业 | **0 = 中止，1 = 开始** |
- * | 1 | button | 中止作业 | 立即请求中止当前作业 |
+ * | 1 | button | 中止作业 | 立即请求中止当前作业（也中止行人瞄准） |
  * | 2 | switch | 干跑     | 1 = 只上传不启动（dry_run） |
+ * | 3 | scale  | 停用角   | 0–100 映射到 0–359° |
+ * | 4 | switch | 行人瞄准 | **1 = 开始一次瞄准打点会话，0 = 中止** |
  *
- * ### config_interface（1 个，Payload Settings）
- *
- * | index | 类型          | 名称   | 作用 |
- * |---|---|---|---|
- * | 3 | int_input_box | 停用角 | 直接填角度 0–359，夹取后生效 |
- *
- * ⚠️ **`int_input_box` 只能放在 config_interface。** 官方样例里
- * `main_interface` 根本没有这个类型，而在 liangzhourenwu 项目实测把它放 main 时
- * **SDK 收下（解析计数正常）但 Pilot 不渲染成可编辑控件** —— 日志里它的回调
- * **一次都没触发过**。这条是踩出来的，不要"优化"回去。
+ * ⚠️ **数值输入用 `scale` 滑块，不用 `int_input_box`。** 输入框放 main 界面时
+ * SDK 收下但 Pilot 不渲染（liangzhourenwu 实测）；放 config 界面（Payload
+ * Settings）同样不渲染（本项目 2026-10-20 实测）。这条是踩出来的，不要
+ * "优化"回去。
  *
  * ## 回调纪律：只置标志，主循环干活
  *
@@ -122,6 +109,21 @@ bool WtWidget_IsDryRun(void);
 
 /** @brief 设置干跑的初值（由 main.c 在载入配置后调用） */
 void WtWidget_SetDryRunInitial(bool dryRun);
+
+/**
+ * @brief 操作员是否请求了行人瞄准（「行人瞄准」开关在 ON）
+ *
+ * 会话进行中主循环每拍都查它：拨回 OFF 即中止。
+ */
+bool WtWidget_IsPedRequested(void);
+
+/**
+ * @brief 清除行人瞄准请求（会话结束后调用，避免立刻又开一轮）
+ *
+ * ⚠️ 与 `WtWidget_ClearStartRequest` 同理：只改本地状态，**界面上的开关
+ * 仍在 ON**，要在浮窗里提示操作员拨回。
+ */
+void WtWidget_ClearPedRequest(void);
 
 /**
  * @brief 清除"开始作业"请求

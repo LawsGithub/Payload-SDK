@@ -76,7 +76,9 @@ static const char *const WT_KEYS_APP[] = {
     "telemetry_hz", "gimbal_track_gain", "track_deadband", "auto_start", "output_dir",
     "dry_run", "no_actions", "ai_overlay", "stream_probe",
     "survey_enabled", "survey_engine", "survey_infer_interval_ms", "geoid_offset_m",
-    "survey_selftest", NULL,
+    "survey_selftest",
+    /* 高空行人瞄准打点 */
+    "ped_enabled", "ped_engine", "ped_dwell_ms", "ped_conf", NULL,
 };
 
 static const char *const WT_KEYS_TURBINE[] = {
@@ -489,6 +491,12 @@ bool WtAppConfig_Load(const char *path, WtAppConfig *config)
     int capacity = 4;
     int lineNo = 0;
     bool ok = true;
+    /*
+     * 「写了没有」单独记，不用哨兵值：哨兵会把 ped_conf = -0.5 这种写错的值
+     * 当成"没写"、静默换成默认 —— 正是本文件要防的那类错误。
+     */
+    bool pedDwellSet = false;
+    bool pedConfSet = false;
 
     memset(config, 0, sizeof(*config));
     config->profile = WtInspectionProfile_Default();
@@ -648,6 +656,18 @@ bool WtAppConfig_Load(const char *path, WtAppConfig *config)
                     applied = WtConfig_GetDouble(value, &config->geoidOffsetM);
                 } else if (strcmp(key, "survey_selftest") == 0) {
                     applied = WtConfig_GetBool(value, &config->surveySelfTest);
+                } else if (strcmp(key, "ped_enabled") == 0) {
+                    applied = WtConfig_GetBool(value, &config->pedEnabled);
+                } else if (strcmp(key, "ped_engine") == 0) {
+                    applied = (*value != '\0');
+                    snprintf(config->pedEnginePath, sizeof(config->pedEnginePath),
+                             "%.255s", value);
+                } else if (strcmp(key, "ped_dwell_ms") == 0) {
+                    applied = WtConfig_GetInt(value, &config->pedDwellMs);
+                    pedDwellSet = applied;
+                } else if (strcmp(key, "ped_conf") == 0) {
+                    applied = WtConfig_GetDouble(value, &config->pedConf);
+                    pedConfSet = applied;
                 }
             }
 
@@ -688,6 +708,25 @@ bool WtAppConfig_Load(const char *path, WtAppConfig *config)
          */
         snprintf(config->outputDir, sizeof(config->outputDir), "%s", "data");
     }
+    /*
+     * 行人瞄准：不写用默认；写了就必须在范围内，否则拒绝 —— 而不是夹到边界上
+     * 悄悄用一个操作员没写过的值。
+     */
+    if (!pedDwellSet) {
+        /* 默认 0：锁定后只靠「连续 3 帧确认」就打；要停顿再配（见 wt_ped_logic.h） */
+        config->pedDwellMs = 0;
+    } else if (config->pedDwellMs < 0 || config->pedDwellMs > 30000) {
+        fprintf(stderr, "[config] [app] ped_dwell_ms = %d 超出范围 [0, 30000]\n",
+                config->pedDwellMs);
+        ok = false;
+    }
+    if (!pedConfSet) {
+        config->pedConf = 0.40;
+    } else if (!(config->pedConf > 0.0 && config->pedConf < 1.0)) {
+        fprintf(stderr, "[config] [app] ped_conf = %g 超出范围 (0, 1)\n", config->pedConf);
+        ok = false;
+    }
+
     if (config->takeoff.lat == 0.0 && config->takeoff.lon == 0.0 && config->turbineCount > 0) {
         config->takeoff = config->turbines[0].spec.base;
     }
@@ -769,6 +808,9 @@ void WtAppConfig_Dump(const WtAppConfig *config)
            config->profile.camera.name, config->profile.targetGsdMmPerPx);
     printf("  风轮可转动   : %s\n", config->profile.rotorMayRotate ? "是（叶尖追踪模式）" : "否（停机巡检）");
     printf("  风机数量     : %d\n", config->turbineCount);
+    printf("  行人瞄准     : %s（锁定确认后再停 %.1f s 打点，捕获置信度 %.2f，engine %s）\n",
+           config->pedEnabled ? "开" : "关", (double)config->pedDwellMs / 1000.0,
+           config->pedConf, config->pedEnginePath[0] != '\0' ? config->pedEnginePath : "未配置");
 
     for (i = 0; i < config->turbineCount; i++) {
         const WtTurbineSpec *s = &config->turbines[i].spec;
@@ -892,6 +934,20 @@ bool WtAppConfig_WriteTemplate(const char *path)
             "# geoid_offset_m    = -38.0\n"
             "# 启动后跑一次云台+激光自检（不需要风机在画面里）。验完关掉。\n"
             "# survey_selftest   = false\n"
+            "\n"
+            "# 高空行人瞄准打点：识别画面里的行人（VisDrone 航拍检测模型），云台对准\n"
+            "# 画面中心附近的那个人，锁定后连续 3 帧确认（再停 ped_dwell_ms）就自动\n"
+            "# 打激光（连读 3 次取中位），落点写入 <output_dir>/ped_points.csv。\n"
+            "# 由 Pilot 2 的「行人瞄准」开关触发。\n"
+            "# ⚠️ 与 survey_enabled、stream_probe 互斥（都要独占同一个相机源的图像流）。\n"
+            "# ⚠️ engine 必须是**设备上**用 trtexec 构建的，且别放 /tmp（重启会清空）。\n"
+            "# ped_enabled       = false\n"
+            "# ped_engine        = /home/dji/wt-models/visdrone-yolo11s-1280.engine\n"
+            "# 锁定确认后再停多久才打激光（毫秒），范围 0~30000，默认 0（不额外停顿）。\n"
+            "# 需要「瞄准后停 3 s 再打」时写 3000。\n"
+            "# ped_dwell_ms      = 0\n"
+            "# 新捕获一个行人所需的置信度（跟上之后不再要求），范围 0~1，默认 0.40\n"
+            "# ped_conf          = 0.40\n"
             "\n"
             "# 每台风机一个段落，段落名即风机编号\n"
             "[turbine.WT-A01]\n"

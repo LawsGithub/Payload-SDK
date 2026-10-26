@@ -108,6 +108,25 @@ void WtLaser_ReturnFollowMode(void);
 bool WtLaser_Read(WtLaserSample *out);
 
 /**
+ * @brief 读当前光学变焦倍率（`DjiCameraManager_GetOpticalZoomParam` 的
+ *        `currentOpticalZoomFactor`）。
+ *
+ * 用途：实时画面跟着 Pilot 2 的变焦走时，像素 → 角度的换算要按倍率缩小视场
+ * （`WtCamera_ComputeZoomedGeometry`）。按广角去算 3× 的画面，云台每次转过头
+ * 3 倍、越转越远。
+ *
+ * ⚠️ 两件事**未上机核实** [?]：M4T 上 1× 是否就是广角 24 mm；`M4T_VIS` 取流
+ * 画面是否随变焦裁切。所以调用方必须把读到的值打进日志，现场先在 1× 下验证。
+ * （若取流其实不随变焦，按倍率算只会让每次少转、多迭代几次，仍然收敛；
+ * 反过来才会发散 —— 拿不准时按读到的倍率算是安全的一侧。）
+ *
+ * 同步调用，只能在主循环里调，不能放进回调线程。
+ *
+ * @return false 表示读取失败（out 不变）
+ */
+bool WtLaser_GetOpticalZoom(double *outFactor);
+
+/**
  * @brief 下发云台绝对角（pitch + yaw）。
  *
  * ## yaw 必须填一个**有意义**的值，不能填 0

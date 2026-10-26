@@ -185,6 +185,29 @@ typedef struct {
      */
     bool surveySelfTest;
 
+    /*
+     * 高空行人瞄准打点（`ped_*` 键，在 [app] 段）。
+     *
+     * 开启后启动取流与行人检测推理线程，并允许用 Pilot 2 的「行人瞄准」开关
+     * 触发一次会话：云台对准画面中心附近的行人，锁定确认（再停 pedDwellMs）后
+     * 自动激光打点，落点写入 <outputDir>/ped_points.csv。
+     *
+     * ⚠️ 与 `surveyEnabled`、`streamProbe` **互斥** —— 都要独占同一个相机源的
+     * 图像流（推理线程也只能加载一个模型）。
+     *
+     * 默认 false：要跑推理、要动云台、要打激光，不该在没人看着时自己起来。
+     */
+    bool pedEnabled;
+    /* 行人检测 engine。同 surveyEnginePath：必须是设备上 trtexec 构建的 */
+    char pedEnginePath[WT_CONFIG_MAX_PATH];
+    /*
+     * 锁定确认（连续 3 帧）之后再停多久才打激光（毫秒）。不写 = 0，范围 [0, 30000]。
+     * 原先默认 3000（用户最初的描述），2026-10-25 改为按帧确认、停顿可选。
+     */
+    int pedDwellMs;
+    /* 新捕获一个行人所需的置信度（跟上之后不再要求）。不写 = 0.40，范围 (0, 1) */
+    double pedConf;
+
     char outputDir[WT_CONFIG_MAX_PATH]; /*!< 航线与照片索引的输出目录 */
 } WtAppConfig;
 

@@ -762,6 +762,95 @@ static void TestAutoStartGate(void)
     }
 }
 
+/**
+ * 行人瞄准的四个键：不写用默认（关 / 0 ms / 0.40）；写了就生效；越界必须
+ * 拒绝 —— 而不是夹到边界，或把 ped_conf = -0.5 这种写错的值当成"没写"、
+ * 静默换成默认值。
+ */
+static void TestPedKeys(void)
+{
+    static const struct {
+        const char *head;
+        const char *what;
+    } bad[] = {
+        {"[app]\nped_dwell_ms = -1\n", "ped_dwell_ms = -1"},
+        {"[app]\nped_dwell_ms = 40000\n", "ped_dwell_ms = 40000"},
+        {"[app]\nped_conf = 1.5\n", "ped_conf = 1.5"},
+        {"[app]\nped_conf = -0.5\n", "ped_conf = -0.5（不能当成没写）"},
+        {"[app]\nped_dwel_ms = 3000\n", "ped_dwel_ms（拼错）"},
+    };
+    WtAppConfig cfg;
+    char text[1024];
+    const char *path;
+    size_t i;
+
+    WT_CASE("ped_*：不写用默认（关 / 0 ms / 0.40）");
+    path = BuildConfig(text, sizeof(text), "[app]\n", NULL);
+    if (path != NULL && WtAppConfig_Load(path, &cfg)) {
+        WT_CHECK(!cfg.pedEnabled);
+        WT_CHECK_EQ_INT(cfg.pedDwellMs, 0);
+        WT_CHECK_NEAR(cfg.pedConf, 0.40, 1e-12);
+        WT_CHECK(cfg.pedEnginePath[0] == '\0');
+        WtAppConfig_Free(&cfg);
+    } else {
+        WT_CHECK(0);
+    }
+
+    WT_CASE("ped_*：写了就生效");
+    path = BuildConfig(text, sizeof(text),
+                       "[app]\n"
+                       "ped_enabled = true\n"
+                       "ped_engine = /home/dji/wt-models/ped.engine\n"
+                       "ped_dwell_ms = 2500\n"
+                       "ped_conf = 0.6\n",
+                       NULL);
+    if (path != NULL && WtAppConfig_Load(path, &cfg)) {
+        WT_CHECK(cfg.pedEnabled);
+        WT_CHECK_STR_EQ(cfg.pedEnginePath, "/home/dji/wt-models/ped.engine");
+        WT_CHECK_EQ_INT(cfg.pedDwellMs, 2500);
+        WT_CHECK_NEAR(cfg.pedConf, 0.6, 1e-12);
+        WtAppConfig_Free(&cfg);
+    } else {
+        WT_CHECK(0);
+    }
+
+    WT_CASE("ped_*：越界或拼错必须拒绝启动");
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        path = BuildConfig(text, sizeof(text), bad[i].head, NULL);
+        printf("        用例 %s\n", bad[i].what);
+        if (path == NULL) {
+            WT_CHECK(0);
+            continue;
+        }
+        WT_CHECK(!WtAppConfig_Load(path, &cfg));
+    }
+
+    WT_CASE("ped_dwell_ms：0 与 3000 都是合法值（0 = 不额外停顿，3000 = 旧的「3 s 后打」）");
+    path = BuildConfig(text, sizeof(text), "[app]\nped_dwell_ms = 0\n", NULL);
+    if (path != NULL && WtAppConfig_Load(path, &cfg)) {
+        WT_CHECK_EQ_INT(cfg.pedDwellMs, 0);
+        WtAppConfig_Free(&cfg);
+    } else {
+        WT_CHECK(0);
+    }
+    path = BuildConfig(text, sizeof(text), "[app]\nped_dwell_ms = 3000\n", NULL);
+    if (path != NULL && WtAppConfig_Load(path, &cfg)) {
+        WT_CHECK_EQ_INT(cfg.pedDwellMs, 3000);
+        WtAppConfig_Free(&cfg);
+    } else {
+        WT_CHECK(0);
+    }
+
+    WT_CASE("ped_*：模板里是注释行，加载后取默认（关）");
+    if (WtAppConfig_WriteTemplate(WT_TEST_TMP_FILE) && WtAppConfig_Load(WT_TEST_TMP_FILE, &cfg)) {
+        WT_CHECK(!cfg.pedEnabled);
+        WT_CHECK_EQ_INT(cfg.pedDwellMs, 0);
+        WtAppConfig_Free(&cfg);
+    } else {
+        WT_CHECK(0);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -785,6 +874,7 @@ int main(void)
     TestTemplateOutputDirIsRelative();
     TestDryRunFlag();
     TestAutoStartGate();
+    TestPedKeys();
 
     remove(WT_TEST_TMP_FILE);
     remove(WT_TEST_NESTED_TOP);
