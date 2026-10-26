@@ -938,7 +938,7 @@ bool WtAppConfig_WriteTemplate(const char *path)
             "# 高空行人瞄准打点：识别画面里的行人（VisDrone 航拍检测模型），云台对准\n"
             "# 画面中心附近的那个人，锁定后连续 3 帧确认（再停 ped_dwell_ms）就自动\n"
             "# 打激光（连读 3 次取中位），落点写入 <output_dir>/ped_points.csv。\n"
-            "# 由 Pilot 2 的「行人瞄准」开关触发。\n"
+            "# 由 Pilot 2 的「行人瞄准」开关触发；打到的点是「绕点飞行」的基点。\n"
             "# ⚠️ 与 survey_enabled、stream_probe 互斥（都要独占同一个相机源的图像流）。\n"
             "# ⚠️ engine 必须是**设备上**用 trtexec 构建的，且别放 /tmp（重启会清空）。\n"
             "# ped_enabled       = false\n"

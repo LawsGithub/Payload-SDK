@@ -11,6 +11,8 @@
  * 决策(wt_ped_logic)：选人 → 转云台(wt_laser) → 等停稳 → 锁定后连续 3 帧确认
  *      ↓
  * 连读 3 次激光(wt_laser)取中位 → WGS84 落点 → 日志 + data/ped_points.csv + Pilot 浮窗
+ *      ↓
+ * 落点同时成为「绕点飞行」的基点（main.c，见 wt_ped_square.h）
  * ```
  *
  * ## 分层

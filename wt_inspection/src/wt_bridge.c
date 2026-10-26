@@ -381,6 +381,47 @@ static void WtStr_Free(WtStr *s)
     memset(s, 0, sizeof(*s));
 }
 
+/** 一个 KMZ 里最多几个条目（目前只用到 template.kml + waylines.wpml 两个） */
+#define WT_BRIDGE_KMZ_MAX_ENTRIES 4
+
+/**
+ * @brief 把若干个文本条目按 store 方式打成 zip（KMZ）
+ *
+ * 偏移按「本地文件头 30 字节 + 文件名 + 正文」逐条累加，与 WtZip_WriteEntry
+ * 写出的布局一一对应；最后一个条目之后就是中央目录。
+ */
+static WtPlanResult WtBridge_WriteKmz(const char *outPath, const char *const *names,
+                                      const char *const *bodies, int count)
+{
+    WtZipEntry entries[WT_BRIDGE_KMZ_MAX_ENTRIES];
+    FILE *fp;
+    uint32_t offset = 0;
+    bool ok = true;
+    int i;
+
+    if (outPath == NULL || count <= 0 || count > WT_BRIDGE_KMZ_MAX_ENTRIES) {
+        return WT_PLAN_ERR_PARAM;
+    }
+
+    fp = fopen(outPath, "wb");
+    if (fp == NULL) {
+        return WT_PLAN_ERR_PARAM;
+    }
+
+    for (i = 0; ok && i < count; i++) {
+        ok = WtZip_WriteEntry(fp, &entries[i], names[i], bodies[i], offset);
+        offset += (uint32_t)(30 + strlen(names[i]) + strlen(bodies[i]));
+    }
+    ok = ok && WtZip_WriteCentralDirectory(fp, entries, count, offset);
+
+    /* fclose 失败（例如磁盘满时最后一块没刷下去）同样意味着文件不完整 */
+    if (fclose(fp) != 0) {
+        ok = false;
+    }
+
+    return ok ? WT_PLAN_OK : WT_PLAN_ERR_PARAM;
+}
+
 /** 生成一个 Placemark（两种 wpml 文件共用） */
 static bool WtBridge_WritePlacemark(WtStr *s, const WtMission *mission,
                                     const WtMissionPlan *plan, size_t idx,
@@ -647,11 +688,9 @@ WtPlanResult WtBridge_ExportKmz(const WtMission *mission,
                                 const char *outPath)
 {
     WtStr wpml = {0};
-    WtZipEntry entries[2];
-    FILE *fp;
-    uint32_t offset = 0;
-    uint32_t cdOffset;
-    bool ok;
+    const char *names[2] = {"wpmz/template.kml", "wpmz/waylines.wpml"};
+    const char *bodies[2];
+    WtPlanResult rc;
 
     (void)takeoffGeo;
 
@@ -660,29 +699,17 @@ WtPlanResult WtBridge_ExportKmz(const WtMission *mission,
         return WT_PLAN_ERR_NOMEM;
     }
 
-    fp = fopen(outPath, "wb");
-    if (fp == NULL) {
-        WtStr_Free(&wpml);
-        return WT_PLAN_ERR_PARAM;
-    }
-
-    /* 两个条目共用同一份 wpml 正文，只是路径不同：模板与可执行航线 */
-    ok = WtZip_WriteEntry(fp, &entries[0], "wpmz/template.kml", wpml.buf, offset);
-    offset += (uint32_t)(30 + strlen("wpmz/template.kml") + wpml.len);
-
-    ok = ok && WtZip_WriteEntry(fp, &entries[1], "wpmz/waylines.wpml", wpml.buf, offset);
-    cdOffset = offset + (uint32_t)(30 + strlen("wpmz/waylines.wpml") + wpml.len);
-
-    if (!ok || !WtZip_WriteCentralDirectory(fp, entries, 2, cdOffset)) {
-        fclose(fp);
-        WtStr_Free(&wpml);
-        return WT_PLAN_ERR_PARAM;
-    }
-
-    fclose(fp);
+    /*
+     * 两个条目共用同一份 wpml 正文，只是路径不同：模板与可执行航线。
+     * ⚠️ 这与规范不符（两份文件的元素不同），行人正方形航线已改为分开写，
+     * 风机侧暂缓 —— 见 WtBridge_BuildPedSquareWpml 的说明。
+     */
+    bodies[0] = wpml.buf;
+    bodies[1] = wpml.buf;
+    rc = WtBridge_WriteKmz(outPath, names, bodies, 2);
     WtStr_Free(&wpml);
 
-    return WT_PLAN_OK;
+    return rc;
 }
 
 WtPlanResult WtBridge_ExportActionCsv(const WtMission *mission,
@@ -726,4 +753,259 @@ WtPlanResult WtBridge_ExportActionCsv(const WtMission *mission,
     fclose(fp);
 
     return WT_PLAN_OK;
+}
+/* ================================================================== */
+/* 绕行人正方形航线（见 wt_ped_square.h）                              */
+/* ================================================================== */
+
+/*
+ * 机型 / 负载声明：M4T = 99 / 子类型 1，相机 89 / 子类型 0。
+ *
+ * 依据：
+ *   - PSDK 头文件 dji_typedef.h：DJI_AIRCRAFT_TYPE_M4T = 99、DJI_CAMERA_TYPE_M4T = 89
+ *   - 姊妹项目 liangzhourenwu 用这一组值在**同一台 M4T** 上 2026-09-28 真机 START
+ *     成功并飞完绕飞（lz/doc/WPML-ORBIT.md）
+ *
+ * ⚠️ 与上面风机航线的 1100 / 10052 不一致。那组值来自 Pilot 2 导入显示的排查，
+ * 从未在 START 上验证过。风机侧暂缓，统一留到做风机时处理。
+ */
+#define WT_SQUARE_DRONE_ENUM      99
+#define WT_SQUARE_DRONE_SUB_ENUM  1
+#define WT_SQUARE_PAYLOAD_ENUM    89
+#define WT_SQUARE_PAYLOAD_SUB     0
+
+/*
+ * 安全起飞高度 m。只在飞机**未起飞**时生效（规范原文），而执行层要求飞机已在
+ * 空中才启动，所以它只是必需元素的占位；取姊妹项目飞通的 20。
+ */
+#define WT_SQUARE_TAKEOFF_SECURITY_HEIGHT_M 20.0
+
+/*
+ * 机头转向方向：followBadArc（沿最短路径转）。
+ *
+ * 航线里每条边机头都顺时针转 90°（从一个顶点看基点，到下一个顶点看基点），
+ * 最短路径就是顺时针，与绕行方向一致。不写死 clockwise 的原因：到达首个航点时
+ * 机头朝向是飞过去时留下的，若它比目标角略微顺时针多出几度，强制 clockwise
+ * 会让飞机原地转将近一整圈。
+ * （姊妹项目写的是 clockwise 且飞通了，那条航线的首点对齐行为没有观测记录 [?]。）
+ */
+#define WT_SQUARE_HEADING_PATH_MODE "followBadArc"
+
+/* 两份文件共用的 missionConfig */
+static bool WtBridge_SquareMissionConfig(WtStr *s, const WtPedSquarePlan *plan,
+                                         const WtPedSquareConfig *cfg)
+{
+    return WtStr_Append(s,
+                        "    <wpml:missionConfig>\n"
+                        "      <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>\n"
+                        /*
+                         * noAction：飞完最后一个航点（第一个顶点的低点）就退出航线、
+                         * 原地悬停，由操作员接管 —— 用户要的终点就是这里。
+                         * 不用 goHome：返航会先爬到 globalRTHHeight 再飞走，
+                         * 而用户要求停在第一个顶点 10 m 处。
+                         */
+                        "      <wpml:finishAction>noAction</wpml:finishAction>\n"
+                        "      <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>\n"
+                        "      <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>\n"
+                        "      <wpml:takeOffSecurityHeight>%.1f</wpml:takeOffSecurityHeight>\n"
+                        "      <wpml:globalTransitionalSpeed>%.1f</wpml:globalTransitionalSpeed>\n"
+                        "      <wpml:globalRTHHeight>%.1f</wpml:globalRTHHeight>\n"
+                        "      <wpml:droneInfo>\n"
+                        "        <wpml:droneEnumValue>%d</wpml:droneEnumValue>\n"
+                        "        <wpml:droneSubEnumValue>%d</wpml:droneSubEnumValue>\n"
+                        "      </wpml:droneInfo>\n"
+                        "      <wpml:payloadInfo>\n"
+                        "        <wpml:payloadEnumValue>%d</wpml:payloadEnumValue>\n"
+                        "        <wpml:payloadSubEnumValue>%d</wpml:payloadSubEnumValue>\n"
+                        "        <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>\n"
+                        "      </wpml:payloadInfo>\n"
+                        "    </wpml:missionConfig>\n",
+                        WT_SQUARE_TAKEOFF_SECURITY_HEIGHT_M, cfg->transitSpeedMs,
+                        plan->rthHeightM, WT_SQUARE_DRONE_ENUM, WT_SQUARE_DRONE_SUB_ENUM,
+                        WT_SQUARE_PAYLOAD_ENUM, WT_SQUARE_PAYLOAD_SUB);
+}
+
+static bool WtBridge_SquareTemplate(WtStr *s, const WtPedSquarePlan *plan,
+                                    const WtPedSquareConfig *cfg)
+{
+    bool ok;
+    int i;
+
+    ok = WtStr_Append(s,
+                      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                      "<kml xmlns=\"http://www.opengis.net/kml/2.2\" "
+                      "xmlns:wpml=\"http://www.dji.com/wpmz/1.0.3\">\n"
+                      "  <Document>\n");
+    ok = ok && WtBridge_SquareMissionConfig(s, plan, cfg);
+    ok = ok && WtStr_Append(s,
+                            "    <Folder>\n"
+                            "      <wpml:templateType>waypoint</wpml:templateType>\n"
+                            "      <wpml:templateId>0</wpml:templateId>\n"
+                            "      <wpml:waylineCoordinateSysParam>\n"
+                            "        <wpml:coordinateMode>WGS84</wpml:coordinateMode>\n"
+                            "        <wpml:heightMode>relativeToStartPoint</wpml:heightMode>\n"
+                            "        <wpml:positioningType>GPS</wpml:positioningType>\n"
+                            "      </wpml:waylineCoordinateSysParam>\n"
+                            "      <wpml:autoFlightSpeed>%.1f</wpml:autoFlightSpeed>\n"
+                            "      <wpml:globalHeight>%.2f</wpml:globalHeight>\n"
+                            "      <wpml:caliFlightEnable>0</wpml:caliFlightEnable>\n"
+                            /* 不下发云台动作：俯仰交给操作员，见头文件说明 */
+                            "      <wpml:gimbalPitchMode>manual</wpml:gimbalPitchMode>\n"
+                            "      <wpml:globalWaypointHeadingParam>\n"
+                            "        <wpml:waypointHeadingMode>towardPOI</wpml:waypointHeadingMode>\n"
+                            "        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>\n"
+                            /* 规范：格式「纬度,经度,高度」；不支持 Z 向朝向，高度填 0 */
+                            "        <wpml:waypointPoiPoint>%.8f,%.8f,0.000000</wpml:waypointPoiPoint>\n"
+                            "        <wpml:waypointHeadingPathMode>%s</wpml:waypointHeadingPathMode>\n"
+                            "        <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>\n"
+                            "      </wpml:globalWaypointHeadingParam>\n"
+                            "      <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>\n"
+                            "      <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>\n",
+                            cfg->speedMs, cfg->lowHeightM, plan->base.lat, plan->base.lon,
+                            WT_SQUARE_HEADING_PATH_MODE);
+
+    for (i = 0; ok && i < plan->count; i++) {
+        const WtPedSquareWaypoint *w = &plan->wp[i];
+
+        /*
+         * 高度模式是「相对起飞点」时，规范要求 ellipsoidHeight 与 height 相同
+         * （20.template-kml.md 对 ellipsoidHeight 的注解）。
+         */
+        ok = WtStr_Append(s,
+                          "      <Placemark>\n"
+                          "        <Point><coordinates>%.8f,%.8f</coordinates></Point>\n"
+                          "        <wpml:index>%d</wpml:index>\n"
+                          "        <wpml:ellipsoidHeight>%.2f</wpml:ellipsoidHeight>\n"
+                          "        <wpml:height>%.2f</wpml:height>\n"
+                          "        <wpml:useGlobalHeight>0</wpml:useGlobalHeight>\n"
+                          "        <wpml:useGlobalSpeed>1</wpml:useGlobalSpeed>\n"
+                          "        <wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>\n"
+                          "        <wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>\n"
+                          "        <wpml:useStraightLine>1</wpml:useStraightLine>\n"
+                          "      </Placemark>\n",
+                          w->geo.lon, w->geo.lat, i, w->relHeightM, w->relHeightM);
+    }
+
+    return ok && WtStr_Append(s,
+                              "      <wpml:payloadParam>\n"
+                              "        <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>\n"
+                              "      </wpml:payloadParam>\n"
+                              "    </Folder>\n"
+                              "  </Document>\n"
+                              "</kml>\n");
+}
+
+static bool WtBridge_SquareWaylines(WtStr *s, const WtPedSquarePlan *plan,
+                                    const WtPedSquareConfig *cfg)
+{
+    bool ok;
+    int i;
+
+    ok = WtStr_Append(s,
+                      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                      "<kml xmlns=\"http://www.opengis.net/kml/2.2\" "
+                      "xmlns:wpml=\"http://www.dji.com/wpmz/1.0.3\">\n"
+                      "  <Document>\n");
+    ok = ok && WtBridge_SquareMissionConfig(s, plan, cfg);
+    /* distance / duration 只供 Pilot 显示：按航点间直线距离算，含垂直段 */
+    ok = ok && WtStr_Append(s,
+                            "    <Folder>\n"
+                            "      <wpml:templateId>0</wpml:templateId>\n"
+                            "      <wpml:executeHeightMode>relativeToStartPoint</wpml:executeHeightMode>\n"
+                            "      <wpml:waylineId>0</wpml:waylineId>\n"
+                            "      <wpml:distance>%.3f</wpml:distance>\n"
+                            "      <wpml:duration>%.3f</wpml:duration>\n"
+                            "      <wpml:autoFlightSpeed>%.1f</wpml:autoFlightSpeed>\n",
+                            plan->pathLengthM, plan->durationS, cfg->speedMs);
+
+    for (i = 0; ok && i < plan->count; i++) {
+        const WtPedSquareWaypoint *w = &plan->wp[i];
+
+        /*
+         * 每个航点都写 towardPOI + 同一个兴趣点：waylines.wpml 是飞机实际执行的
+         * 那份，不依赖「全局设定会不会被继承」这种没验证过的假设。
+         */
+        ok = WtStr_Append(s,
+                          "      <Placemark>\n"
+                          "        <Point><coordinates>%.8f,%.8f</coordinates></Point>\n"
+                          "        <wpml:index>%d</wpml:index>\n"
+                          "        <wpml:executeHeight>%.2f</wpml:executeHeight>\n"
+                          "        <wpml:waypointSpeed>%.1f</wpml:waypointSpeed>\n"
+                          "        <wpml:waypointHeadingParam>\n"
+                          "          <wpml:waypointHeadingMode>towardPOI</wpml:waypointHeadingMode>\n"
+                          "          <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>\n"
+                          "          <wpml:waypointPoiPoint>%.8f,%.8f,0.000000</wpml:waypointPoiPoint>\n"
+                          "          <wpml:waypointHeadingPathMode>%s</wpml:waypointHeadingPathMode>\n"
+                          "          <wpml:waypointHeadingAngleEnable>0</wpml:waypointHeadingAngleEnable>\n"
+                          "          <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>\n"
+                          "        </wpml:waypointHeadingParam>\n"
+                          /* 直线飞行、到点停：垂直段才真的垂直，拐角不被抹圆 */
+                          "        <wpml:waypointTurnParam>\n"
+                          "          <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>\n"
+                          "          <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>\n"
+                          "        </wpml:waypointTurnParam>\n"
+                          "        <wpml:useStraightLine>1</wpml:useStraightLine>\n"
+                          "      </Placemark>\n",
+                          w->geo.lon, w->geo.lat, i, w->relHeightM, cfg->speedMs,
+                          plan->base.lat, plan->base.lon, WT_SQUARE_HEADING_PATH_MODE);
+    }
+
+    return ok && WtStr_Append(s, "    </Folder>\n  </Document>\n</kml>\n");
+}
+
+WtPlanResult WtBridge_BuildPedSquareWpml(const WtPedSquarePlan *plan,
+                                         const WtPedSquareConfig *cfg,
+                                         char **outTemplateKml,
+                                         char **outWaylinesWpml)
+{
+    WtStr t = {0};
+    WtStr w = {0};
+
+    if (outTemplateKml != NULL) {
+        *outTemplateKml = NULL;
+    }
+    if (outWaylinesWpml != NULL) {
+        *outWaylinesWpml = NULL;
+    }
+    if (plan == NULL || cfg == NULL || outTemplateKml == NULL || outWaylinesWpml == NULL ||
+        plan->count != WT_PED_SQUARE_WAYPOINTS || !WtPedSquare_ConfigValid(cfg) ||
+        !WtPedSquare_GeoLooksValid(&plan->base)) {
+        return WT_PLAN_ERR_PARAM;
+    }
+
+    if (!WtBridge_SquareTemplate(&t, plan, cfg) || !WtBridge_SquareWaylines(&w, plan, cfg)) {
+        WtStr_Free(&t);
+        WtStr_Free(&w);
+        return WT_PLAN_ERR_NOMEM;
+    }
+
+    *outTemplateKml = t.buf;
+    *outWaylinesWpml = w.buf;
+
+    return WT_PLAN_OK;
+}
+
+WtPlanResult WtBridge_ExportPedSquareKmz(const WtPedSquarePlan *plan,
+                                         const WtPedSquareConfig *cfg,
+                                         const char *outPath)
+{
+    const char *names[2] = {"wpmz/template.kml", "wpmz/waylines.wpml"};
+    const char *bodies[2];
+    char *templateKml = NULL;
+    char *waylinesWpml = NULL;
+    WtPlanResult rc;
+
+    rc = WtBridge_BuildPedSquareWpml(plan, cfg, &templateKml, &waylinesWpml);
+    if (rc != WT_PLAN_OK) {
+        return rc;
+    }
+
+    bodies[0] = templateKml;
+    bodies[1] = waylinesWpml;
+    rc = WtBridge_WriteKmz(outPath, names, bodies, 2);
+
+    free(templateKml);
+    free(waylinesWpml);
+
+    return rc;
 }

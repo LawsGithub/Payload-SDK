@@ -158,6 +158,11 @@ void WtLaser_ReturnFollowMode(void)
     USER_LOG_INFO("激光：云台模式已还成 YAW_FOLLOW");
 }
 
+bool WtLaser_IsFreeModeBorrowed(void)
+{
+    return s_freeModeBorrowed;
+}
+
 bool WtLaser_Read(WtLaserSample *out)
 {
     T_DjiCameraManagerLaserRangingInfo info;

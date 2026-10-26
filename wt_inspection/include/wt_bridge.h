@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "wt_ped_square.h"
 #include "wt_plan.h"
 
 #ifdef __cplusplus
@@ -160,6 +161,43 @@ WtPlanResult WtBridge_ExportKmz(const WtMission *mission,
 WtPlanResult WtBridge_ExportActionCsv(const WtMission *mission,
                                       const WtMissionPlan *plan,
                                       const char *path);
+
+/* ------------------------------------------------------------------ */
+/* 绕行人正方形航线（行人打点之后，见 wt_ped_square.h）                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief 生成绕行人正方形航线的 template.kml 与 waylines.wpml 两份正文
+ *
+ * ## 和上面风机航线的写法不同（有意为之）
+ *
+ * 两份文件**分开写**，各自按规范填自己的元素：waylines.wpml 带
+ * `executeHeightMode` / `waylineId` / `executeHeight`，template.kml 带
+ * `templateType` / `waylineCoordinateSysParam` / `height`。另补必需元素
+ * `globalRTHHeight`，机型声明用 M4T 的 99 / 1、相机 89。
+ *
+ * 依据是**真机证据**：姊妹项目 liangzhourenwu 用这套结构在同一台 M4T 上
+ * START 成功并飞完绕飞（2026-09-28）。风机航线的混合写法从没 START 成功过
+ * （模拟器报 error_code 4 = 航线文件加载错误），风机侧暂缓，留待统一。
+ *
+ * 机头：每个航点 `towardPOI`，兴趣点 = 基点 —— 飞控在航段中连续朝向基点。
+ * 航点类型：`toPointAndStopWithDiscontinuityCurvature`（直线、到点停），
+ * 爬升与下降因此是纯垂直的。不带任何云台/相机动作（`gimbalPitchMode = manual`，
+ * 操作员可以自己拨云台俯仰）。航线结束 `noAction`：停在第一个顶点低点悬停。
+ *
+ * @param outTemplateKml  输出，malloc 的字符串，调用方 free
+ * @param outWaylinesWpml 输出，malloc 的字符串，调用方 free
+ * @return 成功返回 WT_PLAN_OK；失败时两个输出均为 NULL
+ */
+WtPlanResult WtBridge_BuildPedSquareWpml(const WtPedSquarePlan *plan,
+                                         const WtPedSquareConfig *cfg,
+                                         char **outTemplateKml,
+                                         char **outWaylinesWpml);
+
+/** @brief 生成并打包成 KMZ（wpmz/template.kml + wpmz/waylines.wpml） */
+WtPlanResult WtBridge_ExportPedSquareKmz(const WtPedSquarePlan *plan,
+                                         const WtPedSquareConfig *cfg,
+                                         const char *outPath);
 
 #ifdef __cplusplus
 }

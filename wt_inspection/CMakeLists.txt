@@ -28,6 +28,8 @@ add_library(wt_core STATIC
     src/wt_aim.c
     src/wt_survey_logic.c
     src/wt_ped_logic.c
+    src/wt_ped_square.c
+    src/wt_mission_watch.c
     src/wt_plan.c
     src/wt_bridge.c
     src/wt_app_config.c
@@ -42,6 +44,10 @@ target_link_libraries(wt_core PUBLIC m)
 # ---------------------------------------------------------------------------
 add_executable(wt_plan_demo tools/wt_plan_demo.c)
 target_link_libraries(wt_plan_demo PRIVATE wt_core)
+
+# 绕行人正方形航线：与机载端同一份规划 + KMZ 代码，核对页就解析它的产物
+add_executable(wt_ped_square_demo tools/wt_ped_square_demo.c)
+target_link_libraries(wt_ped_square_demo PRIVATE wt_core)
 
 # ---------------------------------------------------------------------------
 # PC 侧回归测试
@@ -59,7 +65,7 @@ option(WT_BUILD_TESTS "编译并注册 PC 侧回归测试" ON)
 if(WT_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     enable_testing()
 
-    foreach(wt_test wt_test_plan wt_test_config wt_test_bridge wt_test_blade_id wt_test_projection wt_test_ai_solve wt_test_rotor_fit wt_test_aim wt_test_telemetry wt_test_survey_logic wt_test_ped_logic)
+    foreach(wt_test wt_test_plan wt_test_config wt_test_bridge wt_test_blade_id wt_test_projection wt_test_ai_solve wt_test_rotor_fit wt_test_aim wt_test_telemetry wt_test_survey_logic wt_test_ped_logic wt_test_ped_square wt_test_mission_watch)
         add_executable(${wt_test} tests/${wt_test}.c)
         target_include_directories(${wt_test} PRIVATE tests)
         target_link_libraries(${wt_test} PRIVATE wt_core)
@@ -179,6 +185,7 @@ if(WT_BUILD_PSDK_APP)
         app/wt_ai_stream_probe.c
         app/wt_frame_pump.c
         app/wt_laser.c
+        app/wt_square_mission.c
         app/wt_widget.c
         src/wt_telemetry_psdk.c
         src/wt_runner_psdk.c

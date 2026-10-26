@@ -73,6 +73,19 @@
                     "is_enable": true,
                     "mapping_config_display_order": 4
                 }
+            },
+            {
+                "widget_index": 5,
+                "widget_type": "button",
+                "widget_name": "Ped Orbit",
+                "icon_file_set": {
+                    "icon_file_name_selected": "icon_visual_align.png",
+                    "icon_file_name_unselected": "icon_visual_align.png"
+                },
+                "customize_rc_buttons_config": {
+                    "is_enable": true,
+                    "mapping_config_display_order": 5
+                }
             }
         ]
     }

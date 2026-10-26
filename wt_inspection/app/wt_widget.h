@@ -8,7 +8,7 @@
  * 飞机在天上时这条路根本不存在。控件让操作员在 Pilot 2 界面上直接改，
  * 并且能在起飞前就设好，不必下机改文件重启。
  *
- * ## 五个控件，都在 main_interface
+ * ## 六个控件，都在 main_interface
  *
  * `main_interface` → Pilot 相机视图左侧「PSDK」菜单，**飞行中操作**。
  *
@@ -19,6 +19,7 @@
  * | 2 | switch | 干跑     | 1 = 只上传不启动（dry_run） |
  * | 3 | scale  | 停用角   | 0–100 映射到 0–359° |
  * | 4 | switch | 行人瞄准 | **1 = 开始一次瞄准打点会话，0 = 中止** |
+ * | 5 | button | 绕点飞行 | 以最近一次行人打点为基点飞正方形（中止用 1 号按钮） |
  *
  * ⚠️ **数值输入用 `scale` 滑块，不用 `int_input_box`。** 输入框放 main 界面时
  * SDK 收下但 Pilot 不渲染（liangzhourenwu 实测）；放 config 界面（Payload
@@ -124,6 +125,14 @@ bool WtWidget_IsPedRequested(void);
  * 仍在 ON**，要在浮窗里提示操作员拨回。
  */
 void WtWidget_ClearPedRequest(void);
+
+/**
+ * @brief 取走"绕点飞行"请求（取走即清，只返回一次 true）
+ *
+ * 按下超过 5 s 才被取走的请求视为作废、返回 false，并在浮窗里说明 ——
+ * 程序当时正忙（行人瞄准、采集、作业），不能让旧的按键事后把飞机飞起来。
+ */
+bool WtWidget_TakeSquareRequest(void);
 
 /**
  * @brief 清除"开始作业"请求

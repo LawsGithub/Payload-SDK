@@ -34,6 +34,9 @@
 #include "wt_ai_stream_probe.h"
 #include "wt_frame_pump.h"
 #include "wt_laser.h"
+#include "wt_mission_watch.h"
+#include "wt_ped_square.h"
+#include "wt_square_mission.h"
 #include "wt_widget.h"
 /*
  * 采集链路（推理 + 编排）只在开了 TensorRT 时才编进来。
@@ -69,6 +72,26 @@ static FILE *s_logFile = NULL;
  */
 static bool s_configReady = false;
 
+/*
+ * 本次运行里最近一次行人打点的结果 —— 「绕点飞行」的基点。
+ *
+ * 只认本进程里打出来的点，**不读 ped_points.csv**：CSV 里可能是昨天、别处
+ * 打的点，拿它当基点等于让飞机低空飞去一个旧坐标。进程重启就得重新打点。
+ */
+static bool s_havePedPoint = false;
+static WtGeo s_pedPoint;
+static uint32_t s_pedPointMs = 0;
+
+static uint32_t WtApp_NowMs(void)
+{
+    T_DjiOsalHandler *osal = DjiPlatform_GetOsalHandler();
+    uint32_t now = 0;
+
+    if (osal != NULL && osal->GetTimeMs != NULL) {
+        osal->GetTimeMs(&now);
+    }
+    return now;
+}
 #if defined(WT_WITH_TRT)
 /* 采集链路（取流 + 推理 + 激光/云台）是否已成功就绪 */
 static bool s_surveyReady = false;
@@ -454,6 +477,15 @@ static void WtApp_RunPed(void)
      */
     WtLaser_ReturnFollowMode();
 
+    /* 打到点了：记下来当「绕点飞行」的基点 */
+    if (ped.havePoint) {
+        s_pedPoint = ped.sample.point;
+        s_havePedPoint = true;
+        s_pedPointMs = WtApp_NowMs();
+        USER_LOG_INFO("绕点飞行的基点已更新：%.8f, %.8f（本次行人打点）",
+                      s_pedPoint.lat, s_pedPoint.lon);
+    }
+
     WtPed_FormatProgress(&ped, progress, sizeof(progress));
     WtWidget_PostMessage("%s；要再来一次请把「行人瞄准」拨回再拨上", progress);
     WtWidget_ClearPedRequest();
@@ -478,6 +510,179 @@ static void WtApp_ServicePedRequest(void)
     WtWidget_PostMessage("行人瞄准不可用：本程序编译时未开 TensorRT 链路（-DWT_BUILD_TRT=ON）");
     WtWidget_ClearPedRequest();
 #endif
+}
+
+/* 绕点飞行：等飞机进入航线状态的上限，与整趟任务的上限 */
+#define WT_SQUARE_START_TIMEOUT_MS   30000u
+#define WT_SQUARE_MISSION_TIMEOUT_MS (10u * 60u * 1000u)
+
+/**
+ * @brief 跑一次「绕点飞行」：以最近一次行人打点为基点飞正方形。
+ *
+ * 规划与 KMZ 在 wt_core（wt_ped_square + WtBridge_ExportPedSquareKmz），
+ * 这里只做条件检查、上传、监控和中止。
+ *
+ * ## 起飞前的几道闸
+ *
+ * - 有本次运行的打点结果（见 s_havePedPoint 的说明）
+ * - 飞机位置有效、**飞机在空中** —— 在地面按下会直接起飞，离人十来米；
+ *   宁可拒绝，让操作员先起飞
+ * - 云台没有残留在 FREE 模式（机头要连续转一圈，FREE 会顶 pan 限位）
+ * - 基点离飞机不超过上限（基点多半打错了）
+ *
+ * ## 中止
+ *
+ * 1 号「中止作业」按钮 → STOP：飞机退出航线、原地悬停，由操作员接管。
+ * 不像风机作业那样「暂停 + 返航」：这条航线贴着人、高度只有 10–20 m，
+ * 返航要先爬高再飞走，路线不受控；原地悬停最可预期。
+ */
+static void WtApp_RunSquare(void)
+{
+    WtPedSquareConfig cfg = WtPedSquare_DefaultConfig();
+    WtPedSquarePlan plan;
+    E_WtPedSquareResult r;
+    WtMissionWatch watch;
+    E_WtMissionWatchPhase lastPhase = WT_MW_WAITING;
+    int lastIndex = -2;
+    const WtAircraftState *ac = &s_runner.telemetry.aircraft;
+    const char *dir = (s_runner.config.outputDir[0] != '\0') ? s_runner.config.outputDir : "data";
+    char kmzPath[WT_CONFIG_MAX_PATH + 32];
+    bool dryRun;
+    uint32_t startMs;
+    int i;
+
+    if (!s_havePedPoint) {
+        WtWidget_PostMessage("绕点飞行：还没有行人坐标，先用「行人瞄准」打一个点");
+        return;
+    }
+
+    WtTelemetry_Poll(&s_runner.telemetry);
+    if (!ac->validPosition) {
+        WtWidget_PostMessage("绕点飞行：飞机位置无效，不启动");
+        return;
+    }
+    if (ac->flightStatus != 2) {
+        /* 2 = 空中（DJI_FC_SUBSCRIPTION_FLIGHT_STATUS_IN_AIR）。没收到过该话题时也是 0 */
+        WtWidget_PostMessage("绕点飞行：飞机不在空中（状态 %u），不启动；请先起飞",
+                             (unsigned)ac->flightStatus);
+        return;
+    }
+    if (WtLaser_IsFreeModeBorrowed()) {
+        WtLaser_ReturnFollowMode();
+        if (WtLaser_IsFreeModeBorrowed()) {
+            WtWidget_PostMessage("绕点飞行：云台还在 FREE 模式，不启动（拨一下云台轮再试）");
+            return;
+        }
+    }
+
+    r = WtPedSquare_Build(&cfg, &s_pedPoint, &ac->position, &plan);
+    if (r == WT_PED_SQUARE_ERR_TOO_FAR) {
+        WtWidget_PostMessage("绕点飞行：基点离飞机 %.0f m，超过上限 %.0f m（点打错了？），不启动",
+                             plan.aircraftToBaseM, cfg.maxBaseDistanceM);
+        return;
+    }
+    if (r != WT_PED_SQUARE_OK) {
+        WtWidget_PostMessage("绕点飞行：%s，不启动", WtPedSquare_ResultText(r));
+        return;
+    }
+
+    USER_LOG_INFO("绕点飞行：基点 %.8f, %.8f（%.0f s 前打的点）；飞机到基点 %.1f m、到首航点 %.1f m",
+                  plan.base.lat, plan.base.lon,
+                  (double)(WtApp_NowMs() - s_pedPointMs) / 1000.0, plan.aircraftToBaseM,
+                  plan.transitM);
+    USER_LOG_INFO("绕点飞行：边长 %.0f m，高度 %.0f/%.0f m（相对起飞点），速度 %.1f m/s，"
+                  "航线 %.0f m，至少 %.0f s",
+                  cfg.sideM, cfg.lowHeightM, cfg.highHeightM, cfg.speedMs, plan.pathLengthM,
+                  plan.durationS);
+    for (i = 0; i < plan.count; i++) {
+        const WtPedSquareWaypoint *w = &plan.wp[i];
+
+        USER_LOG_INFO("  航点 %2d %s V%d  %.8f, %.8f  %.1f m  朝基点 %.1f°", i,
+                      WtPedSquare_StepName(w->step), w->corner + 1, w->geo.lat, w->geo.lon,
+                      w->relHeightM, w->headingToBaseDeg);
+    }
+
+    (void)WtRunner_MakeDirs(dir);
+    snprintf(kmzPath, sizeof(kmzPath), "%s/ped_square.kmz", dir);
+    if (WtBridge_ExportPedSquareKmz(&plan, &cfg, kmzPath) != WT_PLAN_OK) {
+        WtWidget_PostMessage("绕点飞行：导出 KMZ 失败（%s）", kmzPath);
+        return;
+    }
+
+    /* 干跑在上传前一刻实时读控件 —— 与风机作业同一个理由（见 WtRunner_ExecuteTurbine） */
+    dryRun = WtWidget_IsDryRun() || s_runner.config.dryRun;
+    if (!WtSquareMission_Begin(kmzPath, !dryRun)) {
+        WtWidget_PostMessage("绕点飞行：%s失败，见日志", dryRun ? "上传" : "上传或启动");
+        return;
+    }
+    if (dryRun) {
+        WtWidget_PostMessage("干跑：绕点航线已上传，未启动（%s）", kmzPath);
+        WtSquareMission_End();
+        return;
+    }
+
+    WtWidget_PostMessage("绕点飞行已启动：先飞往 V1，按「中止作业」可原地悬停");
+    startMs = WtApp_NowMs();
+    WtMissionWatch_Begin(&watch, startMs, WT_SQUARE_START_TIMEOUT_MS);
+
+    while (!s_stopRequested) {
+        const uint32_t now = WtApp_NowMs();
+        E_WtMissionWatchPhase phase;
+
+        if (WtWidget_TakeAbortRequest()) {
+            (void)WtSquareMission_Stop();
+            WtWidget_PostMessage("绕点飞行已中止：飞机原地悬停，请接管");
+            break;
+        }
+
+        WtSquareMission_Poll(&watch, now);
+        phase = WtMissionWatch_Tick(&watch, now);
+        if (phase != lastPhase || watch.waypointIndex != lastIndex) {
+            if (phase == WT_MW_RUNNING && watch.waypointIndex >= 0) {
+                WtWidget_PostMessage("绕点飞行：航点 %d / %d", watch.waypointIndex, plan.count);
+            } else {
+                WtWidget_PostMessage("绕点飞行：%s", WtMissionWatch_PhaseName(phase));
+            }
+            lastPhase = phase;
+            lastIndex = watch.waypointIndex;
+        }
+
+        if (phase == WT_MW_FINISHED) {
+            WtWidget_PostMessage("绕点飞行结束（最后报告航点 %d / %d），飞机悬停待接管",
+                                 watch.maxWaypointIndex, plan.count);
+            break;
+        }
+        if (phase == WT_MW_NOT_STARTED) {
+            (void)WtSquareMission_Stop();
+            WtWidget_PostMessage("绕点飞行：%u s 内飞机没有进入航线，已放弃",
+                                 WT_SQUARE_START_TIMEOUT_MS / 1000u);
+            break;
+        }
+        if ((uint32_t)(now - startMs) > WT_SQUARE_MISSION_TIMEOUT_MS) {
+            (void)WtSquareMission_Stop();
+            WtWidget_PostMessage("绕点飞行超时（%u 分钟），已 STOP，飞机悬停",
+                                 WT_SQUARE_MISSION_TIMEOUT_MS / 60000u);
+            break;
+        }
+
+        usleep(100 * 1000);
+    }
+
+    /* 进程要退出时任务还没完：停下来，别留一条没人监控的航线 */
+    if (s_stopRequested && !WtMissionWatch_IsOver(&watch)) {
+        (void)WtSquareMission_Stop();
+    }
+    WtSquareMission_End();
+}
+
+/** @brief 待命循环里查一下「绕点飞行」按钮，按了就跑一次 */
+static void WtApp_ServiceSquareRequest(void)
+{
+    if (!WtWidget_TakeSquareRequest()) {
+        return;
+    }
+    USER_LOG_INFO("收到「绕点飞行」—— 检查条件并规划航线");
+    WtApp_RunSquare();
 }
 
 /** 停掉推理链路（先停推理再停取流 —— 反过来推理线程会读到已释放的帧缓冲） */
@@ -1046,6 +1251,7 @@ int main(int argc, char **argv)
                     WtWidget_ClearStartRequest();
                 }
                 WtApp_ServicePedRequest();
+                WtApp_ServiceSquareRequest();
                 if (WtWidget_IsStartRequested()) {
                     /*
                      * 采集先于规划。
@@ -1159,6 +1365,7 @@ int main(int argc, char **argv)
                 WtWidget_ClearStartRequest();
             }
             WtApp_ServicePedRequest();
+            WtApp_ServiceSquareRequest();
             if (WtWidget_IsStartRequested()) {
                 break;
             }

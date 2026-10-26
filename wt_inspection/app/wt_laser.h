@@ -98,6 +98,15 @@ bool WtLaser_BorrowFreeMode(void);
 void WtLaser_ReturnFollowMode(void);
 
 /**
+ * @brief FREE 模式是否仍处于「借出未还」状态。
+ *
+ * 绕点飞行这类机头要连续转一整圈的航线，起飞前必须确认它为 false ——
+ * FREE 残留时 pan 会为保持地面姿态反向补偿，顶到 ±60° 机械限位
+ * （见 WtLaser_BorrowFreeMode 的说明）。
+ */
+bool WtLaser_IsFreeModeBorrowed(void);
+
+/**
  * @brief 读一次激光测距。
  *
  * 内部按 5Hz 上限限频：距上次读取不足 250 ms 时返回上一次的结果

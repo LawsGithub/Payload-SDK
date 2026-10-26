@@ -1,0 +1,737 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>行人绕飞航线核对</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --ink: #1d2433;
+  --muted: #5d6779;
+  --line: #dde2ea;
+  --grid: #eceff4;
+  --path: #2563eb;
+  --path-soft: rgba(37, 99, 235, 0.16);
+  --vert: #7c3aed;
+  --base: #e8590c;
+  --craft: #0f766e;
+  --ok: #15803d;
+  --ok-bg: #e9f7ee;
+  --bad: #b91c1c;
+  --bad-bg: #fdecec;
+  --warn: #a16207;
+  --warn-bg: #fdf6e3;
+  --code-bg: #f1f3f7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #12151c;
+    --card: #1a1f29;
+    --ink: #e6e9ef;
+    --muted: #9aa3b5;
+    --line: #2c3442;
+    --grid: #222936;
+    --path: #60a5fa;
+    --path-soft: rgba(96, 165, 250, 0.18);
+    --vert: #a78bfa;
+    --base: #fb923c;
+    --craft: #2dd4bf;
+    --ok: #4ade80;
+    --ok-bg: #15281d;
+    --bad: #f87171;
+    --bad-bg: #2d1717;
+    --warn: #facc15;
+    --warn-bg: #2a2412;
+    --code-bg: #141821;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #12151c;
+  --card: #1a1f29;
+  --ink: #e6e9ef;
+  --muted: #9aa3b5;
+  --line: #2c3442;
+  --grid: #222936;
+  --path: #60a5fa;
+  --path-soft: rgba(96, 165, 250, 0.18);
+  --vert: #a78bfa;
+  --base: #fb923c;
+  --craft: #2dd4bf;
+  --ok: #4ade80;
+  --ok-bg: #15281d;
+  --bad: #f87171;
+  --bad-bg: #2d1717;
+  --warn: #facc15;
+  --warn-bg: #2a2412;
+  --code-bg: #141821;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.6 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+.wrap { max-width: 1160px; margin: 0 auto; padding-block: 28px 64px; padding-inline: 20px; }
+h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: 0.01em; }
+h2 { font-size: 18px; margin: 0 0 12px; }
+.lead { color: var(--muted); margin: 0 0 18px; max-width: 70ch; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+}
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 13px; }
+.meta b { color: var(--ink); font-weight: 600; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+select, button, input[type="range"] { font: inherit; }
+select, button {
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+button.primary { background: var(--path); border-color: var(--path); color: #fff; }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--path); outline-offset: 2px; }
+.views { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+@media (max-width: 860px) { .views { grid-template-columns: 1fr; } }
+.views .card { margin-bottom: 0; }
+svg { width: 100%; height: auto; display: block; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted); margin-top: 10px; }
+.sw { display: inline-block; width: 14px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.stat { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.stat .k { font-size: 12px; color: var(--muted); }
+.stat .v { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.step-now { margin-top: 12px; font-size: 16px; font-weight: 600; }
+.checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.checks li {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 10px;
+  align-items: start;
+  border-radius: 10px;
+  padding: 9px 12px;
+}
+.checks li.pass { background: var(--ok-bg); }
+.checks li.fail { background: var(--bad-bg); }
+.checks .mark { font-weight: 700; font-size: 16px; text-align: center; }
+.checks li.pass .mark { color: var(--ok); }
+.checks li.fail .mark { color: var(--bad); }
+.checks .req { font-weight: 600; }
+.checks .det { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.summary { font-weight: 600; margin: 0 0 12px; }
+.summary.pass { color: var(--ok); }
+.summary.fail { color: var(--bad); }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: right; white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; text-align: right; }
+td.l, th.l { text-align: left; }
+tr.cur td { background: var(--path-soft); }
+.note { background: var(--warn-bg); border-radius: 10px; padding: 10px 14px; font-size: 14px; }
+.note b { color: var(--warn); }
+ul.plain { margin: 6px 0 0; padding-left: 20px; }
+ul.plain li { margin: 3px 0; }
+details { margin-top: 10px; }
+summary { cursor: pointer; color: var(--muted); }
+pre {
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 12px;
+  overflow-x: auto;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  max-height: 420px;
+}
+.err { color: var(--bad); font-weight: 600; }
+/* SVG 元素 */
+.g-grid { stroke: var(--grid); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.g-axis { stroke: var(--line); stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.g-path { stroke: var(--path); stroke-width: 2.6; fill: none; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.g-path-soft { stroke: var(--path); stroke-width: 1.4; fill: var(--path-soft); vector-effect: non-scaling-stroke; stroke-dasharray: 5 4; }
+.g-vert { stroke: var(--vert); stroke-width: 2.6; vector-effect: non-scaling-stroke; }
+.g-drop { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; vector-effect: non-scaling-stroke; }
+.g-transit { stroke: var(--craft); stroke-width: 1.6; stroke-dasharray: 6 5; fill: none; vector-effect: non-scaling-stroke; }
+.g-head { stroke: var(--base); stroke-width: 1.3; vector-effect: non-scaling-stroke; opacity: 0.85; }
+.g-base { fill: var(--base); }
+.g-corner { fill: var(--card); stroke: var(--path); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.g-corner1 { fill: var(--path); stroke: var(--path); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.g-label { fill: var(--ink); font-size: 13px; font-weight: 600; paint-order: stroke; stroke: var(--card); stroke-width: 4px; stroke-linejoin: round; }
+.g-sub { fill: var(--muted); font-size: 11px; paint-order: stroke; stroke: var(--card); stroke-width: 3px; }
+.g-craft { fill: var(--craft); stroke: var(--card); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.g-drone { fill: var(--ink); stroke: var(--card); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.g-nose { stroke: var(--base); stroke-width: 2.2; vector-effect: non-scaling-stroke; }
+.g-arrow { fill: var(--path); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>行人绕飞航线核对</h1>
+  <p class="lead">本页的航点全部从程序导出的 <code>wpmz/waylines.wpml</code> 里解析出来（飞机执行的就是这一份），
+    不是另画的示意图。下面的逐条核对也是对这份文件做的测量。</p>
+
+  <div class="card">
+    <div class="row" id="scenarioRow">
+      <label for="scenario">场景：</label>
+      <select id="scenario"></select>
+      <span id="scenarioNote" class="meta"></span>
+    </div>
+    <div class="meta" id="fileMeta" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <h2>你的要求 vs 航线文件实测</h2>
+    <p class="summary" id="checkSummary"></p>
+    <ul class="checks" id="checks"></ul>
+  </div>
+
+  <div class="views">
+    <div class="card">
+      <h2>俯视图（上北下南）</h2>
+      <svg id="topView" role="img" aria-label="航线俯视图"></svg>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--path)"></i>20 m 高平飞（顺时针）</span>
+        <span><i class="sw" style="background:var(--base)"></i>机头朝向（沿边取样）</span>
+        <span><i class="sw" style="background:var(--craft)"></i>当前位置 → 首航点</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>立体图</h2>
+      <svg id="isoView" role="img" aria-label="航线立体图"></svg>
+      <div class="row" style="margin-top:8px">
+        <label for="az">视角</label>
+        <input type="range" id="az" min="0" max="359" value="210" style="flex:1">
+      </div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--vert)"></i>垂直升降 10 ↔ 20 m</span>
+        <span><i class="sw" style="background:var(--path)"></i>20 m 平飞</span>
+        <span><i class="sw" style="background:var(--muted)"></i>到地面的投影线</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:18px">
+    <h2>飞行过程（按 towardPOI 的规范语义模拟机头）</h2>
+    <div class="row">
+      <button class="primary" id="play">播放</button>
+      <button id="restart">从头</button>
+      <label for="rate">速度</label>
+      <select id="rate">
+        <option value="1">1×</option>
+        <option value="4" selected>4×</option>
+        <option value="10">10×</option>
+      </select>
+      <input type="range" id="scrub" min="0" max="1000" value="0" style="flex:1; min-width:160px" aria-label="时间轴">
+    </div>
+    <div class="step-now" id="stepNow"></div>
+    <div class="status">
+      <div class="stat"><div class="k">任务时间</div><div class="v" id="sT">-</div></div>
+      <div class="stat"><div class="k">相对起飞点高度</div><div class="v" id="sH">-</div></div>
+      <div class="stat"><div class="k">离基点水平距离</div><div class="v" id="sD">-</div></div>
+      <div class="stat"><div class="k">机头方位</div><div class="v" id="sY">-</div></div>
+      <div class="stat"><div class="k">机头与基点方向夹角</div><div class="v" id="sE">-</div></div>
+    </div>
+    <p class="meta" style="margin-top:10px">动画每个航点停 1 s 表示「到点停」，航段速度取文件里的 <code>waypointSpeed</code>。
+      机头角是按规范原文「飞行器从该航点飞向下一航点途中机头都将朝向兴趣点」算的模拟值，真机效果要试飞确认。</p>
+  </div>
+
+  <div class="card">
+    <h2>航点表（解析自 waylines.wpml）</h2>
+    <div class="tablewrap"><table id="wpTable"></table></div>
+  </div>
+
+  <div class="card">
+    <h2>你没指定、我定下的几条（可改）</h2>
+    <ul class="plain" id="defaults"></ul>
+    <div class="note" style="margin-top:12px"><b>还没上机验证 [?]</b>
+      <ul class="plain">
+        <li>这台 M4T 是否接受本 KMZ 并能 START（结构按姊妹项目真机飞通的写法，但本文件本身没飞过）</li>
+        <li>到首个航点时机头怎么对齐基点（<code>followBadArc</code> 应走最短方向）</li>
+        <li>高度是「相对起飞点」：行人脚下若比起飞点高，实际离地会低于 10 m，现场要目视确认</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>原始文件</h2>
+    <details><summary>wpmz/waylines.wpml（飞机执行的文件）</summary><pre id="rawW"></pre></details>
+    <details><summary>wpmz/template.kml（模板，供 Pilot 2 显示与编辑）</summary><pre id="rawT"></pre></details>
+  </div>
+</div>
+
+<script>
+const SCENARIOS = /*__SCENARIOS__*/[];
+
+/* ---------- 大地测量：与 src/wt_geometry.c 同一套公式（卯酉圈 / 子午圈半径） ---------- */
+const WGS_A = 6378137.0, WGS_F = 1 / 298.257223563, WGS_E2 = WGS_F * (2 - WGS_F), D2R = Math.PI / 180;
+function makeFrame(lat0, lon0) {
+  const s = Math.sin(lat0 * D2R), w = Math.sqrt(1 - WGS_E2 * s * s);
+  return { lat0, lon0, N: WGS_A / w, M: WGS_A * (1 - WGS_E2) / (w * w * w), c: Math.cos(lat0 * D2R) };
+}
+function toEnu(f, lat, lon) {
+  return { e: (lon - f.lon0) * D2R * f.N * f.c, n: (lat - f.lat0) * D2R * f.M };
+}
+function bearingOf(de, dn) { let b = Math.atan2(de, dn) / D2R; if (b < 0) b += 360; return b; }
+function angDiff(a, b) { let d = ((a - b) % 360 + 360) % 360; if (d > 180) d -= 360; return d; }
+const fmt = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '-');
+/* 经纬度写盘保留 8 位小数（约 1 mm），14 m 外看过去约 0.005° —— 角度比较留 0.02° */
+const ANG_TOL = 0.02;
+
+/* ---------- 解析 ---------- */
+function parseXml(text) {
+  const doc = new DOMParser().parseFromString(text, 'text/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('XML 解析失败');
+  return doc;
+}
+function txt(el, name) {
+  const n = el.getElementsByTagName(name)[0];
+  return n ? n.textContent.trim() : null;
+}
+
+function analyse(sc) {
+  const w = parseXml(sc.waylinesWpml);
+  const t = parseXml(sc.templateKml);
+  const pms = Array.from(w.getElementsByTagName('Placemark')).map(pm => {
+    const [lon, lat] = txt(pm, 'coordinates').split(',').map(Number);
+    return {
+      index: Number(txt(pm, 'wpml:index')),
+      lat, lon,
+      h: Number(txt(pm, 'wpml:executeHeight')),
+      speed: Number(txt(pm, 'wpml:waypointSpeed')),
+      headingMode: txt(pm, 'wpml:waypointHeadingMode'),
+      poi: txt(pm, 'wpml:waypointPoiPoint'),
+      pathMode: txt(pm, 'wpml:waypointHeadingPathMode'),
+      turnMode: txt(pm, 'wpml:waypointTurnMode'),
+      actions: pm.getElementsByTagName('wpml:actionGroup').length,
+    };
+  });
+  if (pms.length < 2) throw new Error('waylines.wpml 里的航点不足 2 个');
+  const [plat, plon] = pms[0].poi.split(',').map(Number);
+  const f = makeFrame(plat, plon);
+  pms.forEach(p => Object.assign(p, toEnu(f, p.lat, p.lon)));
+
+  /* 顶点 = 不重复的水平位置，按首次出现的顺序编号 V1..V4 */
+  const corners = [];
+  pms.forEach(p => {
+    let k = corners.findIndex(c => Math.hypot(c.e - p.e, c.n - p.n) < 0.01);
+    if (k < 0) { corners.push({ e: p.e, n: p.n }); k = corners.length - 1; }
+    p.corner = k;
+    p.toBase = bearingOf(-p.e, -p.n);
+  });
+
+  /* 航段分类：水平位移 < 1 cm 的是垂直段 */
+  const legs = [];
+  for (let i = 1; i < pms.length; i++) {
+    const a = pms[i - 1], b = pms[i];
+    const dh = Math.hypot(b.e - a.e, b.n - a.n), dv = b.h - a.h;
+    legs.push({ i, dh, dv, vertical: dh < 0.01, d3: Math.hypot(dh, dv), speed: b.speed });
+  }
+  pms.forEach((p, i) => {
+    if (i === 0) p.role = '起点';
+    else if (legs[i - 1].vertical) p.role = legs[i - 1].dv > 0 ? '爬升' : '下降';
+    else p.role = '平飞';
+  });
+
+  const mission = {
+    finishAction: txt(w, 'wpml:finishAction'),
+    flyTo: txt(w, 'wpml:flyToWaylineMode'),
+    heightMode: txt(w, 'wpml:executeHeightMode'),
+    rth: Number(txt(w, 'wpml:globalRTHHeight')),
+    transitSpeed: Number(txt(w, 'wpml:globalTransitionalSpeed')),
+    drone: txt(w, 'wpml:droneEnumValue') + ' / ' + txt(w, 'wpml:droneSubEnumValue'),
+    payload: txt(w, 'wpml:payloadEnumValue'),
+    distance: Number(txt(w, 'wpml:distance')),
+    duration: Number(txt(w, 'wpml:duration')),
+    templatePlacemarks: t.getElementsByTagName('Placemark').length,
+    templateType: txt(t, 'wpml:templateType'),
+    gimbalPitchMode: txt(t, 'wpml:gimbalPitchMode'),
+  };
+  let aircraft = null;
+  if (sc.aircraft) {
+    aircraft = Object.assign(toEnu(f, sc.aircraft.lat, sc.aircraft.lon), { h: sc.aircraft.h });
+  }
+  return { pms, corners, legs, mission, poi: { lat: plat, lon: plon }, aircraft };
+}
+
+/* ---------- 逐条核对：用户原话 → 对文件的测量 ---------- */
+function runChecks(m) {
+  const { pms, corners, legs, mission } = m;
+  const out = [];
+  const add = (req, pass, det) => out.push({ req, pass, det });
+  const first = pms[0], last = pms[pms.length - 1];
+  const hz = legs.filter(l => !l.vertical), vt = legs.filter(l => l.vertical);
+
+  const cen = corners.reduce((s, c) => ({ e: s.e + c.e / corners.length, n: s.n + c.n / corners.length }), { e: 0, n: 0 });
+  const cenOff = Math.hypot(cen.e, cen.n);
+  add('以基点为几何中心建正方形', corners.length === 4 && cenOff < 0.01,
+    `${corners.length} 个顶点；四顶点的中心离兴趣点（基点）${fmt(cenOff, 3)} m`);
+
+  const sides = corners.map((c, i) => { const d = corners[(i + 1) % corners.length]; return Math.hypot(d.e - c.e, d.n - c.n); });
+  const diag = corners.length === 4
+    ? [Math.hypot(corners[2].e - corners[0].e, corners[2].n - corners[0].n),
+       Math.hypot(corners[3].e - corners[1].e, corners[3].n - corners[1].n)]
+    : [NaN, NaN];
+  add('边长 20 米（正方形）', sides.every(s => Math.abs(s - 20) < 0.01) && diag.every(d => Math.abs(d - 20 * Math.SQRT2) < 0.01),
+    `四条边 ${sides.map(s => fmt(s, 3)).join(' / ')} m；两条对角线 ${diag.map(d => fmt(d, 3)).join(' / ')} m`);
+
+  add('从第一个顶点开始，高度距起飞点 10 米', first.corner === 0 && Math.abs(first.h - 10) < 1e-6 && mission.heightMode === 'relativeToStartPoint',
+    `首航点在 V1、executeHeight = ${fmt(first.h)} m；高度模式 ${mission.heightMode}`);
+
+  const climb = legs[0];
+  add('然后垂直爬升到 20 米', climb.vertical && Math.abs(pms[1].h - 20) < 1e-6,
+    `第 1 段水平位移 ${fmt(climb.dh, 3)} m、高度 ${fmt(pms[0].h, 0)} → ${fmt(pms[1].h, 0)} m`);
+
+  let area2 = 0;
+  corners.forEach((c, i) => { const d = corners[(i + 1) % corners.length]; area2 += c.e * d.n - d.e * c.n; });
+  const steps = corners.map((c, i) => { const d = corners[(i + 1) % corners.length]; return angDiff(bearingOf(d.e, d.n), bearingOf(c.e, c.n)); });
+  add('顺时针绕几何中心到下一个顶点', area2 < 0 && steps.every(s => Math.abs(s - 90) < ANG_TOL),
+    `顶点方位依次 ${corners.map(c => fmt(bearingOf(c.e, c.n), 0) + '°').join(' → ')}（每步 +90°）；有向面积 ${fmt(area2 / 2, 1)} m²（负 = 俯视顺时针）`);
+
+  add('走直线（即正方形的边）', hz.length === 4 && hz.every(l => Math.abs(l.dh - 20) < 0.01 && Math.abs(l.dv) < 1e-6) &&
+      pms.every(p => p.turnMode === 'toPointAndStopWithDiscontinuityCurvature'),
+    `${hz.length} 段平飞，每段 ${hz.map(l => fmt(l.dh, 2)).join(' / ')} m、高度不变；全部航点 toPointAndStopWithDiscontinuityCurvature（直线飞行、到点停）`);
+
+  const descOk = [1, 2, 3].every(k => {
+    const at = pms.map((p, i) => ({ p, i })).filter(x => x.p.corner === k);
+    const near = (v, x) => Math.abs(v - x) < 1e-6;
+    return at.length === 3 && near(at[0].p.h, 20) && near(at[1].p.h, 10) && near(at[2].p.h, 20);
+  });
+  add('每到一个顶点，从 20 米垂直降到 10 米（再爬回 20 米接着飞）', descOk && vt.length === 8 && vt.every(l => Math.abs(Math.abs(l.dv) - 10) < 1e-6),
+    `V2/V3/V4 各是「到达 20 m → 降到 10 m → 升回 20 m」；共 ${vt.length} 段垂直，水平位移最大 ${fmt(Math.max(...vt.map(l => l.dh)), 4)} m`);
+
+  add('最后回到第一个顶点 10 米处', last.corner === 0 && Math.abs(last.h - 10) < 1e-6 && Math.hypot(last.e - first.e, last.n - first.n) < 0.001,
+    `末航点在 V1、${fmt(last.h)} m，与首航点水平距离 ${fmt(Math.hypot(last.e - first.e, last.n - first.n), 4)} m；结束动作 ${mission.finishAction}（就地悬停）`);
+
+  const poiSame = pms.every(p => p.poi === pms[0].poi);
+  add('顶点到顶点的水平飞行中，机头时刻朝向基点', pms.every(p => p.headingMode === 'towardPOI') && poiSame && cenOff < 0.01,
+    `${pms.length} 个航点全部 towardPOI，兴趣点都是 ${pms[0].poi}（= 正方形中心）`);
+
+  add('文件结构：执行文件与模板分开写', mission.templateType === 'waypoint' && mission.templatePlacemarks === pms.length && sameIdx(pms),
+    `waylines ${pms.length} 个航点，index 0…${pms.length - 1} 连续；template ${mission.templatePlacemarks} 个；机型 ${mission.drone}，相机 ${mission.payload}`);
+  return out;
+}
+function sameIdx(pms) { return pms.every((p, i) => p.index === i); }
+
+/* ---------- 动画时间轴 ---------- */
+const STOP_S = 1.0;
+function buildTimeline(m) {
+  const segs = [];
+  let t = 0;
+  m.pms.forEach((p, i) => {
+    if (i > 0) {
+      const l = m.legs[i - 1];
+      const dur = l.d3 / Math.max(l.speed, 0.1);
+      segs.push({ kind: 'move', t0: t, t1: t + dur, a: m.pms[i - 1], b: p, leg: l, i });
+      t += dur;
+    }
+    segs.push({ kind: 'stop', t0: t, t1: t + STOP_S, a: p, b: p, i });
+    t += STOP_S;
+  });
+  return { segs, total: t };
+}
+function stateAt(tl, t) {
+  const s = tl.segs.find(x => t <= x.t1) || tl.segs[tl.segs.length - 1];
+  const u = s.t1 > s.t0 ? Math.min(1, Math.max(0, (t - s.t0) / (s.t1 - s.t0))) : 1;
+  const e = s.a.e + (s.b.e - s.a.e) * u, n = s.a.n + (s.b.n - s.a.n) * u, h = s.a.h + (s.b.h - s.a.h) * u;
+  return { s, e, n, h, yaw: bearingOf(-e, -n) };
+}
+function stepText(st) {
+  const s = st.s, V = k => 'V' + (k + 1);
+  if (s.kind === 'stop') {
+    const p = s.a;
+    if (s.i === 0) return `在 ${V(p.corner)} 低点（${fmt(p.h, 0)} m）—— 航线起点`;
+    if (s.i === STATE.m.pms.length - 1) return `回到 ${V(p.corner)} 低点（${fmt(p.h, 0)} m）—— 航线结束，悬停`;
+    return `到点停：${V(p.corner)}，${fmt(p.h, 0)} m（航点 ${s.i}）`;
+  }
+  const l = s.leg;
+  if (l.vertical) return `${V(s.a.corner)} ${l.dv > 0 ? '垂直爬升' : '垂直下降'} ${fmt(s.a.h, 0)} → ${fmt(s.b.h, 0)} m`;
+  return `20 m 平飞 ${V(s.a.corner)} → ${V(s.b.corner)}（顺时针），机头持续朝向基点`;
+}
+
+/* ---------- 绘图 ---------- */
+const SVGNS = 'http://www.w3.org/2000/svg';
+function el(name, attrs, parent) {
+  const n = document.createElementNS(SVGNS, name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function label(parent, x, y, text, cls = 'g-label', anchor = 'middle') {
+  const n = el('text', { x, y, class: cls, 'text-anchor': anchor }, parent);
+  n.textContent = text;
+  return n;
+}
+
+/* 俯视图：x = 东，y = -北，单位 m；字号按像素，所以文字放在单独的不缩放层里 */
+function drawTop(m) {
+  const svg = document.getElementById('topView');
+  svg.innerHTML = '';
+  const pts = m.corners.slice();
+  if (m.aircraft) pts.push(m.aircraft);
+  pts.push({ e: 0, n: 0 });
+  const pad = 9;
+  const minE = Math.min(...pts.map(p => p.e)) - pad, maxE = Math.max(...pts.map(p => p.e)) + pad;
+  const minN = Math.min(...pts.map(p => p.n)) - pad, maxN = Math.max(...pts.map(p => p.n)) + pad;
+  const span = Math.max(maxE - minE, maxN - minN);
+  const cx = (minE + maxE) / 2, cy = (minN + maxN) / 2;
+  const W = 600, k = W / span;               /* 像素/米 */
+  svg.setAttribute('viewBox', `0 0 ${W} ${W}`);
+  const X = e => (e - cx) * k + W / 2, Y = n => W / 2 - (n - cy) * k;
+
+  for (let g = Math.ceil((cx - span / 2) / 5) * 5; g <= cx + span / 2; g += 5) {
+    el('line', { x1: X(g), y1: 0, x2: X(g), y2: W, class: g === 0 ? 'g-axis' : 'g-grid' }, svg);
+  }
+  for (let g = Math.ceil((cy - span / 2) / 5) * 5; g <= cy + span / 2; g += 5) {
+    el('line', { x1: 0, y1: Y(g), x2: W, y2: Y(g), class: g === 0 ? 'g-axis' : 'g-grid' }, svg);
+  }
+  label(svg, W - 18, 24, 'N↑', 'g-label');
+  label(svg, 14, W - 12, '网格 5 m', 'g-sub', 'start');
+
+  const c = m.corners;
+  el('polygon', { points: c.map(p => `${X(p.e)},${Y(p.n)}`).join(' '), class: 'g-path-soft' }, svg);
+  c.forEach((p, i) => {
+    const q = c[(i + 1) % c.length];
+    el('line', { x1: X(p.e), y1: Y(p.n), x2: X(q.e), y2: Y(q.n), class: 'g-path' }, svg);
+    /* 边中点画方向箭头 */
+    const mx = (X(p.e) + X(q.e)) / 2, my = (Y(p.n) + Y(q.n)) / 2;
+    const ang = Math.atan2(Y(q.n) - Y(p.n), X(q.e) - X(p.e)) / D2R;
+    el('path', { d: 'M -8 -7 L 8 0 L -8 7 Z', class: 'g-arrow', transform: `translate(${mx},${my}) rotate(${ang})` }, svg);
+    /* 沿边取样：机头朝向基点 */
+    for (const u of [0.15, 0.35, 0.65, 0.85]) {
+      const e = p.e + (q.e - p.e) * u, n = p.n + (q.n - p.n) * u;
+      const L = 3.2, d = Math.hypot(e, n), ue = -e / d, un = -n / d;
+      el('line', { x1: X(e), y1: Y(n), x2: X(e + ue * L), y2: Y(n + un * L), class: 'g-head' }, svg);
+      el('circle', { cx: X(e + ue * L), cy: Y(n + un * L), r: 2.2, class: 'g-base' }, svg);
+    }
+  });
+
+  if (m.aircraft) {
+    el('line', { x1: X(m.aircraft.e), y1: Y(m.aircraft.n), x2: X(c[0].e), y2: Y(c[0].n), class: 'g-transit' }, svg);
+    el('circle', { cx: X(m.aircraft.e), cy: Y(m.aircraft.n), r: 7, class: 'g-craft' }, svg);
+    label(svg, X(m.aircraft.e), Y(m.aircraft.n) - 13, '飞机当前位置');
+  }
+
+  /* 基点（行人） */
+  el('circle', { cx: X(0), cy: Y(0), r: 7, class: 'g-base' }, svg);
+  label(svg, X(0), Y(0) + 24, '基点（行人）');
+
+  c.forEach((p, i) => {
+    el('circle', { cx: X(p.e), cy: Y(p.n), r: i === 0 ? 9 : 7, class: i === 0 ? 'g-corner1' : 'g-corner' }, svg);
+    const ox = Math.sign(p.e) * 22, oy = -Math.sign(p.n) * 22;
+    label(svg, X(p.e) + ox, Y(p.n) + oy + 4, 'V' + (i + 1) + (i === 0 ? ' 起/终' : ''));
+  });
+
+  const drone = el('g', { id: 'topDrone' }, svg);
+  el('line', { x1: 0, y1: 0, x2: 0, y2: -26, class: 'g-nose' }, drone);
+  el('path', { d: 'M 0 -13 L 9 9 L 0 4 L -9 9 Z', class: 'g-drone' }, drone);
+  STATE.top = { X, Y };
+}
+
+/* 立体图：正交投影，视点方位 az、仰角 25° */
+function drawIso(m) {
+  const svg = document.getElementById('isoView');
+  svg.innerHTML = '';
+  const az = Number(document.getElementById('az').value) * D2R, elv = 25 * D2R;
+  const r = { e: Math.sin(az - Math.PI / 2), n: Math.cos(az - Math.PI / 2) };
+  const dv = { e: -Math.sin(az), n: -Math.cos(az) };
+  const P = (e, n, h) => ({ x: e * r.e + n * r.n, y: -(h * Math.cos(elv) + (e * dv.e + n * dv.n) * Math.sin(elv)) });
+
+  const all = [];
+  m.corners.forEach(c => { all.push(P(c.e, c.n, 0), P(c.e, c.n, 22)); });
+  all.push(P(0, 0, 0), P(0, 0, 22));
+  if (m.aircraft) all.push(P(m.aircraft.e, m.aircraft.n, m.aircraft.h || 30), P(m.aircraft.e, m.aircraft.n, 0));
+  const pad = 6;
+  const minX = Math.min(...all.map(p => p.x)) - pad, maxX = Math.max(...all.map(p => p.x)) + pad;
+  const minY = Math.min(...all.map(p => p.y)) - pad, maxY = Math.max(...all.map(p => p.y)) + pad;
+  const W = 600, k = W / (maxX - minX), H = (maxY - minY) * k;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const S = p => ({ x: (p.x - minX) * k, y: (p.y - minY) * k });
+  const line = (a, b, cls) => { const A = S(a), B = S(b); el('line', { x1: A.x, y1: A.y, x2: B.x, y2: B.y, class: cls }, svg); };
+
+  /* 地面：正方形投影与基点 */
+  const c = m.corners;
+  el('polygon', { points: c.map(q => { const s = S(P(q.e, q.n, 0)); return `${s.x},${s.y}`; }).join(' '), class: 'g-path-soft' }, svg);
+  c.forEach(q => line(P(q.e, q.n, 0), P(q.e, q.n, 10), 'g-drop'));
+  line(P(0, 0, 0), P(0, 0, 20), 'g-drop');
+
+  /* 航线本体：按航点顺序连线，垂直段与平飞段分色 */
+  m.pms.forEach((p, i) => {
+    if (i === 0) return;
+    const a = m.pms[i - 1];
+    line(P(a.e, a.n, a.h), P(p.e, p.n, p.h), m.legs[i - 1].vertical ? 'g-vert' : 'g-path');
+  });
+  /* 平飞段上取样：机头朝向基点那根竖轴 */
+  c.forEach((q, i) => {
+    const w = c[(i + 1) % c.length];
+    for (const u of [0.25, 0.5, 0.75]) {
+      const e = q.e + (w.e - q.e) * u, n = q.n + (w.n - q.n) * u, d = Math.hypot(e, n);
+      line(P(e, n, 20), P(e - e / d * 3.2, n - n / d * 3.2, 20), 'g-head');
+    }
+  });
+
+  if (m.aircraft) {
+    const ah = m.aircraft.h || 30;
+    const A = P(m.aircraft.e, m.aircraft.n, ah), above = P(c[0].e, c[0].n, Math.max(ah, 10)), v1 = P(c[0].e, c[0].n, 10);
+    const sa = S(A), sb = S(above), sv = S(v1);
+    el('polyline', { points: `${sa.x},${sa.y} ${sb.x},${sb.y} ${sv.x},${sv.y}`, class: 'g-transit' }, svg);
+    el('circle', { cx: sa.x, cy: sa.y, r: 6, class: 'g-craft' }, svg);
+    line(P(m.aircraft.e, m.aircraft.n, 0), A, 'g-drop');
+    label(svg, sa.x, sa.y - 12, `飞机（假设 ${fmt(ah, 0)} m）`, 'g-sub');
+  }
+
+  const b0 = S(P(0, 0, 0));
+  el('circle', { cx: b0.x, cy: b0.y, r: 6, class: 'g-base' }, svg);
+  label(svg, b0.x, b0.y + 20, '基点（行人）', 'g-sub');
+  c.forEach((q, i) => {
+    const hi = S(P(q.e, q.n, 20)), lo = S(P(q.e, q.n, 10));
+    label(svg, hi.x, hi.y - 10, 'V' + (i + 1) + ' 20 m', 'g-sub');
+    label(svg, lo.x + 2, lo.y + 16, '10 m', 'g-sub');
+  });
+
+  const drone = el('g', { id: 'isoDrone' }, svg);
+  el('line', { id: 'isoNose', x1: 0, y1: 0, x2: 0, y2: 0, class: 'g-nose' }, drone);
+  el('circle', { id: 'isoBody', cx: 0, cy: 0, r: 6, class: 'g-drone' }, drone);
+  STATE.iso = { P, S };
+}
+
+/* ---------- 状态与交互 ---------- */
+const STATE = { m: null, tl: null, t: 0, playing: false, last: 0 };
+
+function render() {
+  const { m, tl } = STATE;
+  if (!m) return;
+  const st = stateAt(tl, STATE.t);
+  const { X, Y } = STATE.top;
+  document.getElementById('topDrone').setAttribute('transform', `translate(${X(st.e)},${Y(st.n)}) rotate(${st.yaw})`);
+  const { P, S } = STATE.iso;
+  const body = S(P(st.e, st.n, st.h));
+  const d = Math.hypot(st.e, st.n) || 1;
+  const nose = S(P(st.e - st.e / d * 4.5, st.n - st.n / d * 4.5, st.h));
+  const bd = document.getElementById('isoBody');
+  bd.setAttribute('cx', body.x); bd.setAttribute('cy', body.y);
+  const ns = document.getElementById('isoNose');
+  ns.setAttribute('x1', body.x); ns.setAttribute('y1', body.y); ns.setAttribute('x2', nose.x); ns.setAttribute('y2', nose.y);
+
+  document.getElementById('stepNow').textContent = stepText(st);
+  document.getElementById('sT').textContent = `${fmt(STATE.t, 1)} / ${fmt(tl.total, 0)} s`;
+  document.getElementById('sH').textContent = `${fmt(st.h, 1)} m`;
+  document.getElementById('sD').textContent = `${fmt(Math.hypot(st.e, st.n), 2)} m`;
+  document.getElementById('sY').textContent = `${fmt(st.yaw, 1)}°`;
+  document.getElementById('sE').textContent = `${fmt(Math.abs(angDiff(st.yaw, bearingOf(-st.e, -st.n))), 1)}°`;
+  document.getElementById('scrub').value = Math.round(STATE.t / tl.total * 1000);
+  const curIdx = st.s.kind === 'stop' ? st.s.i : st.s.i;
+  document.querySelectorAll('#wpTable tbody tr').forEach((tr, i) => tr.classList.toggle('cur', i === curIdx));
+}
+
+function tick(ts) {
+  if (!STATE.playing) return;
+  const dt = STATE.last ? (ts - STATE.last) / 1000 : 0;
+  STATE.last = ts;
+  STATE.t += dt * Number(document.getElementById('rate').value);
+  if (STATE.t >= STATE.tl.total) { STATE.t = STATE.tl.total; setPlaying(false); }
+  render();
+  if (STATE.playing) requestAnimationFrame(tick);
+}
+function setPlaying(on) {
+  STATE.playing = on;
+  STATE.last = 0;
+  document.getElementById('play').textContent = on ? '暂停' : '播放';
+  if (on) requestAnimationFrame(tick);
+}
+
+function fillTable(m) {
+  const head = '<thead><tr><th>航点</th><th class="l">动作</th><th class="l">顶点</th><th>东 (m)</th><th>北 (m)</th>' +
+    '<th>高度 (m)</th><th>速度 (m/s)</th><th>朝基点</th><th class="l">机头模式</th><th class="l">航点类型</th><th>纬度</th><th>经度</th></tr></thead>';
+  const rows = m.pms.map(p => `<tr><td>${p.index}</td><td class="l">${p.role}</td><td class="l">V${p.corner + 1}</td>` +
+    `<td>${fmt(p.e, 2)}</td><td>${fmt(p.n, 2)}</td><td>${fmt(p.h, 2)}</td><td>${fmt(p.speed, 1)}</td><td>${fmt(p.toBase, 1)}°</td>` +
+    `<td class="l">${p.headingMode}</td><td class="l">${p.turnMode === 'toPointAndStopWithDiscontinuityCurvature' ? '直线·到点停' : p.turnMode}</td>` +
+    `<td>${p.lat.toFixed(8)}</td><td>${p.lon.toFixed(8)}</td></tr>`).join('');
+  document.getElementById('wpTable').innerHTML = head + '<tbody>' + rows + '</tbody>';
+}
+
+function fillDefaults(m, sc) {
+  const mi = m.mission;
+  const items = [
+    `正方形的边沿正东西、正南北。`,
+    `「第一个顶点」取离飞机当前位置最近的那个顶点 —— 从飞机过去不必横穿正方形，不会从行人头顶飞过。` +
+      (m.aircraft ? `本场景飞机到各顶点：${m.corners.map((c, i) => 'V' + (i + 1) + ' ' + fmt(Math.hypot(c.e - m.aircraft.e, c.n - m.aircraft.n), 1) + ' m').join('，')}。` : ''),
+    `航线速度 ${fmt(m.pms[1].speed, 1)} m/s（离人近，慢一点留反应时间）；飞往首航点 ${fmt(mi.transitSpeed, 1)} m/s，方式 <code>${mi.flyTo}</code>（先平飞到 V1 上方再下降）。`,
+    `每个航点到点停（直线飞行），所以升降是纯垂直的。整圈 ${fmt(mi.distance, 1)} m，按速度算至少 ${fmt(mi.duration, 0)} s，算上 13 次刹停实际约 1 分多钟。`,
+    `结束动作 <code>${mi.finishAction}</code>：停在 V1 的 10 m 处悬停，由操作员接管。失控时返航，返航高度 ${fmt(mi.rth, 0)} m。`,
+    `不带任何云台/相机动作（<code>gimbalPitchMode = ${mi.gimbalPitchMode}</code>），云台俯仰可以用遥控器自己拨。`,
+    `按下 Pilot 2 里的「绕点飞行」按钮才会生成并上传；基点用本次运行里最近一次行人打点的结果，没有打过点就拒绝。`,
+  ];
+  document.getElementById('defaults').innerHTML = items.map(s => `<li>${s}</li>`).join('');
+}
+
+function load(i) {
+  const sc = SCENARIOS[i];
+  setPlaying(false);
+  try {
+    const m = analyse(sc);
+    STATE.m = m;
+    STATE.tl = buildTimeline(m);
+    STATE.t = 0;
+    const checks = runChecks(m);
+    const ok = checks.every(c => c.pass);
+    const sum = document.getElementById('checkSummary');
+    sum.textContent = ok ? `全部 ${checks.length} 条符合` : `${checks.filter(c => !c.pass).length} 条不符合，见下方红色条目`;
+    sum.className = 'summary ' + (ok ? 'pass' : 'fail');
+    document.getElementById('checks').innerHTML = checks.map(c =>
+      `<li class="${c.pass ? 'pass' : 'fail'}"><span class="mark">${c.pass ? '✓' : '✗'}</span>` +
+      `<div><div class="req">${c.req}</div><div class="det">${c.det}</div></div></li>`).join('');
+    document.getElementById('fileMeta').innerHTML =
+      `<span>文件 <b>${sc.kmzName}</b>（${sc.kmzSize} 字节）</span>` +
+      `<span>SHA-256 <b>${sc.sha256.slice(0, 16)}…</b></span>` +
+      `<span>独立解包（Python zipfile）CRC：<b>${sc.zipOk ? '通过' : '失败'}</b></span>` +
+      `<span>条目：<b>${sc.entries.join('，')}</b></span>` +
+      `<span>生成：<b>${sc.generated}</b></span>`;
+    document.getElementById('scenarioNote').textContent = sc.note || '';
+    fillTable(m);
+    fillDefaults(m, sc);
+    drawTop(m);
+    drawIso(m);
+    render();
+    document.getElementById('rawW').textContent = sc.waylinesWpml;
+    document.getElementById('rawT').textContent = sc.templateKml;
+  } catch (e) {
+    document.getElementById('checkSummary').innerHTML = `<span class="err">解析失败：${e.message}</span>`;
+  }
+}
+
+const sel = document.getElementById('scenario');
+SCENARIOS.forEach((s, i) => { const o = document.createElement('option'); o.value = i; o.textContent = s.label; sel.appendChild(o); });
+if (SCENARIOS.length < 2) document.getElementById('scenario').disabled = true;
+sel.addEventListener('change', () => load(Number(sel.value)));
+document.getElementById('play').addEventListener('click', () => {
+  if (STATE.t >= STATE.tl.total) STATE.t = 0;
+  setPlaying(!STATE.playing);
+});
+document.getElementById('restart').addEventListener('click', () => { STATE.t = 0; render(); });
+document.getElementById('scrub').addEventListener('input', e => { STATE.t = Number(e.target.value) / 1000 * STATE.tl.total; render(); });
+document.getElementById('az').addEventListener('input', () => { if (STATE.m) { drawIso(STATE.m); render(); } });
+/* 地址里带 #s=场景序号&t=秒 可直接跳到某一时刻（便于截图核对） */
+const hashArgs = new URLSearchParams(location.hash.slice(1));
+const s0 = Math.min(Math.max(Number(hashArgs.get('s')) || 0, 0), Math.max(SCENARIOS.length - 1, 0));
+if (SCENARIOS.length) {
+  sel.value = String(s0);
+  load(s0);
+  if (hashArgs.has('t')) { STATE.t = Math.min(Number(hashArgs.get('t')) || 0, STATE.tl.total); render(); }
+}
+</script>
+</body>
+</html>

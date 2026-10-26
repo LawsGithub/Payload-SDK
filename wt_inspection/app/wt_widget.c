@@ -3,7 +3,7 @@
  * @brief 控件模块实现。
  *
  * 骨架取自 liangzhourenwu 项目的 `lz/app/lz_widget.c`（那边已经在 M4T + 妙算3
- * 上跑通），砍到只剩本项目需要的五个控件。
+ * 上跑通），砍到只剩本项目需要的六个控件。
  * **初始化四步的顺序不能变**：
  *
  *   1. DjiWidget_Init()
@@ -28,7 +28,7 @@
 /* ------------------------------------------------------------------ */
 /* 控件索引（必须与 app/widget_file 下的 widget_config.json 一致）        */
 /*                                                                     */
-/* 这 5 个索引必须与两份 json 的 widget_index 一一对应 ——                */
+/* 这 6 个索引必须与两份 json 的 widget_index 一一对应 ——                */
 /* 把界面控件分派给 handler，对不上的后果是"按了 A 按钮却执行了 B 的       */
 /* 动作"，而两边都不会报错。                                             */
 /* ------------------------------------------------------------------ */
@@ -56,8 +56,17 @@
 /* 高空行人瞄准打点：1 = 开始一次会话，0 = 中止 */
 #define WT_WIDGET_IDX_PED_SWITCH   4
 
-#define WT_WIDGET_COUNT            5
+/* 绕点飞行：以最近一次行人打点为基点，飞正方形（按钮，按一下请求一次） */
+#define WT_WIDGET_IDX_SQUARE_BUTTON 5
 
+#define WT_WIDGET_COUNT            6
+
+/*
+ * 「绕点飞行」请求的有效期 ms。待命循环 1 s 一拍，正常情况下按下后 1 s 内就会
+ * 被处理；超过这个时间还没被处理，说明当时程序正忙（行人瞄准、采集、风机作业），
+ * 这个请求就作废 —— 不能让一次旧的按键在几分钟后突然把飞机飞起来。
+ */
+#define WT_SQUARE_REQUEST_TTL_MS   5000u
 
 /* 滑块 0–100 → 角度 0–359 的映射上限 */
 #define WT_PARK_PHASE_MAX_DEG      359
@@ -98,6 +107,9 @@ static volatile bool s_dryRun = false;
 /* 行人瞄准请求。同样只置标志，会话由主循环跑（要转云台、要读阻塞的激光）。 */
 static volatile bool s_pedRequested = false;
 
+/* 绕点飞行请求 + 按下时刻（用于过期判断）。规划、上传、监控都在主循环。 */
+static volatile bool s_squarePending = false;
+static volatile uint32_t s_squarePressedMs = 0;
 
 static T_DjiTaskHandle s_msgTask = NULL;
 static volatile bool s_msgTaskRun = false;
@@ -223,6 +235,29 @@ static T_DjiReturnCode WtWidget_SetWidgetValue(E_DjiWidgetType widgetType, uint3
                                             : "行人瞄准：已请求停止");
         break;
 
+    /* ---- 绕点飞行按钮 ----
+     *
+     * 与中止按钮同理：按下、松开各回调一次，只认按下。记下按下时刻，
+     * 主循环取走时判断是否过期（见 WT_SQUARE_REQUEST_TTL_MS）。 */
+    case WT_WIDGET_IDX_SQUARE_BUTTON: {
+        T_DjiOsalHandler *osal = DjiPlatform_GetOsalHandler();
+        uint32_t now = 0;
+
+        if (widgetType != DJI_WIDGET_TYPE_BUTTON) {
+            return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
+        }
+        if (value != DJI_WIDGET_BUTTON_STATE_PRESS_DOWN) {
+            break;   /* 忽略松开的半次 */
+        }
+        if (osal != NULL && osal->GetTimeMs != NULL) {
+            osal->GetTimeMs(&now);
+        }
+        s_squarePressedMs = now;
+        s_squarePending = true;
+        WtWidget_PostMessage("收到绕点飞行请求：检查条件…");
+        break;
+    }
+
     default:
         return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
     }
@@ -259,6 +294,7 @@ static T_DjiReturnCode WtWidget_GetWidgetValue(E_DjiWidgetType widgetType, uint3
     /* 按钮没有"当前值"可读 —— 它是瞬时动作，不是状态。
      * 回 `RELEASE_UP` 让界面显示为未按下，与"按一下就弹回"的物理直觉一致。 */
     case WT_WIDGET_IDX_ABORT_BUTTON:
+    case WT_WIDGET_IDX_SQUARE_BUTTON:
         if (widgetType != DJI_WIDGET_TYPE_BUTTON) {
             return DJI_ERROR_SYSTEM_MODULE_CODE_INVALID_PARAMETER;
         }
@@ -294,6 +330,9 @@ static const T_DjiWidgetHandlerListItem s_widgetHandlerList[WT_WIDGET_COUNT] = {
      WtWidget_GetWidgetValue, NULL},
 
     {WT_WIDGET_IDX_PED_SWITCH,   DJI_WIDGET_TYPE_SWITCH, WtWidget_SetWidgetValue,
+     WtWidget_GetWidgetValue, NULL},
+
+    {WT_WIDGET_IDX_SQUARE_BUTTON, DJI_WIDGET_TYPE_BUTTON, WtWidget_SetWidgetValue,
      WtWidget_GetWidgetValue, NULL},
 };
 
@@ -496,6 +535,30 @@ bool WtWidget_TakeAbortRequest(void)
         return false;
     }
     s_abortPending = false;
+
+    return true;
+}
+
+bool WtWidget_TakeSquareRequest(void)
+{
+    T_DjiOsalHandler *osal = DjiPlatform_GetOsalHandler();
+    uint32_t now = 0;
+    uint32_t age;
+
+    if (!s_squarePending) {
+        return false;
+    }
+    s_squarePending = false;
+
+    if (osal != NULL && osal->GetTimeMs != NULL) {
+        osal->GetTimeMs(&now);
+    }
+    age = now - s_squarePressedMs;   /* 无符号减法，32 位回绕也对 */
+    if (age > WT_SQUARE_REQUEST_TTL_MS) {
+        WtWidget_PostMessage("绕点飞行请求已作废（按下 %.0f s 后才轮到处理），需要的话请重新按",
+                             (double)age / 1000.0);
+        return false;
+    }
 
     return true;
 }
