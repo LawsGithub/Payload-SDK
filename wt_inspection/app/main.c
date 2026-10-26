@@ -77,6 +77,10 @@ static bool s_configReady = false;
  *
  * 只认本进程里打出来的点，**不读 ped_points.csv**：CSV 里可能是昨天、别处
  * 打的点，拿它当基点等于让飞机低空飞去一个旧坐标。进程重启就得重新打点。
+ *
+ * 而且只认**最近一轮**：每拨上一次「行人瞄准」就先作废旧点（WtApp_RunPed 开头），
+ * 只有这一轮打点成功才重新写入。否则「先打中 A、再瞄 B 失败」之后按绕点飞行，
+ * 飞机会绕着 A 的旧坐标飞，而操作员以为绕的是 B。
  */
 static bool s_havePedPoint = false;
 static WtGeo s_pedPoint;
@@ -419,6 +423,16 @@ static void WtApp_RunPed(void)
     uint32_t lastPostMs = 0;
     T_DjiOsalHandler *osal = DjiPlatform_GetOsalHandler();
 
+    /*
+     * 拨上一次就先作废旧基点 —— 这一轮要是失败（或链路没就绪），「绕点飞行」
+     * 不能拿上一轮、可能是另一个人的点去飞。成功了会在会话结束处重新写入。
+     */
+    if (s_havePedPoint) {
+        USER_LOG_INFO("行人瞄准：新一轮开始，作废上一轮的基点 %.8f, %.8f",
+                      s_pedPoint.lat, s_pedPoint.lon);
+        s_havePedPoint = false;
+    }
+
     if (!s_pedReady) {
         WtWidget_PostMessage("行人瞄准链路未就绪（见启动日志）");
         WtWidget_ClearPedRequest();
@@ -524,7 +538,7 @@ static void WtApp_ServicePedRequest(void)
  *
  * ## 起飞前的几道闸
  *
- * - 有本次运行的打点结果（见 s_havePedPoint 的说明）
+ * - 有最近一轮「行人瞄准」成功打到的点（每拨一次都会先作废旧点，见 s_havePedPoint）
  * - 飞机位置有效、**飞机在空中** —— 在地面按下会直接起飞，离人十来米；
  *   宁可拒绝，让操作员先起飞
  * - 云台没有残留在 FREE 模式（机头要连续转一圈，FREE 会顶 pan 限位）
@@ -549,6 +563,7 @@ static void WtApp_RunSquare(void)
     char kmzPath[WT_CONFIG_MAX_PATH + 32];
     bool dryRun;
     uint32_t startMs;
+    double ageS;
     int i;
 
     if (!s_havePedPoint) {
@@ -586,10 +601,9 @@ static void WtApp_RunSquare(void)
         return;
     }
 
+    ageS = (double)(WtApp_NowMs() - s_pedPointMs) / 1000.0;
     USER_LOG_INFO("绕点飞行：基点 %.8f, %.8f（%.0f s 前打的点）；飞机到基点 %.1f m、到首航点 %.1f m",
-                  plan.base.lat, plan.base.lon,
-                  (double)(WtApp_NowMs() - s_pedPointMs) / 1000.0, plan.aircraftToBaseM,
-                  plan.transitM);
+                  plan.base.lat, plan.base.lon, ageS, plan.aircraftToBaseM, plan.transitM);
     USER_LOG_INFO("绕点飞行：边长 %.0f m，高度 %.0f/%.0f m（相对起飞点），速度 %.1f m/s，"
                   "航线 %.0f m，至少 %.0f s",
                   cfg.sideM, cfg.lowHeightM, cfg.highHeightM, cfg.speedMs, plan.pathLengthM,
@@ -615,13 +629,20 @@ static void WtApp_RunSquare(void)
         WtWidget_PostMessage("绕点飞行：%s失败，见日志", dryRun ? "上传" : "上传或启动");
         return;
     }
+    /*
+     * 浮窗带上「基点离飞机多远、是多久前打的」：现场一眼就能核对绕的是不是
+     * 刚才那个人 —— 远得离谱或时间对不上，立刻按「中止作业」。
+     */
     if (dryRun) {
-        WtWidget_PostMessage("干跑：绕点航线已上传，未启动（%s）", kmzPath);
+        WtWidget_PostMessage("干跑：绕点航线已上传，未启动；基点离飞机 %.0f m（%.0f s 前打的点）",
+                             plan.aircraftToBaseM, ageS);
         WtSquareMission_End();
         return;
     }
 
-    WtWidget_PostMessage("绕点飞行已启动：先飞往 V1，按「中止作业」可原地悬停");
+    WtWidget_PostMessage("绕点飞行已启动：基点离飞机 %.0f m（%.0f s 前打的点），先飞往 V1；"
+                         "按「中止作业」原地悬停",
+                         plan.aircraftToBaseM, ageS);
     startMs = WtApp_NowMs();
     WtMissionWatch_Begin(&watch, startMs, WT_SQUARE_START_TIMEOUT_MS);
 
