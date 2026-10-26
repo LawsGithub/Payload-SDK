@@ -66,10 +66,18 @@ ctest --test-dir build --output-on-failure
 > 动手前先按「设备连接」一节问用户 IP。
 
 ```bash
-# 设备上编译完成后
-tools/build_dpk/build_dpk.sh <路径>
-dji_app_ctl install <包名>.dpk
+# 设备上：源码在 ~/wtsrc（即 PSDK_ROOT），engine 在 ~/wt-models，包输出到 ~/dpk
+cd ~/wtsrc/wt_inspection
+rm -rf build && cmake -S . -B build -DWT_BUILD_PSDK_APP=ON -DWT_BUILD_TRT=ON \
+    -DWT_TARGET_ARCH=aarch64 -DPSDK_ROOT=$HOME/wtsrc && cmake --build build -j4
+bash ../tools/build_dpk/build_dpk.sh -i app_json/app.json -o ~/dpk
+/system/bin/dji_app_ctl install -i ~/dpk/wt-inspection_v01.00.00.00.dpk
+# 装完应用不在运行：停 Smart3DExplore → 等 10 s → dji_app_ctl start wt-inspection
+#（见仓库级 CLAUDE.md「安装器会试运行应用」末条）
 ```
+
+- 每次都 `rm -rf build` 全新编译（设备上约半分钟）：`--mtime='@0'` 让源文件比旧 `.o`
+  还旧，增量编译会跳过改动（见仓库级 CLAUDE.md 硬约束 1）。2026-10-26 三次上机都这样做。
 
 - `app.json` 的 `bin` 是**相对 `app.json` 的路径**，且目录名必须是 `build`
   （写成 `build-native` 时打包直接报 `bin field ... not exist`）。

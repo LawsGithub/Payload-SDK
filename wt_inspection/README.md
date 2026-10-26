@@ -201,7 +201,8 @@ include/  src/
 app/main.c           机载应用入口（平台注册 + 作业调度）
 app/wt_widget.c      Pilot 2 自定义控件（操作员界面，+ widget_file/ 配置）
 app/wt_ai_stream_probe.c 诊断：相机取流探针（统计帧数与分辨率）
-app/wt_ai_overlay.c      诊断：向 Pilot 2 发识别框（见下方"已知限制"）
+app/wt_ai_overlay.c      操作员辅助：行人框随帧编码推给 Pilot（见「AI 识别 / 两条通道的实测结论」）
+app/wt_osal_mono.c       OSAL 计时与带超时等待的单调时钟版（见「安全设计要点」）
 app/wt_trt_pose.{h,cpp}  TensorRT YOLO 推理封装（风机关键点 / 行人检测共用）
 app/wt_yolo_decode.c     YOLO 预处理与解码（纯 C，桌面可测）
 app/wt_vision.c          推理线程（风机 / 行人两种模型）
@@ -240,6 +241,15 @@ grep -rn "dji_" include/ src/wt_geometry.c src/wt_turbine.c \
 |---|---|---|
 | 叶片静止 | 到任一叶片轴线的距离 > 安全值 | 停机受控精细巡检 |
 | 风轮可转动 | 到旋转轴的轴向分量 > 安全值 | 叶尖追踪 / 未受控 |
+
+### 计时一律用单调时钟
+
+妙算3 的 RTC 没有电池：开机先回到上次保存的时间，进 Pilot 2 校时后一下跳到真实时间
+（2026-10-26 实测，应用运行中跳了约 5 小时）。官方样例的 OSAL 用 `gettimeofday` 计时，
+跳变那一刻，所有超时（行人会话上限、按键 5 s 有效、航线进度判定）和 SDK 内部的带超时
+等待都会误触发；往回跳则可能一等几个小时。所以 `GetTimeMs` / `GetTimeUs` /
+`SemaphoreTimedWait` 换成了 `CLOCK_MONOTONIC` 版（`app/wt_osal_mono.c`），其余 OSAL
+照用样例。CSV 里的 `wall_time` 仍取墙上时钟，只作记录。
 
 ### 两种航线形态
 
@@ -333,11 +343,23 @@ DJI 出厂镜像已预装 **CUDA 11.4 / TensorRT 8 / cuDNN 8**，`dji` 用户无
 | API | 结果 |
 |---|---|
 | `DjiLiveview_StartImageStream` | ✅ **30fps 1440×1080 RGB_PACKED**（446 ms 出首帧） |
-| `DjiLiveview_SendAiMetaToPilot` | 发送返回 SUCCESS，但 **Pilot 2 不渲染** |
+| `DjiLiveview_SendAiMetaToPilot`（单独调用） | 发送返回 SUCCESS，但 **Pilot 2 不渲染**（2026-10-21） |
+| 官方目标检测样例的完整流程（`ai_overlay = true`） | ✅ **Pilot 2 多出一路妙算3 的视频源，画面上有框**（2026-10-26 上机：行人框与 `target` 标记均已确认） |
 
-后者不是 API 不可用：**Pilot 2 的「AI 识别」与妙算3 上的 PSDK 应用互斥**
-（实测弹窗"请先关闭已运行 AI 应用再开启"）。开着 DJI AI 时不收外部框，
-关掉又不在 AI 模式。所以自研识别的结果**自己用**，不要指望画给操作员看。
+单独发框不显示，是因为少了两步：官方样例
+`samples/sample_c++/module_sample/liveview/dji_liveview_object_detection.cpp`
+把每帧连同框用 `DjiLiveview_EncodeAFrameToH264` 编码，再在编码回调里用
+`DjiPayloadCamera_SendVideoStream` 推给 Pilot。框画在**妙算3 推的这一路视频**上
+（Pilot 2 里是一个新的视频源），不在主相机画面上。`app/wt_ai_overlay.c` 照此实现：
+挂在行人链路的取流上，每帧编码约 5 ms，码率约 6 Mbps。识别到的人画成
+`pedestrian` / `people`；拨「行人瞄准」会锁定的那个（会话中是正在跟的那个）标成
+`target`，判据与决策层同一个（`WtPedLogic_PickCapture`，见 `WtPed_TargetIndex`）。
+
+- **Pilot 2 的「AI 识别」与本应用仍然互斥**（实测弹窗"请先关闭已运行 AI 应用再开启"），
+  用叠加时要先关掉 DJI AI。2026-10-21 曾把「不渲染」归因于这个互斥、判为死路 —— 不对。
+- `DjiPayloadCamera_GetVideoStreamState` 在这条路上始终报 0（Pilot 2 上看得到画面时也是），
+  不能用它判断推流是否正常。
+- 没有调用 `DjiPayloadCamera_Init` 也能显示；带宽比例照样例设为 10/60/30。
 
 ⚠️ **调用 liveview 前必须先 `DjiLiveview_Init()`。** 漏掉时
 `RegUserAiTargetLableList` 返回 `0xE0` 且日志打
@@ -628,7 +650,7 @@ DJI 规格页在「Controllable Rotation Range」里把 M4T 的 Pan 标成
 决策（wt_ped_logic）：捕获离光轴最近的人 → 转云台 → 读回停稳 → 看停稳后的新一帧
                       → 还差就再转
      ↓
-锁定：停稳后连续 3 帧在容差内（约 0.3 s）；可再加停顿 ped_dwell_ms（默认 0）
+锁定：停稳后连续 3 帧在容差内（约 0.5 s，实测推理约 6 次/秒）；可再加停顿 ped_dwell_ms（默认 0）
      ↓
 激光连读 3 次（间隔 300 ms）取距离居中那次 → WGS84 落点
      → 日志 + data/ped_points.csv + Pilot 浮窗 + 绕点飞行的基点
@@ -729,6 +751,7 @@ python3 -I tools/ped_model/export_onnx.py <best.pt> --imgsz 1280
 | `ped_engine` | — | 设备上构建的 engine 路径 |
 | `ped_dwell_ms` | 0 | 锁定确认后再停多久才打激光，范围 0~30000，越界拒绝启动 |
 | `ped_conf` | 0.40 | 新捕获所需置信度，范围 (0, 1)，越界拒绝启动 |
+| `ai_overlay` | false | 行人框随帧推给 Pilot，会锁定的人标 `target`（见「AI 识别 / 两条通道的实测结论」） |
 
 ### 结果
 
@@ -738,19 +761,27 @@ python3 -I tools/ped_model/export_onnx.py <best.pt> --imgsz 1280
 ⚠️ `wall_time` 取设备时钟，可能落后几十小时（RTC 无电池），按行序认先后；
 激光海拔的基准没有文档承诺（见「激光采集」），只看相对量。
 
+### 上机实测（2026-10-26）
+
+- engine：设备上 `trtexec --fp16` 建成，21.8 MB，约 16 分钟；GPU 计算中位 29.4 ms/帧
+- 应用里推理约 6 次/秒（间隔 100 ms 加前后处理），所以确认 3 帧约 0.5 s
+- Pilot 2 上「行人瞄准」开关可用：拨了 4 次，会话都正常开始
+- 这 4 次会话的激光**都没有有效回波**（每轮 0/3，`exception=1` 27 次、`exception=3`
+  9 次），超次数判失败。SDK 与文档都只把 `exception` 叫「异常标志」，不说明取值；
+  以前室内对墙见过 `=3`（打空）。这次的距离与飞行状态没有记录，不代表实际用法，
+  待室外按正常距离再测
+
 ### 尚未上机验证 `[?]`
 
-- engine 构建、1280 输入在 Orin NX 上的推理耗时
 - `GetOpticalZoomParam` 的倍率语义（1× 是否就是广角 24 mm），以及 `M4T_VIS` 取流
   画面是否随变焦裁切。程序按读到的倍率换算视场 —— 若取流其实不随变焦，只会少转、
   多迭代几次，仍然收敛；反过来才会发散，所以拿不准时这样算是安全的一侧
 - 取流延迟是否在 300 ms 停稳窗口之内
-- 激光打在行人身上时的回波情况
-- Pilot 2 上新开关的显示
+- 激光打在行人身上时的回波情况（见上：这次 4 次会话全部无回波）
 
 ### 已知限制
 
-- **走动中的人仍然难锁**：确认只要约 0.3 s，但每次修正要等停稳与新帧（一两秒），
+- **走动中的人仍然难锁**：确认只要约 0.5 s，但每次修正要等停稳与新帧（一两秒），
   人持续走动会在 12 次修正后判失败。要跟踪移动目标，需要先标定取流延迟、再做带
   预测的连续跟踪。
 - 只做了可见光。夜间要换红外模型（如 HIT-UAV 高空红外数据集）与红外取流源。
@@ -789,13 +820,18 @@ V1 10 m → 垂直升到 20 m → 顺时针沿边平飞到 V2 → 垂直降到 1
 
 ### 起飞前的闸门（`app/main.c` 的 `WtApp_RunSquare`）
 
-- 本次运行打到过点。**不读 `ped_points.csv`**：那里可能是昨天、别处的点。
+- 有**最近一轮**「行人瞄准」打到的点：每次拨上「行人瞄准」都会先作废旧基点，那一轮
+  失败就没有基点（按「绕点飞行」会提示先打点）—— 否则「先打中 A、再瞄 B 失败」后
+  会绕着 A 的旧坐标飞。**不读 `ped_points.csv`**：那里可能是昨天、别处的点。
 - 飞机位置有效、**飞机在空中**：在地面按下会直接起飞到离人十来米的地方，拒绝。
 - 云台没有残留在 FREE 模式：机头要连续转一整圈，FREE 会让 pan 顶到 ±60° 限位。
 - 基点离飞机不超过 150 m：远到这个程度，多半是激光打到了别处。
 - 按钮按下超过 5 s 才轮到处理（当时程序正忙）的请求作废：旧的按键不能事后把飞机飞起来。
 - 任务状态回调注册失败就不 START：没有它就判断不了「进入航线了没有」。
 - 「干跑」开着时只上传不启动 —— 可用来验证飞控是否接受这份 KMZ。
+
+启动（以及干跑上传）时浮窗显示「基点离飞机 xx m（xx s 前打的点）」，现场据此核对绕的
+是不是刚才那个人。
 
 中止用 1 号「中止作业」按钮：下发 STOP，飞机退出航线、**原地悬停**。不像风机作业
 那样返航：这条航线贴着人、高度只有 10–20 m，返航要先爬高再飞走，路线不受控。
