@@ -185,6 +185,7 @@ if(WT_BUILD_PSDK_APP)
         app/wt_ai_stream_probe.c
         app/wt_frame_pump.c
         app/wt_laser.c
+        app/wt_osal_mono.c
         app/wt_square_mission.c
         app/wt_widget.c
         src/wt_telemetry_psdk.c

@@ -35,6 +35,7 @@
 #include "wt_frame_pump.h"
 #include "wt_laser.h"
 #include "wt_mission_watch.h"
+#include "wt_osal_mono.h"
 #include "wt_ped_square.h"
 #include "wt_square_mission.h"
 #include "wt_widget.h"
@@ -793,13 +794,14 @@ static T_DjiReturnCode WtApp_PrepareSystemEnvironment(void)
         .SemaphoreCreate = Osal_SemaphoreCreate,
         .SemaphoreDestroy = Osal_SemaphoreDestroy,
         .SemaphoreWait = Osal_SemaphoreWait,
-        .SemaphoreTimedWait = Osal_SemaphoreTimedWait,
+        /* 三个与时间有关的换成单调时钟版：设备校时会让墙上时钟跳几个小时（见 wt_osal_mono.h） */
+        .SemaphoreTimedWait = WtOsal_SemaphoreTimedWait,
         .SemaphorePost = Osal_SemaphorePost,
         .Malloc = Osal_Malloc,
         .Free = Osal_Free,
         .GetRandomNum = Osal_GetRandomNum,
-        .GetTimeMs = Osal_GetTimeMs,
-        .GetTimeUs = Osal_GetTimeUs,
+        .GetTimeMs = WtOsal_GetTimeMs,
+        .GetTimeUs = WtOsal_GetTimeUs,
     };
 
     T_DjiHalUsbBulkHandler usbBulkHandler = {
