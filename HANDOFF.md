@@ -1,174 +1,152 @@
 # HANDOFF — 读全文再开始干活
 
-生成时间: 2026-10-24T19:42+08:00 · Git HEAD: `858ca0a`
+生成时间: 2026-10-26T13:30+08:00 · Git HEAD: `cef5b93`
 信任规则: [V] = 交接时已用命令验证；[?] = 仅记忆未复核，当线索对待；[X] = 已证伪，别用。
 
 ## 0. 复核（下一会话先做）
 
-- 锚点: `feature/wt-inspection` @ `858ca0a`（2026-10-24 19:41）
-- 漂移检查: `git rev-parse HEAD~1` 应 = `858ca0a`——HEAD 必是本次 handoff 提交，
+- 锚点: `feature/wt-inspection` @ `cef5b93`（2026-10-26 13:30）
+- 漂移检查: `git rev-parse HEAD~1` 应 = `cef5b93` —— HEAD 必是本次 handoff 提交，
   其 parent 才是本快照记录的 SHA。
-- 待重探的 `[?]`: 第 5 节 3 条
-- 先读: `wt_inspection/README.md` §"激光采集"与§"上机验证到哪一步"（唯一说明来源）、
-  `~/projects/CLAUDE.md`（设备硬约束）、`~/projects/.psdk-apiref/wt_inspection/API-MAP.md`
-  （本轮上机踩坑的完整记录）
+- 待重探的 `[?]`: 第 5 节
+- 先读: `wt_inspection/README.md` 的「高空行人瞄准打点」「绕点飞行」两节（唯一说明来源）、
+  `~/projects/CLAUDE.md`（设备硬约束）。风机侧待办见 memory `wt-turbine-backlog`。
 
 ## 1. 当前目标
 
-**在妙算3 上做「整机识别 → 叶片编号 → 三维位置 → 航线规划」的闭环。**
-完成定义 = 取流 → 推理 → 对准 → 激光 → 拟合全链路在设备上跑通，
-并能在真实风机上给出 NO.1/2/3 的位置与实测停用角。
+**行人线：高空行人瞄准打点 → 以打到的点为基点「绕点飞行」。** 桌面部分已完成。
+完成定义 = 用户在核对网页上确认飞法与默认值，然后上机：建 engine、编译、装包、
+空中打点、绕点飞行（先干跑只上传，再真飞）。
+**风机线暂缓**（用户 2026-10-25：「先不着急用风机的」），待办在 memory `wt-turbine-backlog`。
 
 ## 2. 已验证状态 — 工作实际停在哪
 
-### 本轮（2026-10-23/24）新增并上机验证
+- **行人瞄准打点** `a6e7f7c` [V]：VisDrone YOLO11s 检测 → 决策层 `wt_ped_logic` →
+  接线层 `app/wt_ped.c`；锁定后连续 3 帧确认就打、激光连读 3 次取中位；
+  `ped_dwell_ms` 默认 0（写 3000 即最初的「3 s 后打」）。该提交单独导出构建：
+  0 警告、13/13，带 PSDK 头语法检查（开/不开 TRT）与 x86_64 链接均通过。
+- **绕点飞行** `16dcb72` [V]：`wt_ped_square`（规划）+ `WtBridge_ExportPedSquareKmz`
+  + `wt_mission_watch`（进度判定）+ `app/wt_square_mission.c`（执行）+ Pilot 2 5 号按钮。
+- **README** `cef5b93` [V]：两节说明 + 控件表 + 更正一条过时告警（待命循环 Poll）。
+- **核对网页** [V]：`wt_inspection/build/ped_square_view/ped_square_view.html`
+  （build 目录不进 git，可用 `tools/ped_square_view/build_view.py` 重新生成）。
+  两个场景 Edge 无头 `--dump-dom` 读出「全部 10 条符合」。
+- **变异测试 30/30 抓到** [V]（覆盖规划、KMZ 文本、进度判定、确认帧、激光取中位、配置）。
+- **全程没碰设备** [V]：用户此前答「暂不上机」。设备上的装包/配置状态沿用上一份快照 [?]。
+- **工作区** [V]：干净（只有 `WEEKLY-2026-10-20.md`，用户自己的文件，未跟踪，**不要动**）；
+  已推送，与 `fork/feature/wt-inspection` 同步。
 
-- **AI 链路首次串联** [V]：`WtTrtPose → WtAiBridge → WtAiSolve` 此前从未连起来
-  （`WtAiSolveContext` 生产代码里一次都没构造过、`wt_trt_pose.cpp` 不在任何 CMake target）
-- **激光采集链路从零建成** [V]：`wt_rotor_fit`（盘面拟合）+ `wt_aim`（像素→云台角）
-  + `wt_frame_pump` + `wt_vision` + `wt_laser` + `wt_survey_logic` + `wt_survey`
-- **接入 main.c** [V]：拨「开始作业」时先采集盘面，再规划
-- **设备本地编译（含 `-DWT_BUILD_TRT=ON`）** [V] 零 error/warning
-- **aarch64 回归 11/11** [V]（此前只在 x86 跑过）
-- **`.dpk` 安装成功** [V]（顺带证明采集链路没破坏启动路径）
-- **取流** [V] 1440×1080 pixFmt=5 4,665,600 字节/帧；150→450 帧耗时 10.009s ⇒ 30fps；
-  收 450 丢 394（87.6%，latest-frame-wins 的预期值）
-- **推理** [V] 4.7 次/秒（配置 200ms 间隔）
-- **云台两轴闭环** [V] pitch −30/−45° 与 yaw 相对机头 ±20° 均读回**偏差 0.0°**
-- **激光** [V] 室内对墙 `exception=3`（打空，正常，非故障）
-
-### 未验证（这是下一步的全部内容）
-
-- **对准 → 打激光 → 拟合** 这一段**从未跑过**——需要真实风机在画面里。
-  室内没有可测目标，激光必然 `exception=3`。
-
-### 工作区
-
-- 干净（仅 `WEEKLY-2026-10-20.md` 是用户自己的文件，未跟踪，**不要动**）[V]
-- 分支领先远端 `fork/feature/wt-inspection` **15 个提交未推送** [V]
-
-### 测试输出（本次交接 run）
+### 测试输出（本次交接，全新 shell 跑）
 
 ```
-$ cmake --build build -j4        → 退出码 0，error/warning 数 0
-$ ctest --test-dir build --output-on-failure → 退出码 0
-100% tests passed, 0 tests failed out of 11
-Total Test time (real) =   0.06 sec
+$ env -i ... bash -c 'cmake -S . -B build && cmake --build build -j4 && ctest --test-dir build --output-on-failure'
+exit=0，warning 数 0
+100% tests passed, 0 tests failed out of 15
+（含新增 wt_test_ped_square 285 项、wt_test_mission_watch 20 项、wt_test_ped_logic 430 项）
 ```
 
 ## 3. 决策与理由
 
-- **实测只修正盘面姿态与相位，不反推塔基** [V]——从 4 点反推 `WtTurbineSpec.base`
-  有自由度问题（`hubHeight` 与 `nacelleOffset` 不可分）。台账提供坐标系与名义尺寸，
-  实测修正台账给不了的两样：停用角、盘面实际朝向。
-- **借用云台模式的作用域 = 一次采集会话，不是进程生命周期** [V]——
-  `dji_app_ctl stop` 直接杀进程，放 `DeInit` 里归还等于永远不还。
-  否决方案：放 `DeInit`，否决原因见 §4。
-- **对准判据用图像（目标是否到画面中心），不用云台角度读数** [V]——
-  这样云台角话题订不上时功能也不受损（当时以为订不上，见 §4）。
-- **采集先于规划** [V]——采集产出的停用角正是 `WtRunner_PlanTurbine` 在未知时
-  无条件拒绝规划的那个前提。反过来则规划必然被拒、采集白做。
-- **判据抽进 `wt_core`** [V]——`wt_rotor_fit` / `wt_aim` / `wt_survey_logic` 桌面可测，
-  `app/` 只剩接线。与规划/安全校验同一条分界线。
+- **锁定判据改为「停稳后连续 3 帧在容差内」** [V]——只要求打一次、拿位置时固定等 3 s
+  不提供证据。按用户「现在先弄行人的」理解为同意上次方案一（**未明确确认，见 §7**）。
+- **激光连读 3 次取距离居中那次，不平均经纬度** [V]——平均出的点可能哪次都没打到；
+  离散度 > max(0.5 m, 1%) 判光斑压在人边缘、重打。
+- **绕点飞行的 KMZ 照搬 liangzhourenwu 真机飞通的结构，不沿用风机 KMZ 的写法** [V]——
+  两份文件分开写、补 `globalRTHHeight`、机型 99/1 相机 89（= `dji_typedef.h` 的 M4T 枚举）。
+  风机 KMZ 从没 START 成功过（模拟器 error 4），且两份文件同一正文、缺必需元素。
+  否决：照抄风机写法（无任何 START 证据）。风机导出未改，ZIP 抽公共函数后 sha256 不变。
+- **机头 `towardPOI`（每点）+ 航点到点停** [V]——规范：towardPOI「飞向下一航点途中机头
+  都将朝向兴趣点」；`smoothTransition` 线性插值角度，沿直线边会偏离基点约 4°。
+  到点停才能让升降真的垂直。
+- **`waypointHeadingPathMode = followBadArc`** [?]——每条边机头都顺时针转 90°，最短路径
+  即顺时针；强制 clockwise 可能让首航点原地转近一圈。姊妹项目用 clockwise 飞通过。
+- **默认值（待用户确认）**：边沿正东西南北；首顶点 = 离飞机最近的；3 m/s（转场 5）；
+  结束 `noAction` 悬停；中止 = STOP 原地悬停（不返航：贴着人，返航要先爬高）；不控云台。
+- **起飞闸门** [V]：只认本进程打到的点（不读旧 CSV）、必须在空中、云台不在 FREE、
+  基点 ≤ 150 m、按键 5 s 内有效、状态回调注册失败不 START、「干跑」只上传。
+- **航点模块用时 Init、用完 DeInit** [V]——与风机执行器同一做法，两边不互相冲掉回调。
 
 ## 4. 失败的尝试 — 不要再试
 
 ### 本轮新增
 
-- **云台话题用 10Hz 订阅** → `0xE0 NONSUPPORT` [V]——**真因是频率**。
-  只接受 50Hz（`dji_gimbal_subscription.c:78`）。改 50Hz 后立刻成功。
-  不要再试 10Hz。
-- **"0xE0 = 模块未初始化"这个推断** → 把 `DjiGimbalManager_Init()` 提到订阅之前，
-  仍是 `0xE0` [V]。那是 liveview 的教训，不适用于云台话题。
-- **"0xE0 = 话题编号不对"** → 换 `GIMBAL_ANGLES_ON_POS_NO1`(48)，仍 `0xE0` [V]。
-- **"0xE0 = 订阅机制坏了"** → 同批 `QUATERNION` 正常推送 [V]，排除。
-  ⇒ 三项假设全错，真因在 SDK 日志里。**订阅失败先搜日志的 Warn/Debug。**
-- **绝对角模式下 `rot.yaw = 0`** → 整条命令被拒（`0x600000004`），**连 pitch 都不转** [V]。
-  本项目自检两次实证。不要再写 0。
-- **只在 `Stop`/`DeInit` 里打诊断计数** → `dji_app_ctl stop` 直接杀进程，
-  那些数字永远看不到 [V]。我据此**误判"取流没收到帧"**，白查一轮。
-- **`pgrep -f wt_inspection_a` 判残留进程** → 匹配到执行它的 SSH 命令自身 [V]。
-  用 `ps -eo pid,etime,comm | grep`。
-- **`dji_app_ctl install <dpk>`** → 打印的是帮助文本，实际没装 [V]。
-  必须 `install -i <dpk>`。
-- **把 survey 配置追加到文件末尾** → 该文件末尾已是 `[turbine.WT-A01]` 段，
-  结果塞进了 turbine 段里并造出重复段 [V]。已回滚。改配置前先看**全文**段落结构，
-  别用 `head -40` 截断判断。
+- **按 COCO 姿态 / 躯干方案做人员识别** → 用户当场否决 [V]——要的是高空俯视行人检测。
+  见 memory `wt-person-aim-is-aerial-pedestrian`。
+- **ultralytics 导出时让它自装依赖** → 自动起了 `pip install onnxruntime-gpu`，被及时杀掉、
+  环境未变 [V]。脚本里设 `YOLO_AUTOINSTALL=false`。
+- **行人模型用最近邻 letterbox** → 1440×1080 人群图检出 39 vs 双线性 45 [V]。用双线性。
+- **批量变异用 `shutil.copy2` 恢复文件** → 旧 mtime 让 make 不重编，上一个变异的 .o
+  残留进后续几轮 [V]；在源码目录跑测试 → 写出来路不明的 `data/` [V]。
+  见全局 memory `verify-regression-catches`。
+- **核对网页角度比较用 1e-6° 容差** → %.8f 经纬度（约 1 mm）就让「顺时针」误报不符 [V]。
+  用 0.02°。
+- **`git push`（本轮第一次）** → `Could not read from remote repository`，第二次卡住 >2 分钟 [V]；
+  20 s 后 `ssh -T git@github.com` 认证成功、重推即通。瞬时网络问题，先测 SSH 再推。
 
-### 继承（仍有效，全部前向搬运）
+### 继承（全部前向搬运，本轮未重验）
 
-- **交叉编译**（`aarch64-linux-gnu-gcc` 在 WSL）→ 产物要求 `GLIBC_2.34`，
-  设备只有 2.31，`ldd` 报 not found [V]。不要再试。
-- **拿官方样例源码做对照实验**（凭据未填）→ `main.c:437 Please fill in
-  correct user information`，变量没控住 [V]。
-- **在 `/tmp` 下打包/编译** → 设备重启后 `/tmp` 被清空 [V]。
-- **`tar --mtime='@0'` 直接解包后 make** → make 跳过重编，跑旧二进制 [V]。
-  解包后要 `touch` 源文件。
-- **`timeout 15 ./app` 想杀掉卡住的进程** → 不生效，进程活 9 小时并占住通道 [V]。
-  要 `kill -9`。
-- **`dji_app_ctl stop` 后立刻 `start`** → 通道未释放 [V]。stop 后等 10 秒。
-- **用 `strings` 查二进制里有没有中文串** → 默认只抓 ASCII [V]。用 `md5sum`。
-- **在模拟器里验证 `DjiWaypointV3_Action(START)`** → `error_code: 4` [V]。
-- **`trtexec --verbose` 构建 engine** → 日志量巨大且拖慢，15 分钟没完 [V]。
-  去掉后 13 分钟完成。
-- **SSH 前台跑长任务** → SSH 断开后输出丢失但进程还在 [V]。用 `nohup` + 重定向。
-- **`pip install torch` 走 PyPI 直连** → 卡死 0 B/s [V]。用阿里云镜像才通；
-  清华镜像 `No matching distribution found` [V]。
-- **`jadx --single-class` 反编译 Pilot 2** → `Input class not found` [V]。
-- **Pilot 2 的 `classes.dex` 静态分析** → 被 AppGuard 加固 [V]。
-- **`DjiLiveview_SendAiMetaToPilot` 画框给操作员看** → Pilot 2 不渲染 [V]。
-  与 AI 识别模式互斥。识别结果自己用。
-- **新建 `doc/` 下的方案文档** → 违反项目 CLAUDE.md「README 是唯一说明来源」[V]。
-- **M4T 不支持热插拔**（飞机与妙算3 的 E-Port 线必须在上电前接好）[V]——
-  违反时 USB 虚拟网卡不建立，`192.168.42.120` 无响应。
+- 交叉编译（WSL `aarch64-linux-gnu-gcc`）→ 产物要 `GLIBC_2.34`，设备只有 2.31 [?]。
+- 拿官方样例源码做对照（凭据未填）→ `Please fill in correct user information` [?]。
+- 在 `/tmp` 下打包/编译 → 设备重启被清空 [?]。
+- `tar --mtime='@0'` 解包后直接 make → 跳过重编、跑旧二进制；要先 `touch` [?]。
+- `timeout 15 ./app` 杀卡住的进程 → 不生效，活 9 小时占通道；要 `kill -9` [?]。
+- `dji_app_ctl stop` 后立刻 `start` → 通道未释放；等 10 秒 [?]。
+- `strings` 查二进制里的中文串 → 只抓 ASCII；用 `md5sum` [?]。
+- 模拟器里 `DjiWaypointV3_Action(START)` → `error_code: 4` [?]。
+  ⚠️ 归因有新疑点：可能怪风机 KMZ 而非模拟器，见 memory `assistant2-simulator-limits-for-psdk`。
+- `trtexec --verbose` 建 engine → 15 分钟没完；去掉后 13 分钟 [?]。
+- SSH 前台跑长任务 → 断开后输出丢失；用 `nohup` + 重定向 [?]。
+- `pip install torch` 走 PyPI 直连 → 0 B/s；阿里云镜像可用，清华镜像无此包 [?]。
+- `jadx --single-class` 反编译 Pilot 2 → `Input class not found` [?]；
+  `classes.dex` 静态分析 → AppGuard 加固 [?]。
+- `DjiLiveview_SendAiMetaToPilot` 画框给操作员 → Pilot 2 不渲染、与 AI 识别互斥 [?]。
+- 新建 `doc/` 下方案文档 → 违反「README 是唯一说明来源」[?]。
+- M4T 热插拔 E-Port → USB 虚拟网卡不建立 [?]。
+- 云台话题用 10Hz 订阅 → `0xE0`；只接受 50Hz（其余三种猜测都验过、都不是）[?]。
+- 绝对角模式 `yaw = 0` → 整条命令被拒、连 pitch 都不转 [?]。
+- 只在 `Stop`/`DeInit` 里打诊断 → `dji_app_ctl stop` 直接杀进程，永远看不到 [?]。
+- `pgrep -f wt_inspection_a` → 匹配到 SSH 命令自身；用 `ps -eo pid,etime,comm` [?]。
+- `dji_app_ctl install <dpk>` → 只打印帮助；要 `install -i <dpk>` [?]。
+- 把配置追加到文件末尾 → 塞进了 `[turbine.*]` 段并造出重复段；改配置先看全文 [?]。
 
 ## 5. 已知坑
 
-- **云台话题只接受 50Hz** [V]——见 §4。已修。
-- **`dji_app_ctl stop` 直接杀进程** [V]——诊断要运行中打、借用状态要会话结束还。已修。
-- **绝对角模式下 `yaw = 0` 拒掉整条命令** [V]——已修，测试钉住。
-- **`HEIGHT_RELATIVE` 订不上** [V]——`0x100 NOT_FOUND`。`heightAboveGroundM` 恒为 0，
-  当前无代码依赖它做决策。
-- **`app.json` 的 `bin` 指向 `build-native/`**，而 CLAUDE.md 要求目录名 `build` [V]。
-  打包前 `ln -sfn build build-native`。**未统一**，是个待清理的不一致。
-- **设备 SSH 链路会重新枚举** [?]——本轮遇到 `eth2` 从 `192.168.42.1/24` 变成
-  `198.18.0.1/30`，随后新出现 `eth3=192.168.42.1/24`。设备上电顺序变化会触发。
-  连不上时先看本机接口，再怀疑设备。
-- **`blenderproc run` 的输出被 pip 进度条淹没** [?]——日志 400 KB 全是 `\r`。
-  过滤后看。另：`generator.py` 违反 blenderproc「`import blenderproc` 必须第一条」
-  的规则，需要薄入口脚本。
-- **`/dev/shm` 清理报错** [?]——`blenderproc` 退出时 `FileNotFoundError`，未验证影响。
-- **Pilot 2 的 `cloud_config_RC701.json` 权限 `root:root 600`** [V]——非 root 读不了。
-- **`template.kml` 与 `waylines.wpml` 内容完全相同** [?]（继承，未重验）。
-  导入 Pilot 2 统计栏显示 0 m / 0 航点。**未修**。
+- **行人 / 绕点飞行尚未上机** [?]：engine 构建与 1280 推理耗时；变焦倍率语义与取流是否
+  随变焦裁切；取流延迟是否在 300 ms 停稳窗口内；激光打在人身上的回波；Pilot 2 上
+  4、5 号控件的显示；绕点 KMZ 能否 START；首航点机头对齐；`currentWaypointIndex`
+  从 0 还是 1 数；行人脚下高于起飞点时实际离地 < 10 m（`HEIGHT_RELATIVE` 订不上，
+  没法自动查地形高差）。
+- **风机 KMZ 与真机飞通的结构不一致** [V]（读 `src/wt_bridge.c` 风机导出）——同一正文
+  写进两个文件、机型 1100、缺必需元素；导入 Pilot 2 显示 0 m / 0 航点 [?]。暂缓，
+  见 memory `wt-turbine-backlog` 第 3 条。
+- **风机执行循环** [V]（读 `src/wt_runner_psdk.c`）——仍调必崩的
+  `GetLatestValueOfTopic`，任务状态从不读回调。见 `wt-turbine-backlog` 第 4 条。
+- **`app.json` 的 `bin` 指向 `build-native/`** [?]——打包前 `ln -sfn build build-native`，未统一。
+- **设备 SSH 链路会重新枚举**（`eth2`/`eth3` 地址互换）[?]——连不上先看本机接口。
+- **`blenderproc` 输出被 pip 进度条淹没、`/dev/shm` 清理报错** [?]。
+- **Pilot 2 的 `cloud_config_RC701.json` 是 `root:root 600`** [?]。
 
 ## 6. 下一步（有序）
 
-1. **到真实风机现场，跑完整的采集会话**：关掉 `survey_selftest`（只用于验云台），
-   拨「开始作业」，观察日志里四个目标依次对准 → 打激光 → 拟合。
-   判据：日志出现「采集：拟合结果」且 `radiusSpreadPct < 5`、`axisAngleErrDeg` 合理。
-2. **若拟合失败，按 `WtRotorFit_CheckLimits` 的拒绝原因定位**：
-   `radius spread too large` ⇒ 某个叶尖打偏；`centerOffsetHorizM` 过大 ⇒ 台账错或认错风机。
-3. **把实测盘面朝向注入规划**：`WtRunner_PlanTurbine` 里 `WtTurbine_BuildRotorFrame()`
-   那一行改用 `WtSurvey_GetRotorFrame()`。现在只写回了停用角。
-4. **统一 `app.json` 的 `bin` 路径**（`build-native` vs `build`），去掉打包时的软链。
-5. **剩余审查项**：B2/B3/B4（`WtTelemetry_SolvePhaseFromVision` 里球面角度直接相加、
-   用叶轮半径硬当距离、首帧相位建立不起来）。**先决定该函数去留**——它做的事已被
-   激光采集取代，修一个即将废弃的函数是浪费。B5（mission 内存泄漏）、
-   B6（反投影无半径闸门）、B7（`ideal = 360/检出数`）仍未修。
+1. **等用户看核对网页**，按反馈改默认值（朝向、首顶点、速度、结束/中止行为、云台）。
+   改完重跑 `wt_ped_square_demo` + `build_view.py` 重新生成网页。
+2. **上机**（先用 AskUserQuestion 问 IP；`dji_app_ctl list` 查 184842 装的是谁；
+   停 Smart3DExplore 并 pgrep 复查；`ps -eo pid,etime,comm` 查残留进程）：
+   打包（`--mtime='@0'`，解包后 `touch`）→ 设备上 `trtexec` 建行人 engine（不加
+   `--verbose`、不放 /tmp）→ `-DWT_BUILD_TRT=ON` 编译 → 改配置（先读全文；
+   `ped_enabled = true`、`ped_engine`、`survey_enabled = false`）→ `install -i` 装包。
+3. **地面先干跑**：「干跑」开着按「绕点飞行」，看日志有 `KMZ 已上传`；顺手在模拟器里
+   重试一次 START，分清 error 4 是文件还是模拟器的问题。
+4. **室外**：60 m 内的行人打点（看 `data/ped_points.csv`）→ 关干跑飞一次绕点；
+   拉回 `data/ped_square.kmz` 用核对网页对照飞机实际收到的文件。
 
 ## 7. 留给用户的开放问题
 
-- **`~/projects/.psdk-apiref/wt_inspection/` 的去留**：我按 `~/projects/CLAUDE.md`
-  的约定建的（那里明文写着该路径是"项目的 API 路由图与踩坑记录"）。你曾说
-  "`.psdk-apiref` 是爬官网 API 概览的，不可能有 wt_inspection"——但 `docs/` 才是爬来的，
-  `<项目名>/API-MAP.md` 是手写的，且同目录已有 `liangzhourenwu/`、`Payload-SDK/`。
-  我保留了它并持续维护。**要不要挪进仓库或删掉？**
-- **相机内参标定**：当前 `WtCameraGeometry` 由规格页等效焦距推得，未标定。
-  对 50 m 外目标可能是米级 vs 分米级。
-- **`park_phase` 与图像角度的 `sign`/`offset` 现场标定**：激光采集跑通后可直接实测
-  停用角，这条标定就只用于交叉校验。
-- **多台风机作业**：设备上只配了 `WT-A01` 一台。
-- **`/open_app/wt-inspection/data/` 里 liangzhourenwu 的遗留产物**
-  （`ground.txt` / `orbit.kmz` / `pole.txt`）——已备份到 `/home/dji/lz-salvage/`，
-  原位置三份是否移走未定。
+- **行人提速是否按你的意思**：「现在先弄行人的」我理解为同意上次的方案一（连续 3 帧确认、
+  激光 3 次取中位、默认不停顿）。要恢复 3 s 停顿只需配置 `ped_dwell_ms = 3000`。
+- **绕点飞行的默认值**：见 §3，等你在网页上确认。
+- **交接技能本轮被我改了两处**（`~/.claude/skills/handoff/`）：信号提取脚本漏掉粘贴消息、
+  误收截图附注；第 4b 步的记忆目录公式对 worktree 和下划线都算错。三条被写错目录的
+  记忆已复制到实际加载的目录。可自行复核或回退。
+- 继承：`~/projects/.psdk-apiref/wt_inspection/` 去留；相机内参未标定；`park_phase`
+  的 sign/offset 标定；多台风机；`/open_app/wt-inspection/data/` 里 liangzhourenwu 遗留产物。
