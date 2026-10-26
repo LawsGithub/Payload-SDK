@@ -401,6 +401,16 @@ static void WtApp_RunSurvey(void)
 }
 
 /**
+ * 行人决策参数：配置是这两个量的唯一来源，经 ConfigFrom 构造，不另传。
+ * 会话与 AI 叠加的 target 预览（WtPed_SetPreviewConfig）都从这里拿 —— 两边
+ * 门槛不一致的话，画面上标的 target 就不是拨开关后真正会锁的人。
+ */
+static WtPedConfig WtApp_PedConfig(void)
+{
+    return WtPedLogic_ConfigFrom(s_runner.config.pedDwellMs, s_runner.config.pedConf);
+}
+
+/**
  * @brief 跑一次行人瞄准打点会话，直到完成、失败、被中止或开关拨回。
  *
  * ## 为什么 10 Hz
@@ -439,8 +449,7 @@ static void WtApp_RunPed(void)
         return;
     }
 
-    /* 配置是这两个量的唯一来源，经 ConfigFrom 构造，不另传 */
-    cfg = WtPedLogic_ConfigFrom(s_runner.config.pedDwellMs, s_runner.config.pedConf);
+    cfg = WtApp_PedConfig();
     if (!WtPed_Begin(&ped, &cfg, s_runner.config.outputDir)) {
         WtWidget_PostMessage("行人瞄准启动失败");
         WtWidget_ClearPedRequest();
@@ -1095,14 +1104,13 @@ int main(int argc, char **argv)
             }
 
             /*
-             * AI 叠加验证（诊断用，默认关）。
-             *
-             * 放在配置载入之后 —— 它要读 config.aiOverlay。也放在
-             * ApplicationStart 之后 —— liveview 模块依赖 SDK 已起来。
-             * 失败不阻断：这是验证功能，不是作业前提。
+             * AI 叠加（默认关）挂在行人链路的取流上，在下方行人瞄准一段里启动 ——
+             * 它要用那条链路的帧和识别框，自己不取流（同一相机源不能开两路）。
+             * 这里只拦「开了叠加却没开行人瞄准」。
              */
-            if (WtAiOverlay_Start(s_runner.config.aiOverlay)) {
-                USER_LOG_INFO("AI 叠加验证已启动，请在 Pilot 2 画面上观察框与标签");
+            if (s_runner.config.aiOverlay && !s_runner.config.pedEnabled) {
+                USER_LOG_ERROR("ai_overlay 需要 ped_enabled = true（叠加用行人链路的取流帧与"
+                               "识别框），本次不启动叠加");
             }
 
             /*
@@ -1190,6 +1198,21 @@ int main(int argc, char **argv)
                     USER_LOG_INFO("行人瞄准链路已就绪：在 Pilot 2 拨「行人瞄准」开关即可开始"
                                   "（锁定后连续 3 帧确认、再停 %.1f s 自动打点）",
                                   (double)s_runner.config.pedDwellMs / 1000.0);
+
+                    /*
+                     * AI 叠加（默认关）：必须在取流启动之后 —— 它挂在 wt_frame_pump 的
+                     * 帧旁路上。target 预览先拿到与会话同一份参数。
+                     * 失败不阻断：操作员辅助，不是作业前提。
+                     */
+                    {
+                        const WtPedConfig previewCfg = WtApp_PedConfig();
+
+                        WtPed_SetPreviewConfig(&previewCfg);
+                    }
+                    if (WtAiOverlay_Start(s_runner.config.aiOverlay)) {
+                        USER_LOG_INFO("AI 叠加已启动：Pilot 2 里切到妙算3 的视频源可看到行人框"
+                                      "（target = 拨「行人瞄准」会锁定的人）");
+                    }
                 }
             }
 #else
@@ -1428,10 +1451,12 @@ int main(int argc, char **argv)
      * 采集 / 行人瞄准链路的收尾：先停推理（它在消费帧），再停取流，最后收云台。
      * WtLaser_DeInit() 还会兜底把云台模式还成 YAW_FOLLOW —— FREE 残留在
      * 飞机上会让后续绕飞顶 pan 限位（姊妹项目踩过的事故）。
+     *
+     * AI 叠加挂在取流上，要先摘：取流停了 liveview 就 Deinit，再注销会失败。
      */
+    WtAiOverlay_Stop();
     WtApp_StopVisionChain();
     WtAiStreamProbe_Stop();
-    WtAiOverlay_Stop();
     WtWidget_Stop();
     WtRunner_DeInit(&s_runner);
     DjiCore_DeInit();

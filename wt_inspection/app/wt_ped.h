@@ -37,6 +37,7 @@
 #include "wt_laser.h"
 #include "wt_ped_logic.h"
 #include "wt_telemetry.h"
+#include "wt_vision.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -92,6 +93,25 @@ bool WtPed_IsFinished(const WtPedSession *s);
 
 /** @brief 把会话进度格式化成一行，供浮窗显示（带宽上限 2 KB/s，要短） */
 void WtPed_FormatProgress(const WtPedSession *s, char *buf, size_t bufLen);
+
+/**
+ * @brief 设置「没有会话时」预览捕获用的参数 —— 与会话同一份配置（main.c 的 WtApp_PedConfig）。
+ */
+void WtPed_SetPreviewConfig(const WtPedConfig *cfg);
+
+/**
+ * @brief AI 叠加用：这份推理快照里，哪个框是「目标」。
+ *
+ * - 会话已锁上人（跟踪中）：就是决策层在跟的那个 —— 按它最近一次关联上时的
+ *   框中心，在这份快照里就近找（不超过框的长边，对不上就不标）
+ * - 其余时候（没有会话，或会话还在搜索）：此刻会被捕获的那个，判据就是
+ *   `WtPedLogic_PickCapture`，与决策层同一个
+ *
+ * 线程：可在 SDK 回调线程里调。只读会话发布的状态，持锁只有一次结构体拷贝。
+ *
+ * @return 框在 `snap->raw.items` 里的下标；没有目标返回 -1
+ */
+int WtPed_TargetIndex(const WtVisionSnapshot *snap);
 
 #ifdef __cplusplus
 }

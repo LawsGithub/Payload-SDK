@@ -15,6 +15,7 @@
 #include <dji_platform.h>
 
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -37,6 +38,25 @@ typedef char WtPed_CandidateCapacityCheck[(WT_PED_MAX_CANDIDATES >= WT_TRT_MAX_D
  * 上一次的值（看起来读了 3 次，其实是同一个数）—— 留出余量取 300 ms。
  */
 #define WT_PED_LASER_GAP_MS 300u
+
+/*
+ * 发布给 AI 叠加的会话状态：会话跑在主循环线程，叠加在 SDK 图像回调线程里读。
+ * 只存标「目标」要用的几个量，持锁只做结构体拷贝。
+ */
+typedef struct {
+    bool haveCfg;
+    WtPedConfig cfg;
+    double zoomFactor;      /*!< 最近一次会话读到的变焦倍率（还没有会话过按 1） */
+    bool sessionActive;
+    bool trackActive;
+    double trackU;          /*!< 跟踪目标最近一次关联上时的框（原图像素） */
+    double trackV;
+    double trackW;
+    double trackH;
+} WtPedPublished;
+
+static pthread_mutex_t s_pubLock = PTHREAD_MUTEX_INITIALIZER;
+static WtPedPublished s_pub = {.zoomFactor = 1.0};
 
 static uint32_t WtPed_NowMs(void)
 {
@@ -100,6 +120,52 @@ static void WtPed_PollZoom(WtPedSession *s, uint32_t now, bool force)
     s->zoomEverRead = true;
 }
 
+/** 把会话状态发布给 AI 叠加（WtPed_TargetIndex） */
+static void WtPed_Publish(const WtPedSession *s)
+{
+    pthread_mutex_lock(&s_pubLock);
+    s_pub.haveCfg = true;
+    s_pub.cfg = s->logic.cfg;
+    s_pub.zoomFactor = s->zoomFactor;
+    s_pub.sessionActive = !WtPedLogic_IsFinished(&s->logic);
+    s_pub.trackActive = s->logic.track.active;
+    s_pub.trackU = s->logic.track.u;
+    s_pub.trackV = s->logic.track.v;
+    s_pub.trackW = s->logic.track.widthPx;
+    s_pub.trackH = s->logic.track.heightPx;
+    pthread_mutex_unlock(&s_pubLock);
+}
+
+/** 快照 → 观测里的画面部分（候选框、画面尺寸、帧序号）。会话与 AI 叠加的预览共用这一份 */
+static void WtPed_FillFrame(const WtVisionSnapshot *snap, WtPedObs *obs)
+{
+    int n = snap->raw.count;
+    int i;
+
+    if (n > WT_PED_MAX_CANDIDATES) {
+        n = WT_PED_MAX_CANDIDATES;
+    }
+
+    obs->haveFrame = true;
+    obs->frameId = snap->seq;              /* 用快照序号判新帧，不用相机帧号 */
+    obs->frameCapturedMs = snap->capturedAtMs;
+    obs->imageWidthPx = snap->imageWidthPx;
+    obs->imageHeightPx = snap->imageHeightPx;
+
+    for (i = 0; i < n; i++) {
+        const WtTrtDetection *b = &snap->raw.items[i];
+        WtPedCandidate *c = &obs->cand[i];
+
+        /* 瞄框中心：俯视时它就落在人身上（头肩一带） */
+        c->u = 0.5 * ((double)b->bboxX1 + (double)b->bboxX2);
+        c->v = 0.5 * ((double)b->bboxY1 + (double)b->bboxY2);
+        c->widthPx = (double)(b->bboxX2 - b->bboxX1);
+        c->heightPx = (double)(b->bboxY2 - b->bboxY1);
+        c->conf = (double)b->conf;
+    }
+    obs->candidateCount = n;
+}
+
 /** 组装决策层要的观测 */
 static void WtPed_BuildObs(const WtPedSession *s, const WtTelemetry *tele, uint32_t now,
                            WtPedObs *obs)
@@ -131,31 +197,7 @@ static void WtPed_BuildObs(const WtPedSession *s, const WtTelemetry *tele, uint3
     obs->fovVertDeg = g.fovVertDeg;
 
     if (WtVision_GetSnapshot(&snap)) {
-        int n = snap.raw.count;
-        int i;
-
-        if (n > WT_PED_MAX_CANDIDATES) {
-            n = WT_PED_MAX_CANDIDATES;
-        }
-
-        obs->haveFrame = true;
-        obs->frameId = snap.seq;              /* 用快照序号判新帧，不用相机帧号 */
-        obs->frameCapturedMs = snap.capturedAtMs;
-        obs->imageWidthPx = snap.imageWidthPx;
-        obs->imageHeightPx = snap.imageHeightPx;
-
-        for (i = 0; i < n; i++) {
-            const WtTrtDetection *b = &snap.raw.items[i];
-            WtPedCandidate *c = &obs->cand[i];
-
-            /* 瞄框中心：俯视时它就落在人身上（头肩一带） */
-            c->u = 0.5 * ((double)b->bboxX1 + (double)b->bboxX2);
-            c->v = 0.5 * ((double)b->bboxY1 + (double)b->bboxY2);
-            c->widthPx = (double)(b->bboxX2 - b->bboxX1);
-            c->heightPx = (double)(b->bboxY2 - b->bboxY1);
-            c->conf = (double)b->conf;
-        }
-        obs->candidateCount = n;
+        WtPed_FillFrame(&snap, obs);
     }
 }
 
@@ -294,6 +336,7 @@ bool WtPed_Begin(WtPedSession *s, const WtPedConfig *cfg, const char *outputDir)
     (void)WtLaser_BorrowFreeMode();
 
     WtPed_PollZoom(s, now, true);
+    WtPed_Publish(s);
 
     USER_LOG_INFO("行人瞄准：会话开始 —— 锁定后连续 %d 帧确认、再停 %.1f s 即自动激光打点"
                   "（连读 %d 次取中位），结果写入 %s",
@@ -367,6 +410,8 @@ void WtPed_Tick(WtPedSession *s, const WtTelemetry *tele)
                       d.angularErrorDeg, d.lockTolDeg, d.message != NULL ? d.message : "");
         s->lastStatusLogMs = now;
     }
+
+    WtPed_Publish(s);
 }
 
 void WtPed_Abort(WtPedSession *s, const char *why)
@@ -375,6 +420,55 @@ void WtPed_Abort(WtPedSession *s, const char *why)
         return;
     }
     WtPedLogic_Abort(&s->logic, why);
+    WtPed_Publish(s);
+}
+
+void WtPed_SetPreviewConfig(const WtPedConfig *cfg)
+{
+    if (cfg == NULL) {
+        return;
+    }
+    pthread_mutex_lock(&s_pubLock);
+    s_pub.cfg = *cfg;
+    s_pub.haveCfg = true;
+    pthread_mutex_unlock(&s_pubLock);
+}
+
+int WtPed_TargetIndex(const WtVisionSnapshot *snap)
+{
+    WtPedPublished pub;
+    WtPedObs obs;
+    WtCameraGeometry g;
+
+    if (snap == NULL) {
+        return -1;
+    }
+
+    /* 调用方在 SDK 回调线程里：抢不到锁就这一轮不标，绝不等（同 wt_frame_pump 的原则） */
+    if (pthread_mutex_trylock(&s_pubLock) != 0) {
+        return -1;
+    }
+    pub = s_pub;
+    pthread_mutex_unlock(&s_pubLock);
+
+    memset(&obs, 0, sizeof(obs));
+    WtPed_FillFrame(snap, &obs);
+
+    if (pub.sessionActive && pub.trackActive) {
+        const double gate = (pub.trackW > pub.trackH) ? pub.trackW : pub.trackH;
+
+        return WtPedLogic_NearestCandidate(&obs, pub.trackU, pub.trackV, gate);
+    }
+    if (!pub.haveCfg) {
+        return -1;
+    }
+
+    /* 视场按最近一次会话读到的倍率；obs.gimbal 留零位 —— 捕获判据与云台姿态无关 */
+    g = WtCamera_ComputeZoomedGeometry(&WT_CAMERA_M4T_WIDE, pub.zoomFactor);
+    obs.fovHorizDeg = g.fovHorizDeg;
+    obs.fovVertDeg = g.fovVertDeg;
+
+    return WtPedLogic_PickCapture(&pub.cfg, &obs, NULL);
 }
 
 bool WtPed_IsFinished(const WtPedSession *s)

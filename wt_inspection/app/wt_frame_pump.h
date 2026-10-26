@@ -85,6 +85,24 @@ uint32_t WtFramePump_ReceivedCount(void);
 /** @brief 累计丢弃的帧数（消费者来不及取 / 抢不到锁 / 超出缓冲上限） */
 uint32_t WtFramePump_DroppedCount(void);
 
+/**
+ * @brief 帧旁路：每收到一帧，在 SDK 回调线程里**同步**调用一次。
+ *
+ * 只给 AI 叠加用 —— 把 SDK 的原始帧交给它的编码器（见 wt_ai_overlay.c）。
+ * 调用先于拷进推理缓冲，且每帧都调，与这一帧能否进推理缓冲无关：
+ * 推出去的视频要连续。实现必须快、不能等锁（理由同上方「回调里只做
+ * memcpy + trylock」）。`buf` 只在调用期间有效。
+ *
+ * @param pixFmt  `E_DjiLiveViewPixFormate` 的取值（本模块固定 RGB_PACKED）
+ */
+typedef void (*WtFrameTap)(const uint8_t *buf, uint32_t len, int widthPx, int heightPx,
+                           int pixFmt, uint32_t frameId);
+
+/**
+ * @brief 设置帧旁路，传 NULL 取消。`WtFramePump_Stop` 会自动取消。
+ */
+void WtFramePump_SetTap(WtFrameTap tap);
+
 #ifdef __cplusplus
 }
 #endif

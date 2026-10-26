@@ -31,6 +31,8 @@ static bool s_liveviewInited = false;
 static volatile uint32_t s_received = 0;
 static volatile uint32_t s_dropped = 0;
 
+static volatile WtFrameTap s_tap = NULL;
+
 static uint32_t WtPump_NowMs(void)
 {
     T_DjiOsalHandler *osal = DjiPlatform_GetOsalHandler();
@@ -47,6 +49,8 @@ static void WtPump_ImageCallback(E_DjiLiveViewCameraPosition position,
                                  const uint8_t *buf, uint32_t len,
                                  T_DjiLiveviewImageInfo imageInfo)
 {
+    WtFrameTap tap;
+
     (void)position; /* 只订阅一个源 */
 
     s_received++;
@@ -64,6 +68,13 @@ static void WtPump_ImageCallback(E_DjiLiveViewCameraPosition position,
         USER_LOG_WARN("取流：帧长 %u 超出缓冲上限 %u，已丢弃",
                       (unsigned)len, (unsigned)WT_FRAME_MAX_BYTES);
         return;
+    }
+
+    /* 帧旁路（AI 叠加）：先交给编码器，再拷进推理缓冲 —— 见 WtFramePump_SetTap */
+    tap = s_tap;
+    if (tap != NULL) {
+        tap(buf, len, (int)imageInfo.width, (int)imageInfo.height,
+            (int)imageInfo.pixFmt, imageInfo.frameId);
     }
 
     /*
@@ -167,6 +178,7 @@ void WtFramePump_Stop(void)
         return;
     }
 
+    s_tap = NULL;
     (void)DjiLiveview_StopImageStream(WT_PUMP_POSITION, WT_PUMP_SOURCE);
 
     if (s_liveviewInited) {
@@ -216,4 +228,9 @@ uint32_t WtFramePump_ReceivedCount(void)
 uint32_t WtFramePump_DroppedCount(void)
 {
     return s_dropped;
+}
+
+void WtFramePump_SetTap(WtFrameTap tap)
+{
+    s_tap = tap;
 }
